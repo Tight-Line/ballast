@@ -406,11 +406,11 @@ _Deploy to test cluster with cert-manager. Create a pod with `ballast.tightlines
     3. On success: record in pod annotation and profile status
     4. On failure (node pressure / infeasible): fall through to eviction check
   - **Eviction path (if `evict` annotation present, or resize blocked):**
-    1. Check `minOtherHealthyReplicas`: count ready pods in the same workload (same owner); skip if fewer than the minimum would remain after eviction
+    1. Check `minOtherHealthyReplicas`: count ready pods in the same workload (same namespace + same owner Deployment/StatefulSet only; pods from other workloads sharing the same WorkloadProfile are not counted); skip if fewer than the minimum would remain after eviction
     2. Check PDB: attempt Eviction API dry-run; if it returns 429, PDB blocks — skip
-    3. Check per-workload cooldown: read last eviction timestamp from profile status; skip if `now - last < cooldown`
-    4. Check `maxConcurrentEvictions`: count pods in namespace with matching `profile-ref` that are terminating (`deletionTimestamp != nil`) or not yet ready; skip if count >= limit
-    5. If all pass: evict via Eviction API; record timestamp in profile status
+    3. Check per-workload cooldown: read last eviction timestamp for this `(namespace, owner-kind, owner-name)` from a map in the WorkloadProfile status; skip if `now - last < cooldown`. Each workload has its own independent clock — workloads sharing the same profile are not affected by each other's cooldowns.
+    4. Check `maxConcurrentEvictions`: count pods **cluster-wide** (all namespaces) with matching `profile-ref` that are terminating (`deletionTimestamp != nil`) or not yet ready; skip if count >= limit
+    5. If all pass: evict via Eviction API; record timestamp in the per-workload cooldown map in profile status
     6. If any check fails: emit Kubernetes Event, record blocked state in profile status, requeueAfter cooldown
   - **`autoresize` / `automagic`:** once `WorkloadProfile.meetsThreshold` transitions from false to true, the progressive annotations automatically enable resize (autoresize) or resize+evict (automagic); controller respects this dynamically per reconcile
   - **Dry-run:** `--dry-run-resize` suppresses the resize patch; `--dry-run-evict` suppresses eviction; both log at `info` with `dry_run: true`

@@ -157,10 +157,23 @@ spec:
       maxChangePerCycle: "50%"    # default: 50% — cap single-cycle adjustment
       interval: "15m"             # default: 15m — how often ResourceAdjuster re-evaluates
     eviction:
-      cooldown: "1h"              # default: 1h — per-workload (Deployment/StatefulSet), not per-pod
-      maxConcurrentEvictions: 1   # default: 1 — per WorkloadProfile per namespace
-      minOtherHealthyReplicas: 1  # default: 1 — skip eviction unless at least this many other
-                                  # healthy replicas exist; set to 0 to allow evicting singletons
+      cooldown: "1h"              # default: 1h — per-workload (one Deployment/StatefulSet in one
+                                  # namespace). Each workload gets its own independent cooldown clock,
+                                  # even if many workloads share the same WorkloadProfile. Example:
+                                  # 40 dev namespaces all matched by profile "billing--dev" can all
+                                  # be evicted within the same hour; the cooldown only prevents
+                                  # rapid re-eviction of the *same* Deployment/StatefulSet.
+      maxConcurrentEvictions: 1   # default: 1 — per WorkloadProfile, across all namespaces.
+                                  # Before evicting, count all pods cluster-wide whose profile-ref
+                                  # matches this profile and are terminating or not-yet-ready.
+                                  # If that count >= limit, skip. This bounds total in-flight churn
+                                  # for a given identity tuple regardless of how many namespaces
+                                  # contribute to it.
+      minOtherHealthyReplicas: 1  # default: 1 — per-workload (one Deployment/StatefulSet in one
+                                  # namespace). Skip eviction unless at least this many other ready
+                                  # pods exist in that same workload. Set to 0 to allow evicting
+                                  # singletons. Does not count pods from other workloads sharing
+                                  # the same WorkloadProfile.
 ```
 
 Behaviors in the policy are **parameters**, not switches. Whether a workload gets resized or evicted is still gated by the `ballast.tightlinesoftware.com/resize` and `ballast.tightlinesoftware.com/evict` annotations on the pod template. Policy says how; annotations say whether.
@@ -366,9 +379,11 @@ When any field's recommendation drifts beyond its configured threshold (per `beh
    - If allowed: evicts via the Eviction API (respects PDBs). The Deployment controller recreates the pod; the admission webhook applies updated resources on the new pod.
    - If blocked by any check: emits a Kubernetes Event, records blocked state in profile status, retries after cooldown.
 
-Eviction cooldown is **per-workload** (per Deployment/StatefulSet), not per-pod.
+**Eviction cooldown** is **per-workload** (one Deployment/StatefulSet in one namespace), not per-WorkloadProfile. The cooldown timestamp is stored per `(namespace, owner-kind, owner-name)` — for example as a map in the WorkloadProfile status keyed by workload identity. Multiple workloads that share the same WorkloadProfile (e.g. the `billing` Deployment in 40 different dev namespaces all matched by profile `billing--dev`) each have their own independent cooldown clock. Ballast can evict pods from all of them within the same hour; the cooldown only prevents rapid re-eviction of the *same* Deployment/StatefulSet.
 
-**Enforcing `maxConcurrentEvictions`:** before evicting, count all pods in the same namespace whose `ballast.tightlinesoftware.com/profile-ref` matches this profile and are either terminating (`deletionTimestamp != nil`) or not yet ready (`Pending` or `ContainerCreating`). Both states indicate an in-flight eviction cycle. If that count is at or above `maxConcurrentEvictions`, skip and retry after cooldown. This is stateless and self-correcting — no separate counter is needed, and the check survives controller restarts cleanly.
+**`minOtherHealthyReplicas`** is also **per-workload**: before evicting a pod, count the ready pods in that same Deployment/StatefulSet (same namespace, same owner). Pods from other workloads sharing the same WorkloadProfile are not counted.
+
+**Enforcing `maxConcurrentEvictions`:** before evicting, count all pods **cluster-wide** whose `ballast.tightlinesoftware.com/profile-ref` matches this profile and are either terminating (`deletionTimestamp != nil`) or not yet ready (`Pending` or `ContainerCreating`). This count spans all namespaces. Both states indicate an in-flight eviction cycle. If that count is at or above `maxConcurrentEvictions`, skip and retry after cooldown. This is stateless and self-correcting — no separate counter is needed, and the check survives controller restarts cleanly.
 
 ---
 
