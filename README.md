@@ -1,135 +1,192 @@
-# ballast
-// TODO(user): Add simple overview of use/purpose
+# Ballast
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+Ballast is a Kubernetes operator that automatically right-sizes workload resource requests and limits based on real operational history. It is a more active alternative to [Fairwinds Goldilocks](https://github.com/FairwindsOps/goldilocks): rather than suggesting changes, it applies them — at admission time, on running pods via in-place resize (Kubernetes 1.35+), and via eviction when in-place adjustment is unavailable or insufficient.
 
-## Getting Started
+## How it works
 
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+Workloads opt in with annotations on their pod templates. Ballast observes real CPU and memory utilization, accumulates a rolling history keyed to a *workload identity tuple* (a set of pod labels you configure), and uses that history to:
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+1. **Measure** — collect per-container usage samples into a time-series store (Redis/Valkey).
+2. **Apply** — patch resource requests and limits at admission time when a pod is created.
+3. **Resize** — adjust resources on running pods via the Kubernetes in-place resize API (1.35+).
+4. **Evict** — evict pods to force re-admission with updated resources when resize is blocked.
 
-```sh
-make docker-build docker-push IMG=<some-registry>/ballast:tag
+Progressive modes (`autoresize`, `automagic`) start in measure-only mode and automatically activate adjustment once enough history has been collected.
+
+## Implementation Status
+
+| Phase | What | Status |
+|---|---|---|
+| 1 | Repository scaffold, kubebuilder init, CI/CD | In progress |
+| 2 | CRD type definitions | Not started |
+| 3 | Logger infrastructure and kill switch | Not started |
+| 4 | Policy resolution | Not started |
+| 5 | Redis/Valkey client layer | Not started |
+| 6 | Plugin interface and `kubernetesMetrics` plugin | Not started |
+| 7 | WorkloadWatcher controller | Not started |
+| 8 | MetricsCollector controller | Not started |
+| 9 | Admission webhook | Not started |
+| 10 | ResourceAdjuster controller | Not started |
+| 11 | Helm chart | Not started |
+| 12 | Polish and release readiness | Not started |
+
+## Prerequisites
+
+- Kubernetes 1.35+ (required for in-place pod resize; earlier versions support measure/apply/evict but not resize)
+- [metrics-server](https://github.com/kubernetes-sigs/metrics-server) installed in the cluster
+- [cert-manager](https://cert-manager.io) installed (manages the admission webhook TLS certificate)
+- A Redis-compatible store (Ballast ships with a bundled Valkey via Helm; an existing Redis or Valkey instance works too)
+
+## Installation
+
+> **Note:** The Helm chart is not yet available (Phase 11). These instructions will be updated when the chart ships.
+
+Once the chart is available, installation will look like:
+
+```bash
+helm repo add tight-line https://tight-line.github.io/ballast
+helm repo update
+
+helm install ballast tight-line/ballast \
+  --namespace ballast-system \
+  --create-namespace \
+  --set ballastConfig.identityLabels[0]=app.kubernetes.io/name \
+  --set ballastConfig.identityLabels[1]=ballast.tightlinesoftware.com/profile
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+## Annotation Contract
 
-**Install the CRDs into the cluster:**
+Add these annotations to your pod template specs to enroll workloads. Ballast never acts on a workload without explicit opt-in.
 
-```sh
-make install
+| Annotation | Meaning |
+|---|---|
+| `ballast.tightlinesoftware.com/measure: "true"` | Collect metrics; required for any other behavior |
+| `ballast.tightlinesoftware.com/apply: "true"` | Patch requests/limits at admission time; requires `measure` |
+| `ballast.tightlinesoftware.com/resize: "true"` | Adjust resources on running pods via in-place resize; requires `apply` |
+| `ballast.tightlinesoftware.com/evict: "true"` | Evict pods to force re-admission with updated resources; requires `apply` or `resize` |
+| `ballast.tightlinesoftware.com/autoresize: "true"` | Progressive: measure-only until history threshold met, then `apply` + `resize` |
+| `ballast.tightlinesoftware.com/automagic: "true"` | Progressive: measure-only until history threshold met, then `apply` + `resize` + `evict` |
+
+**Example — full automation:**
+
+```yaml
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: billing
+        ballast.tightlinesoftware.com/profile: prod
+      annotations:
+        ballast.tightlinesoftware.com/automagic: "true"
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+**Example — measure only (safe first step):**
 
-```sh
-make deploy IMG=<some-registry>/ballast:tag
+```yaml
+spec:
+  template:
+    metadata:
+      annotations:
+        ballast.tightlinesoftware.com/measure: "true"
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+## Verifying a WorkloadProfile
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+Once a pod with the `measure` annotation is running, Ballast creates a `WorkloadProfile` for its identity tuple. Check it with:
 
-```sh
-kubectl apply -k config/samples/
+```bash
+kubectl get workloadprofiles
+kubectl describe workloadprofile billing--prod
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+The profile status shows accumulated usage statistics and recommendations once the readiness threshold is met (default: 500 samples collected over 24 hours):
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
-
-```sh
-kubectl delete -k config/samples/
+```yaml
+status:
+  containers:
+    - name: app
+      usageStats:
+        - resource: cpu
+          samples: 1440
+          p95: "240m"
+          p99: "310m"
+          cv: "0.46"
+      recommendations:
+        cpu:
+          request: "288m"   # p95 * 1.2 headroom
+          limit: "388m"     # p99 * 1.25 headroom
+  meetsThreshold: true
+  activeWorkloads: 3
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
+## Kill Switch
 
-```sh
-make uninstall
+Create a ConfigMap named `ballast-kill-switch` in the operator namespace to immediately halt all Ballast activity without a restart:
+
+```bash
+# Halt all Ballast activity
+kubectl create configmap ballast-kill-switch -n ballast-system
+
+# Resume
+kubectl delete configmap ballast-kill-switch -n ballast-system
 ```
 
-**UnDeploy the controller from the cluster:**
+All suppressed actions are logged at `warn` level with `kill_switch: true`. Pod admission continues normally (webhook passes pods through without mutation).
 
-```sh
-make undeploy
+For planned, GitOps-managed suspension, set `BallastConfig.spec.suspended: true` instead.
+
+## Dry-run Mode
+
+Each action has an independent dry-run flag. They cascade: dry-running `measure` implies dry-running everything downstream.
+
+| Flag | Helm value | Effect |
+|---|---|---|
+| `--dry-run-measure` | `dryRun.measure` | Compute stats, log what would be written; no Redis writes |
+| `--dry-run-apply` | `dryRun.apply` | Log the patch; pod admitted without modification |
+| `--dry-run-resize` | `dryRun.resize` | Log the resize; pod not touched |
+| `--dry-run-evict` | `dryRun.evict` | Log which pod would be evicted; no eviction issued |
+
+All dry-run actions are logged at `info` level with `dry_run: true`.
+
+## Development
+
+```bash
+# Prerequisites
+make tools          # Install goimports
+make setup-hooks    # Install pre-commit hook
+
+# Common workflow
+make check          # Full gate: lint + 100% coverage + build
+make build          # Build bin/ballastd
+make test           # Run tests with envtest
+make lint-fix       # Auto-fix lint issues
+make fmt            # Format code
+
+# CRD / code generation (run after editing api/*_types.go)
+make manifests      # Regenerate CRDs, RBAC, and webhook manifests
+make generate       # Regenerate DeepCopy methods
 ```
 
-## Project Distribution
+The `make check` target is the gate for every PR and release. It runs golangci-lint, enforces 100% test coverage (uncovered lines require a `// coverage:ignore - <reason>` comment), and builds the binary.
 
-Following the options to release and provide this solution to the users.
+## Logging
 
-### By providing a bundle with all YAML files
+Per-component log levels are configurable at startup:
 
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/ballast:tag
+```bash
+ballastd \
+  --log-level=info \
+  --log-level-webhook=debug \
+  --log-level-collector=warn \
+  --log-format=text    # json (default) or text
 ```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/ballast/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
 
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
 
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Copyright 2026.
+Copyright 2026 Tight Line Software LLC.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
