@@ -23,9 +23,9 @@
 
 ## Phase 1 — Repository Setup & kubebuilder Scaffold
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Depends on:** nothing
-**PR:** —
+**PR:** https://github.com/Tight-Line/ballast/pull/1
 
 ### What to build
 
@@ -42,22 +42,27 @@
 - `CHANGELOG.md` with `[Unreleased]` section
 - `cmd/ballastd/main.go` — empty `main()` that creates a kubebuilder manager and exits cleanly
 
-### Key files (fill in after complete)
+### Key files
 
-- `cmd/ballastd/main.go`
-- `Makefile`
-- `scripts/check-coverage.sh`
-- `scripts/make-tag`
-- `.golangci.yml`
-- `Dockerfile`
-- `.github/workflows/ci.yml`
-- `.github/workflows/pr-images.yml`
-- `AGENTS.md`
-- `CHANGELOG.md`
+- `cmd/ballastd/main.go` — kubebuilder manager entry point; registers controllers and webhook (populated in later phases)
+- `Makefile` — build/test/lint/check targets; `make check` is the release gate
+- `scripts/check-coverage.sh` — 100% coverage enforcement with `coverage:ignore` support; excludes `cmd/`, `test/`, and `e2e` packages; always generates `coverage.filtered.out` for Codecov
+- `scripts/make-tag` — creates a semver release tag (runs `make check`, bumps `charts/ballast/Chart.yaml`, moves CHANGELOG section, creates git tag)
+- `scripts/pre-commit` — pre-commit hook (fmt check + golangci-lint); installed via `make setup-hooks`
+- `.golangci.yml` — linter config; `goimports` local-prefixes set to `github.com/tight-line/ballast`; `test/` excluded from lint
+- `Dockerfile` — distroless base, single binary `ballastd`, `VERSION` build arg
+- `.github/workflows/ci.yml` — parallel test/lint/build on every PR and main push; uploads `coverage.filtered.out` to Codecov
+- `.github/workflows/pr-images.yml` — builds `ghcr.io/tight-line/ballast:pr-<n>-<sha>` on PR push
+- `.github/workflows/snyk.yml` — dependency vulnerability scan (high+ severity) on PRs, main, and weekly
+- `.github/workflows/sonar.yml` — SonarCloud static analysis on PRs and main
+- `sonar-project.properties` — SonarCloud project config (key `Tight-Line_ballast`, org `tight-line`)
+- `README.md` — project overview, annotation contract, kill switch, dry-run, dev workflow, implementation status table
+- `AGENTS.md` — skeleton with section headings (content filled in as phases complete)
+- `CHANGELOG.md` — empty `[Unreleased]` section
 
-### User testing instructions (fill in after PR opens)
+### User testing instructions
 
-_After PR opens: confirm `make check` passes on a clean clone; confirm CI workflow runs on the PR; confirm PR image is built and pushed._
+Confirm `make check` passes on a clean clone; confirm CI workflow runs on the PR with test/lint/build all green; confirm PR image is built and pushed to `ghcr.io/tight-line/ballast:pr-1-<sha>`; confirm Snyk and Codecov runs complete.
 
 ---
 
