@@ -1,0 +1,8 @@
+## Append samples of your project ##
+resources:
+- ballast_v1_metricssource.yaml
+- ballast_v1_clusterresourcepolicy.yaml
+- ballast_v1_resourcepolicy.yaml
+- ballast_v1_workloadprofile.yaml
+- ballast_v1_ballastconfig.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

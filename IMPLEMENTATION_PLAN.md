@@ -68,7 +68,7 @@ Confirm `make check` passes on a clean clone; confirm CI workflow runs on the PR
 
 ## Phase 2 — CRD Type Definitions
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Depends on:** Phase 1
 **PR:** —
 

@@ -1,0 +1,9 @@
+apiVersion: ballast.tightlinesoftware.com/v1
+kind: BallastConfig
+metadata:
+  labels:
+    app.kubernetes.io/name: ballast
+    app.kubernetes.io/managed-by: kustomize
+  name: ballastconfig-sample
+spec:
+  # TODO(user): Add fields here

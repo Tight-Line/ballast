@@ -8,4 +8,41 @@ layout:
 - go.kubebuilder.io/v4
 projectName: ballast
 repo: github.com/tight-line/ballast
+resources:
+- api:
+    crdVersion: v1
+  domain: tightlinesoftware.com
+  group: ballast
+  kind: MetricsSource
+  path: github.com/tight-line/ballast/api/v1
+  version: v1
+- api:
+    crdVersion: v1
+  domain: tightlinesoftware.com
+  group: ballast
+  kind: ClusterResourcePolicy
+  path: github.com/tight-line/ballast/api/v1
+  version: v1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: tightlinesoftware.com
+  group: ballast
+  kind: ResourcePolicy
+  path: github.com/tight-line/ballast/api/v1
+  version: v1
+- api:
+    crdVersion: v1
+  domain: tightlinesoftware.com
+  group: ballast
+  kind: WorkloadProfile
+  path: github.com/tight-line/ballast/api/v1
+  version: v1
+- api:
+    crdVersion: v1
+  domain: tightlinesoftware.com
+  group: ballast
+  kind: BallastConfig
+  path: github.com/tight-line/ballast/api/v1
+  version: v1
 version: "3"
