@@ -81,9 +81,9 @@ test-coverage: manifests generate fmt vet setup-envtest ## Run tests and generat
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
 
-test-coverage-check: manifests generate fmt vet setup-envtest ## Enforce 100% coverage (gate for CI and releases).
+test-coverage-check: manifests generate fmt vet setup-envtest ## Enforce 100% coverage; also generates coverage.filtered.out for Codecov.
 	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
-		./scripts/check-coverage.sh
+		./scripts/check-coverage.sh --codecov
 
 ##@ Linting
 
