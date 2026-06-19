@@ -34,6 +34,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	ballastv1 "github.com/tight-line/ballast/api/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -45,6 +47,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
+	utilruntime.Must(ballastv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

@@ -1,0 +1,29 @@
+# This rule is not used by the project ballast itself.
+# It is provided to allow the cluster admin to help manage permissions for users.
+#
+# Grants read-only access to ballast.tightlinesoftware.com resources.
+# This role is intended for users who need visibility into these resources
+# without permissions to modify them. It is ideal for monitoring purposes and limited-access viewing.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: ballast
+    app.kubernetes.io/managed-by: kustomize
+  name: ballastconfig-viewer-role
+rules:
+- apiGroups:
+  - ballast.tightlinesoftware.com
+  resources:
+  - ballastconfigs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ballast.tightlinesoftware.com
+  resources:
+  - ballastconfigs/status
+  verbs:
+  - get

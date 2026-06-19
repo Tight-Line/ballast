@@ -18,3 +18,23 @@ resources:
 - metrics_auth_role.yaml
 - metrics_auth_role_binding.yaml
 - metrics_reader_role.yaml
+# For each CRD, "Admin", "Editor" and "Viewer" roles are scaffolded by
+# default, aiding admins in cluster management. Those roles are
+# not used by the ballast itself. You can comment the following lines
+# if you do not want those helpers be installed with your Project.
+- ballastconfig_admin_role.yaml
+- ballastconfig_editor_role.yaml
+- ballastconfig_viewer_role.yaml
+- workloadprofile_admin_role.yaml
+- workloadprofile_editor_role.yaml
+- workloadprofile_viewer_role.yaml
+- resourcepolicy_admin_role.yaml
+- resourcepolicy_editor_role.yaml
+- resourcepolicy_viewer_role.yaml
+- clusterresourcepolicy_admin_role.yaml
+- clusterresourcepolicy_editor_role.yaml
+- clusterresourcepolicy_viewer_role.yaml
+- metricssource_admin_role.yaml
+- metricssource_editor_role.yaml
+- metricssource_viewer_role.yaml
+

@@ -55,6 +55,9 @@ while IFS= read -r line; do
 
     [[ ! -f "$REL_PATH" ]] && continue
 
+    # Skip generated files (controller-gen output; coverage:ignore comments would be lost on regeneration)
+    [[ "$REL_PATH" == *zz_generated* ]] && continue
+
     # Check if line or previous line has coverage:ignore
     PREV_LINE=$((START_LINE - 1))
     CONTEXT=$(sed -n "${PREV_LINE},${START_LINE}p" "$REL_PATH" 2>/dev/null || true)
@@ -83,6 +86,11 @@ if [[ "$1" == "--codecov" ]]; then
             START_LINE=$(echo "$line" | cut -d: -f2 | cut -d. -f1)
             REL_PATH=$(echo "$PKG_FILE" | sed "s|^$MODULE_PATH/||")
             if [[ -f "$REL_PATH" ]]; then
+                # Skip generated files
+                if [[ "$REL_PATH" == *zz_generated* ]]; then
+                    echo "$line" | sed 's/ 0$/ 1/'
+                    continue
+                fi
                 PREV_LINE=$((START_LINE - 1))
                 CONTEXT=$(sed -n "${PREV_LINE},${START_LINE}p" "$REL_PATH" 2>/dev/null || true)
                 if echo "$CONTEXT" | grep -q "coverage:ignore"; then

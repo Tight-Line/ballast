@@ -1,0 +1,9 @@
+apiVersion: ballast.tightlinesoftware.com/v1
+kind: MetricsSource
+metadata:
+  labels:
+    app.kubernetes.io/name: ballast
+    app.kubernetes.io/managed-by: kustomize
+  name: metricssource-sample
+spec:
+  # TODO(user): Add fields here
