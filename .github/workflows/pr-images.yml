@@ -1,0 +1,110 @@
+name: PR Images
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          SHORT_SHA=$(echo "${{ github.event.pull_request.head.sha }}" | cut -c1-7)
+          echo "TAG=pr-${PR_NUMBER}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_OUTPUT
+
+      - name: Build and push ballast (amd64)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          build-args: |
+            VERSION=${{ steps.meta.outputs.TAG }}
+          tags: ${{ steps.meta.outputs.IMAGE_PREFIX }}/ballast:${{ steps.meta.outputs.TAG }}
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push ballast (multi-arch)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          build-args: |
+            VERSION=${{ steps.meta.outputs.TAG }}
+          tags: ${{ steps.meta.outputs.IMAGE_PREFIX }}/ballast:${{ steps.meta.outputs.TAG }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Comment on PR with image tag
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = '${{ steps.meta.outputs.TAG }}';
+            const prefix = '${{ steps.meta.outputs.IMAGE_PREFIX }}';
+            const body = `## Docker Image Built
+
+            \`\`\`bash
+            docker pull ${prefix}/ballast:${tag}
+            \`\`\`
+
+            ### Helm (values override)
+            \`\`\`yaml
+            image:
+              repository: ${prefix}/ballast
+              tag: "${tag}"
+            \`\`\`
+
+            Image expires ~15 days after PR closes.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('## Docker Image Built')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }

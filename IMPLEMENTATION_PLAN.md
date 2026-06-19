@@ -23,7 +23,7 @@
 
 ## Phase 1 — Repository Setup & kubebuilder Scaffold
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Depends on:** nothing
 **PR:** —
 
