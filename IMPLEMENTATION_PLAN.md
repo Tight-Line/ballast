@@ -115,9 +115,9 @@ _Inspect generated CRD YAML; confirm all fields from DESIGN.md are present with 
 
 ## Phase 3 — Logger Infrastructure & Kill Switch
 
-**Status:** `[ ]`
+**Status:** `[x]`
 **Depends on:** Phase 2
-**PR:** —
+**PR:** https://github.com/Tight-Line/ballast/pull/3
 
 ### What to build
 
