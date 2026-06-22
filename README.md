@@ -17,9 +17,9 @@ Progressive modes (`autoresize`, `automagic`) start in measure-only mode and aut
 
 | Phase | What | Status |
 |---|---|---|
-| 1 | Repository scaffold, kubebuilder init, CI/CD | In progress |
-| 2 | CRD type definitions | Not started |
-| 3 | Logger infrastructure and kill switch | Not started |
+| 1 | Repository scaffold, kubebuilder init, CI/CD | Complete |
+| 2 | CRD type definitions | Complete |
+| 3 | Logger infrastructure and kill switch | Complete |
 | 4 | Policy resolution | Not started |
 | 5 | Redis/Valkey client layer | Not started |
 | 6 | Plugin interface and `kubernetesMetrics` plugin | Not started |
