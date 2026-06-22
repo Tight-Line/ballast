@@ -135,13 +135,13 @@ _Inspect generated CRD YAML; confirm all fields from DESIGN.md are present with 
 - All controllers and the webhook call `IsActive()` before taking any external action; log at `warn` with `kill_switch: true` when suppressed
 - Unit tests cover: ConfigMap present, ConfigMap absent, BallastConfig.suspended true/false, both active simultaneously, controller-runtime envtest
 
-### Key files (fill in after complete)
+### Key files
 
-- `internal/logger/logger.go`
+- `internal/logger/logger.go` — `New(component, level, format)` returns a `logr.Logger` backed by zap; `newWithWriter` is the testable variant
 - `internal/logger/logger_test.go`
-- `internal/killswitch/killswitch.go`
-- `internal/killswitch/killswitch_test.go`
-- `cmd/ballastd/main.go` (flag registration, logger init, kill switch watcher setup)
+- `internal/killswitch/killswitch.go` — `KillSwitch` reconciler; `IsActive()`/`Reason()` are the hot-path call sites; `SetupWithManager` wires ConfigMap + BallastConfig watches
+- `internal/killswitch/killswitch_test.go` — fake-client unit tests covering all trigger combinations
+- `cmd/ballastd/main.go` — `--log-level`, `--log-level-{webhook,watcher,collector,adjuster}`, `--log-format`, `--operator-namespace` flags; kill switch registered with manager
 
 ### User testing instructions
 

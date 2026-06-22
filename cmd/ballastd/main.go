@@ -30,12 +30,13 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
+	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/logger"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -43,6 +44,13 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 )
+
+func getEnvOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -77,13 +85,22 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	opts := zap.Options{
-		Development: true,
-	}
-	opts.BindFlags(flag.CommandLine)
+
+	var logLevel, logLevelWebhook, logLevelWatcher, logLevelCollector, logLevelAdjuster, logFormat string
+	flag.StringVar(&logLevel, "log-level", "info", "Global log level (debug|info|warn|error).")
+	flag.StringVar(&logLevelWebhook, "log-level-webhook", "", "Log level for the webhook component (overrides --log-level).")
+	flag.StringVar(&logLevelWatcher, "log-level-watcher", "", "Log level for the workload watcher component.")
+	flag.StringVar(&logLevelCollector, "log-level-collector", "", "Log level for the metrics collector component.")
+	flag.StringVar(&logLevelAdjuster, "log-level-adjuster", "", "Log level for the resource adjuster component.")
+	flag.StringVar(&logFormat, "log-format", "json", "Log output format (json|text).")
+
+	var operatorNamespace string
+	flag.StringVar(&operatorNamespace, "operator-namespace", getEnvOrDefault("POD_NAMESPACE", "ballast-system"),
+		"Namespace where the operator is running (used for kill-switch ConfigMap watch).")
+
 	flag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	ctrl.SetLogger(logger.New("setup", logLevel, logFormat))
 
 	// Disable HTTP/2 by default to avoid stream cancellation and rapid reset CVEs.
 	disableHTTP2 := func(c *tls.Config) {
@@ -143,6 +160,12 @@ func main() {
 	}
 
 	// +kubebuilder:scaffold:builder
+
+	ks := killswitch.New(mgr.GetClient(), operatorNamespace)
+	if err := ks.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up kill switch")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")
