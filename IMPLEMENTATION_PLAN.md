@@ -151,31 +151,42 @@ _After PR opens: run `ballastd --log-level=debug --log-format=text`; confirm per
 
 ## Phase 4 — Policy Resolution
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Depends on:** Phase 2
-**PR:** —
+**PR:** https://github.com/Tight-Line/ballast/pull/5
 
 ### What to build
 
-- `internal/policy/resolver.go` — given a pod's namespace, kind, labels, and annotations, returns the single effective `ClusterResourcePolicy` or `ResourcePolicy` (or nil if none match)
-  - Fetches all policies from the controller-runtime cache (no live API calls)
-  - Selector matching:
-    - `kinds`: pod's owner kind must appear in the list (or list is empty)
-    - `namespaces.include`: pod namespace must match the regex (absent = all pass)
-    - `namespaces.exclude`: pod namespace must NOT match any entry
-    - `annotations`: each key in the map must exist on the pod with a value matching the regex
-    - `labelSelector`: standard `metav1.LabelSelector` evaluated against pod labels
-  - Precedence: any `ResourcePolicy` beats any `ClusterResourcePolicy`; within same class, highest `priority` wins; tiebreak alphabetical by name
-- `internal/policy/resolver_test.go` — comprehensive unit tests:
-  - Namespace include/exclude regex
-  - Annotation regex matching
-  - labelSelector matching
-  - ResourcePolicy beats ClusterResourcePolicy regardless of priority
-  - Priority ordering within same class
-  - Alphabetical tiebreak
-  - No-match returns nil
+**`internal/policy/resolver.go`** — resolves the single effective policy for a given pod against all `ClusterResourcePolicy` and `ResourcePolicy` objects in the controller-runtime cache (no live API calls).
 
-### Key files (fill in after complete)
+Input type `Input`: `Namespace string`, `OwnerKind string` (pre-resolved by caller — Deployment, StatefulSet, etc.), `Labels map[string]string`, `Annotations map[string]string`.
+
+Return type `*ResolvedPolicy`: `Spec ballastv1.ClusterResourcePolicySpec`, `Name string` (used to stamp `ballast.tightlinesoftware.com/policy-ref`), `Namespaced bool`. Returns nil if no policy matches.
+
+**Callers:** admission webhook (Phase 9) and WorkloadWatcher (Phase 7) only. MetricsCollector and ResourceAdjuster read the `ballast.tightlinesoftware.com/policy-ref` annotation already stamped on the pod at admission time.
+
+**Selector evaluation (all conditions must pass):**
+- `kinds`: pod's `OwnerKind` must appear in the list, or list is empty.
+- `namespaces.include`: pod namespace must match at least one pattern (empty list = all pass). Patterns wrapped in `/` are full-string anchored regexes (e.g. `/.*-prod/`); all others are exact matches.
+- `namespaces.exclude`: pod namespace must NOT match any pattern (same `/regex/` or exact syntax). Matching both include and exclude → excluded, WARN logged.
+- `annotations`: each selector key must exist on the pod with a value matching the pattern (same syntax).
+- `labelSelector`: standard `metav1.LabelSelector` evaluated against pod labels.
+
+**Precedence:** `ResourcePolicy` beats `ClusterResourcePolicy` regardless of priority. Within the same class, higher `priority` wins; equal priority breaks alphabetically by name.
+
+**`internal/policy/resolver_test.go`** — unit tests using a fake controller-runtime client:
+- Namespace include: exact, regex, absent (all pass), list with second entry matching
+- Namespace exclude: exact, regex
+- Namespace matching both include and exclude → excluded
+- Annotation exact match, regex match, key missing, value mismatch
+- LabelSelector match, no-match, and invalid expression (returns error)
+- `ResourcePolicy` beats `ClusterResourcePolicy` regardless of priority
+- Higher priority wins within same class
+- Alphabetical tiebreak (both cluster-scoped and namespace-scoped)
+- No policies → nil
+- Invalid regex in include, exclude, or annotation → error
+
+### Key files
 
 - `internal/policy/resolver.go`
 - `internal/policy/resolver_test.go`

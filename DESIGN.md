@@ -32,6 +32,7 @@ The following annotation is set by Ballast itself (not by the deployment tool):
 | Annotation | Set by | Meaning |
 |---|---|---|
 | `ballast.tightlinesoftware.com/profile-ref: <name>` | WorkloadWatcher | Records which `WorkloadProfile` this pod was assigned to at creation time; used for correct decrement on deletion |
+| `ballast.tightlinesoftware.com/policy-ref: <name>` | Admission webhook; WorkloadWatcher (on policy change) | Records the effective policy for this pod; re-resolved when policies are created, updated, or deleted; empty string means no policy matched |
 
 The deployment tool also sets the identity tuple labels (see WorkloadProfile below). These are distinct from the behavior annotations.
 
@@ -95,10 +96,15 @@ spec:
   selector:
     kinds: [Deployment, StatefulSet]   # DaemonSets excluded by omission
     namespaces:
-      include: ".*-prod"              # regex; absent = all namespaces
-      exclude: [kube-system, cert-manager, monitoring]
+      include:                         # list; absent = all namespaces
+        - "/.*-prod/"                  # wrap in / for full-string regex
+        - "staging"                    # or exact match
+      exclude:                         # overrides include; match on both → excluded (WARN)
+        - "kube-system"
+        - "cert-manager"
+        - "monitoring"
     annotations:
-      "my.org/business-unit": ".*"    # pod annotation; exact string or regex value
+      "my.org/business-unit": "/.+/"   # /regex/ or exact match; pod annotation must match
     labelSelector:                    # standard k8s LabelSelector
       matchLabels:
         tier: backend
