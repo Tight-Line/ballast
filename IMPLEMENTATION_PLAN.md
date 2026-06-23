@@ -151,7 +151,7 @@ _After PR opens: run `ballastd --log-level=debug --log-format=text`; confirm per
 
 ## Phase 4 — Policy Resolution
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Depends on:** Phase 2
 **PR:** https://github.com/Tight-Line/ballast/pull/5
 
