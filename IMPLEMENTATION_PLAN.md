@@ -199,9 +199,9 @@ _`make check` passing with full test coverage is the gate here; no runtime testi
 
 ## Phase 5 — Redis/Valkey Client Layer
 
-**Status:** `[ ]`
+**Status:** `[x]`
 **Depends on:** Phase 2
-**PR:** —
+**PR:** https://github.com/Tight-Line/ballast/pull/6
 
 ### What to build
 

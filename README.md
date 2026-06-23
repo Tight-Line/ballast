@@ -21,7 +21,7 @@ Progressive modes (`autoresize`, `automagic`) start in measure-only mode and aut
 | 2 | CRD type definitions | Complete |
 | 3 | Logger infrastructure and kill switch | Complete |
 | 4 | Policy resolution | Complete |
-| 5 | Redis/Valkey client layer | Not started |
+| 5 | Redis/Valkey client layer | Complete |
 | 6 | Plugin interface and `kubernetesMetrics` plugin | Not started |
 | 7 | WorkloadWatcher controller | Not started |
 | 8 | MetricsCollector controller | Not started |
