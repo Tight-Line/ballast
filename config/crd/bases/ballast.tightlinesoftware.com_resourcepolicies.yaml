@@ -297,15 +297,21 @@ spec:
                     description: Namespaces filters by namespace name patterns.
                     properties:
                       exclude:
-                        description: Exclude is a list of namespace names or regex
-                          patterns to exclude.
+                        description: |-
+                          Exclude is a list of patterns; the pod's namespace must NOT match any.
+                          Uses the same /regex/ or exact syntax as Include.
+                          A namespace matching both Include and Exclude is excluded (logged at WARN).
                         items:
                           type: string
                         type: array
                       include:
-                        description: Include is a regex pattern; the pod's namespace
-                          must match. Absent means all pass.
-                        type: string
+                        description: |-
+                          Include is a list of patterns; the pod's namespace must match at least one.
+                          Patterns wrapped in forward slashes are full-string regexes (e.g. /.*-prod/).
+                          All other patterns are exact string matches. Absent means all namespaces pass.
+                        items:
+                          type: string
+                        type: array
                     type: object
                 type: object
             type: object

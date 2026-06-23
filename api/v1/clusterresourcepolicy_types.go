@@ -68,11 +68,15 @@ type PolicySelector struct {
 
 // NamespaceSelector filters workloads by namespace name.
 type NamespaceSelector struct {
-	// Include is a regex pattern; the pod's namespace must match. Absent means all pass.
+	// Include is a list of patterns; the pod's namespace must match at least one.
+	// Patterns wrapped in forward slashes are full-string regexes (e.g. /.*-prod/).
+	// All other patterns are exact string matches. Absent means all namespaces pass.
 	// +optional
-	Include string `json:"include,omitempty"`
+	Include []string `json:"include,omitempty"`
 
-	// Exclude is a list of namespace names or regex patterns to exclude.
+	// Exclude is a list of patterns; the pod's namespace must NOT match any.
+	// Uses the same /regex/ or exact syntax as Include.
+	// A namespace matching both Include and Exclude is excluded (logged at WARN).
 	// +optional
 	Exclude []string `json:"exclude,omitempty"`
 }

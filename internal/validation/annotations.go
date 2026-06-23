@@ -14,6 +14,7 @@ const (
 	AnnotationAutoresize = "ballast.tightlinesoftware.com/autoresize"
 	AnnotationAutomagic  = "ballast.tightlinesoftware.com/automagic"
 	AnnotationProfileRef = "ballast.tightlinesoftware.com/profile-ref"
+	AnnotationPolicyRef  = "ballast.tightlinesoftware.com/policy-ref"
 )
 
 // ValidateAnnotations checks that the Ballast annotations on a pod form a valid combination.
