@@ -22,7 +22,7 @@ Progressive modes (`autoresize`, `automagic`) start in measure-only mode and aut
 | 3 | Logger infrastructure and kill switch | Complete |
 | 4 | Policy resolution | Complete |
 | 5 | Redis/Valkey client layer | Complete |
-| 6 | Plugin interface and `kubernetesMetrics` plugin | Not started |
+| 6 | Plugin interface and `kubernetesMetrics` plugin | Complete |
 | 7 | WorkloadWatcher controller | Not started |
 | 8 | MetricsCollector controller | Not started |
 | 9 | Admission webhook | Not started |
