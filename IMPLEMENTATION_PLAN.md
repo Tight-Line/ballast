@@ -241,7 +241,7 @@ _`make check` passing with full test coverage is the gate here._
 
 ## Phase 6 — Plugin Interface & `kubernetesMetrics` Plugin
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Depends on:** Phase 5
 **PR:** —
 
@@ -255,23 +255,25 @@ _`make check` passing with full test coverage is the gate here._
   }
   type WorkloadIdentity struct{ Labels map[string]string }
   type TimeWindow struct{ Start, End time.Time }
-  type ContainerStats struct{ ContainerName, Resource string; P50, P95, P99, Max, Mean, StdDev resource.Quantity; SampleCount int64; FirstSeen, LastSeen time.Time }
+  // ContainerStats is a single point-in-time raw measurement for one pod/container/resource.
+  // Statistical aggregation (P50/P95/P99 etc.) happens in the MetricsCollector after
+  // samples accumulate in Redis.
+  type ContainerStats struct{ ContainerName, Resource string; Value resource.Quantity; Timestamp time.Time }
   ```
 - `internal/plugin/registry.go` — `Register(plugin)`, `Get(typeName) (MetricsPlugin, bool)`; plugins register themselves via `init()`.
 - `internal/plugin/kubernetes/plugin.go` — `kubernetesMetrics` implementation:
-  - Uses the metrics API client (`k8s.io/metrics/pkg/client/clientset/versioned`) to call `PodMetricses` in the namespaces where the identity tuple's pods live
-  - Filters to regular containers only (skips initContainers; ephemeral containers are not in `PodMetrics`)
-  - Aggregates per-container usage across all pods matching the identity labels into a single `ContainerStats` per container name
-  - **Rate limiting:** a token-bucket rate limiter (configurable RPS ceiling via `MetricsSource.spec.config`) shared across all concurrent polls for this plugin instance; requests block until a token is available
-  - **Jitter:** each profile's poll goroutine starts with a random delay in `[0, pollInterval)` to spread initial burst
-  - **Backoff:** exponential backoff (base 1s, max configurable, default ceiling 5m) on API errors; skips the current cycle rather than queuing behind a slow API server
-  - `reservoirSize` is enforced by calling `store.EnforceReservoirCap` after each write
-- Tests: mock the metrics API client; test rate limiting, backoff, container filtering, and aggregation
+  - Uses `PodMetricsLister` (satisfied by `mc.MetricsV1beta1().PodMetricses("")`) to call the in-cluster metrics API
+  - Returns one `ContainerStats` per pod/container/resource; all resources present in the Usage map are included (cpu, memory, ephemeral-storage). The metrics API server omits initContainers and ephemeral containers automatically.
+  - **Rate limiting:** token-bucket rate limiter (configurable RPS ceiling) shared across all concurrent polls for this plugin instance; requests block until a token is available
+  - **Jitter:** caller's responsibility — MetricsCollector adds per-profile startup jitter before the first poll to spread the initial burst
+  - **Backoff:** exponential backoff (base 1s, max configurable, default ceiling 5m) on API errors; returns an error immediately if still in backoff so the caller skips the cycle
+- Tests: mock the metrics API client; test rate limiting, backoff, container filtering, and raw measurement collection
 
-### Key files (fill in after complete)
+### Key files
 
 - `internal/plugin/plugin.go`
 - `internal/plugin/registry.go`
+- `internal/plugin/registry_test.go`
 - `internal/plugin/kubernetes/plugin.go`
 - `internal/plugin/kubernetes/plugin_test.go`
 
