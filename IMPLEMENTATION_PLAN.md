@@ -241,9 +241,9 @@ _`make check` passing with full test coverage is the gate here._
 
 ## Phase 6 — Plugin Interface & `kubernetesMetrics` Plugin
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Depends on:** Phase 5
-**PR:** —
+**PR:** https://github.com/Tight-Line/ballast/pull/7
 
 ### What to build
 
