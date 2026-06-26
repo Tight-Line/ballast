@@ -62,6 +62,21 @@ func New(c client.Client, ks *killswitch.KillSwitch, storeClient store.Client) *
 	}
 }
 
+// Setup is the single entry point used by both main.go and integration tests.
+// It creates the Redis client, wires up the kill switch, and registers all
+// controllers with mgr — so both callers exercise the same code path.
+func Setup(mgr ctrl.Manager, namespace, redisURL string) error {
+	storeClient, err := store.NewClient(redisURL)
+	if err != nil { // coverage:ignore - requires a malformed Redis URL
+		return fmt.Errorf("creating Redis client: %w", err)
+	}
+	ks := killswitch.New(mgr.GetClient(), namespace)
+	if err := ks.SetupWithManager(mgr); err != nil { // coverage:ignore - requires a malformed manager
+		return err
+	}
+	return New(mgr.GetClient(), ks, storeClient).SetupWithManager(mgr)
+}
+
 // SetupWithManager registers both sub-reconcilers with the manager.
 func (c *Controller) SetupWithManager(mgr ctrl.Manager) error {
 	if err := c.Pod.SetupWithManager(mgr); err != nil { // coverage:ignore - requires a malformed manager
