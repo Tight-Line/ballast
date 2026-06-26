@@ -35,8 +35,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
+	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
 	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/logger"
+	"github.com/tight-line/ballast/internal/store"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -97,6 +99,10 @@ func main() {
 	var operatorNamespace string
 	flag.StringVar(&operatorNamespace, "operator-namespace", getEnvOrDefault("POD_NAMESPACE", "ballast-system"),
 		"Namespace where the operator is running (used for kill-switch ConfigMap watch).")
+
+	var redisURL string
+	flag.StringVar(&redisURL, "redis-url", getEnvOrDefault("REDIS_URL", "redis://localhost:6379"),
+		"Redis/Valkey URL for metric storage (redis://[user:pass@]host:port/db).")
 
 	flag.Parse()
 
@@ -164,6 +170,18 @@ func main() {
 	ks := killswitch.New(mgr.GetClient(), operatorNamespace)
 	if err := ks.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up kill switch")
+		os.Exit(1)
+	}
+
+	storeClient, err := store.NewClient(redisURL)
+	if err != nil {
+		setupLog.Error(err, "Failed to connect to Redis", "url", redisURL)
+		os.Exit(1)
+	}
+
+	ww := workloadwatcher.New(mgr.GetClient(), ks, storeClient)
+	if err := ww.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up workload watcher")
 		os.Exit(1)
 	}
 
