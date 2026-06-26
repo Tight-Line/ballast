@@ -40,6 +40,14 @@ type ResolvedPolicy struct {
 	Namespaced bool
 }
 
+// policyCandidate is an intermediate match collected during policy resolution.
+type policyCandidate struct {
+	spec       ballastv1.ClusterResourcePolicySpec
+	name       string
+	priority   int32
+	namespaced bool
+}
+
 // Resolver selects the single effective policy for a given pod.
 type Resolver struct {
 	client client.Client
@@ -58,51 +66,9 @@ func NewResolver(c client.Client, log logr.Logger) *Resolver {
 //   - Within the same class, higher Priority wins.
 //   - Equal priority ties break alphabetically by policy name.
 func (r *Resolver) Resolve(ctx context.Context, in Input) (*ResolvedPolicy, error) {
-	type candidate struct {
-		spec       ballastv1.ClusterResourcePolicySpec
-		name       string
-		priority   int32
-		namespaced bool
-	}
-
-	var matches []candidate
-
-	var rpList ballastv1.ResourcePolicyList
-	if err := r.client.List(ctx, &rpList, client.InNamespace(in.Namespace)); err != nil { // coverage:ignore - client List failure requires envtest
-		return nil, fmt.Errorf("listing ResourcePolicies in %s: %w", in.Namespace, err)
-	}
-	for _, rp := range rpList.Items {
-		ok, err := r.matchesSelector(in, rp.Spec.Selector)
-		if err != nil {
-			return nil, fmt.Errorf("evaluating ResourcePolicy %s/%s: %w", in.Namespace, rp.Name, err)
-		}
-		if ok {
-			matches = append(matches, candidate{
-				spec:       rp.Spec,
-				name:       rp.Name,
-				priority:   rp.Spec.Priority,
-				namespaced: true,
-			})
-		}
-	}
-
-	var crpList ballastv1.ClusterResourcePolicyList
-	if err := r.client.List(ctx, &crpList); err != nil { // coverage:ignore - client List failure requires envtest
-		return nil, fmt.Errorf("listing ClusterResourcePolicies: %w", err)
-	}
-	for _, crp := range crpList.Items {
-		ok, err := r.matchesSelector(in, crp.Spec.Selector)
-		if err != nil {
-			return nil, fmt.Errorf("evaluating ClusterResourcePolicy %s: %w", crp.Name, err)
-		}
-		if ok {
-			matches = append(matches, candidate{
-				spec:       crp.Spec,
-				name:       crp.Name,
-				priority:   crp.Spec.Priority,
-				namespaced: false,
-			})
-		}
+	matches, err := r.collectMatches(ctx, in)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(matches) == 0 {
@@ -135,6 +101,51 @@ func (r *Resolver) Resolve(ctx context.Context, in Input) (*ResolvedPolicy, erro
 	}, nil
 }
 
+// collectMatches lists all ResourcePolicies and ClusterResourcePolicies that match in.
+func (r *Resolver) collectMatches(ctx context.Context, in Input) ([]policyCandidate, error) {
+	var matches []policyCandidate
+
+	var rpList ballastv1.ResourcePolicyList
+	if err := r.client.List(ctx, &rpList, client.InNamespace(in.Namespace)); err != nil { // coverage:ignore - client List failure requires envtest
+		return nil, fmt.Errorf("listing ResourcePolicies in %s: %w", in.Namespace, err)
+	}
+	for _, rp := range rpList.Items {
+		ok, err := r.matchesSelector(in, rp.Spec.Selector)
+		if err != nil {
+			return nil, fmt.Errorf("evaluating ResourcePolicy %s/%s: %w", in.Namespace, rp.Name, err)
+		}
+		if ok {
+			matches = append(matches, policyCandidate{
+				spec:       rp.Spec,
+				name:       rp.Name,
+				priority:   rp.Spec.Priority,
+				namespaced: true,
+			})
+		}
+	}
+
+	var crpList ballastv1.ClusterResourcePolicyList
+	if err := r.client.List(ctx, &crpList); err != nil { // coverage:ignore - client List failure requires envtest
+		return nil, fmt.Errorf("listing ClusterResourcePolicies: %w", err)
+	}
+	for _, crp := range crpList.Items {
+		ok, err := r.matchesSelector(in, crp.Spec.Selector)
+		if err != nil {
+			return nil, fmt.Errorf("evaluating ClusterResourcePolicy %s: %w", crp.Name, err)
+		}
+		if ok {
+			matches = append(matches, policyCandidate{
+				spec:       crp.Spec,
+				name:       crp.Name,
+				priority:   crp.Spec.Priority,
+				namespaced: false,
+			})
+		}
+	}
+
+	return matches, nil
+}
+
 func (r *Resolver) matchesSelector(in Input, sel ballastv1.PolicySelector) (bool, error) {
 	if len(sel.Kinds) > 0 && !slices.Contains(sel.Kinds, in.OwnerKind) {
 		return false, nil
@@ -148,18 +159,12 @@ func (r *Resolver) matchesSelector(in Input, sel ballastv1.PolicySelector) (bool
 		return false, nil
 	}
 
-	for key, pattern := range sel.Annotations {
-		val, ok := in.Annotations[key]
-		if !ok {
-			return false, nil
-		}
-		matched, err := matchesPattern(val, pattern)
-		if err != nil {
-			return false, fmt.Errorf("annotation key %q pattern %q: %w", key, pattern, err)
-		}
-		if !matched {
-			return false, nil
-		}
+	annOk, err := matchesAnnotations(in.Annotations, sel.Annotations)
+	if err != nil {
+		return false, err
+	}
+	if !annOk {
+		return false, nil
 	}
 
 	if sel.LabelSelector != nil {
@@ -208,6 +213,24 @@ func (r *Resolver) matchesNamespaceSelector(namespace string, sel ballastv1.Name
 	}
 
 	return included && !excluded, nil
+}
+
+// matchesAnnotations returns true when podAnnotations satisfies every pattern in selectorAnnotations.
+func matchesAnnotations(podAnnotations, selectorAnnotations map[string]string) (bool, error) {
+	for key, pattern := range selectorAnnotations {
+		val, ok := podAnnotations[key]
+		if !ok {
+			return false, nil
+		}
+		matched, err := matchesPattern(val, pattern)
+		if err != nil {
+			return false, fmt.Errorf("annotation key %q pattern %q: %w", key, pattern, err)
+		}
+		if !matched {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // matchesPattern returns true if s matches the pattern.

@@ -1,13 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "===================================="
+SEPARATOR="------------------------------------"
+SECTION="===================================="
+
+echo "${SECTION}"
 echo "Kubebuilder DevContainer Setup"
-echo "===================================="
+echo "${SECTION}"
 
 # Verify running as root (required for installing to /usr/local/bin and /etc)
-if [ "$(id -u)" -ne 0 ]; then
-  echo "ERROR: This script must be run as root"
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "ERROR: This script must be run as root" >&2
   exit 1
 fi
 
@@ -30,9 +33,9 @@ esac
 echo "Architecture: ${ARCH}"
 
 echo ""
-echo "------------------------------------"
+echo "${SEPARATOR}"
 echo "Setting up bash completion..."
-echo "------------------------------------"
+echo "${SEPARATOR}"
 
 BASH_COMPLETIONS_DIR="/usr/share/bash-completion/completions"
 
@@ -43,14 +46,14 @@ if ! grep -q "source /usr/share/bash-completion/bash_completion" ~/.bashrc 2>/de
 fi
 
 echo ""
-echo "------------------------------------"
+echo "${SEPARATOR}"
 echo "Installing development tools..."
-echo "------------------------------------"
+echo "${SEPARATOR}"
 
 # Install kind
 if ! command -v kind &> /dev/null; then
   echo "Installing kind..."
-  curl -Lo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/latest/kind-linux-${ARCH}"
+  curl --proto '=https' --tlsv1.2 -Lo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/latest/kind-linux-${ARCH}"
   chmod +x /usr/local/bin/kind
   echo "kind installed successfully"
 fi
@@ -67,7 +70,7 @@ fi
 # Install kubebuilder
 if ! command -v kubebuilder &> /dev/null; then
   echo "Installing kubebuilder..."
-  curl -Lo /usr/local/bin/kubebuilder "https://go.kubebuilder.io/dl/latest/linux/${ARCH}"
+  curl --proto '=https' --tlsv1.2 -Lo /usr/local/bin/kubebuilder "https://go.kubebuilder.io/dl/latest/linux/${ARCH}"
   chmod +x /usr/local/bin/kubebuilder
   echo "kubebuilder installed successfully"
 fi
@@ -84,8 +87,8 @@ fi
 # Install kubectl
 if ! command -v kubectl &> /dev/null; then
   echo "Installing kubectl..."
-  KUBECTL_VERSION=$(curl -Ls https://dl.k8s.io/release/stable.txt)
-  curl -Lo /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl"
+  KUBECTL_VERSION=$(curl --proto '=https' --tlsv1.2 -Ls https://dl.k8s.io/release/stable.txt)
+  curl --proto '=https' --tlsv1.2 -Lo /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl"
   chmod +x /usr/local/bin/kubectl
   echo "kubectl installed successfully"
 fi
@@ -109,9 +112,9 @@ if command -v docker &> /dev/null; then
 fi
 
 echo ""
-echo "------------------------------------"
+echo "${SEPARATOR}"
 echo "Configuring Docker environment..."
-echo "------------------------------------"
+echo "${SEPARATOR}"
 
 # Wait for Docker to be ready
 echo "Waiting for Docker to be ready..."
@@ -120,7 +123,7 @@ for i in {1..30}; do
     echo "Docker is ready"
     break
   fi
-  if [ "$i" -eq 30 ]; then
+  if [[ "$i" -eq 30 ]]; then
     echo "WARNING: Docker not ready after 30s"
   fi
   sleep 1
@@ -136,9 +139,9 @@ if ! docker network inspect kind >/dev/null 2>&1; then
 fi
 
 echo ""
-echo "------------------------------------"
+echo "${SEPARATOR}"
 echo "Verifying installations..."
-echo "------------------------------------"
+echo "${SEPARATOR}"
 kind version
 kubebuilder version
 kubectl version --client
@@ -146,8 +149,8 @@ docker --version
 go version
 
 echo ""
-echo "===================================="
+echo "${SECTION}"
 echo "DevContainer ready!"
-echo "===================================="
+echo "${SECTION}"
 echo "All development tools installed successfully."
 echo "You can now start building Kubernetes operators."
