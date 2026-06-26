@@ -285,9 +285,9 @@ _`make check` passing is the gate. If a test cluster with metrics-server is avai
 
 ## Phase 7 — WorkloadWatcher Controller
 
-**Status:** `[ ]`
+**Status:** `[x]`
 **Depends on:** Phases 3, 4, 5
-**PR:** —
+**PR:** https://github.com/Tight-Line/ballast/pull/7
 
 ### What to build
 
