@@ -36,9 +36,7 @@ import (
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
-	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/logger"
-	"github.com/tight-line/ballast/internal/store"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -167,21 +165,8 @@ func main() {
 
 	// +kubebuilder:scaffold:builder
 
-	ks := killswitch.New(mgr.GetClient(), operatorNamespace)
-	if err := ks.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to set up kill switch")
-		os.Exit(1)
-	}
-
-	storeClient, err := store.NewClient(redisURL)
-	if err != nil {
-		setupLog.Error(err, "Failed to connect to Redis", "url", redisURL)
-		os.Exit(1)
-	}
-
-	ww := workloadwatcher.New(mgr.GetClient(), ks, storeClient)
-	if err := ww.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to set up workload watcher")
+	if err := workloadwatcher.Setup(mgr, operatorNamespace, redisURL); err != nil {
+		setupLog.Error(err, "Failed to set up controllers")
 		os.Exit(1)
 	}
 

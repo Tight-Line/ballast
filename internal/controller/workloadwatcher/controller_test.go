@@ -874,15 +874,9 @@ func TestController_SetupWithManager(t *testing.T) {
 		t.Fatalf("new manager: %v", err)
 	}
 
-	ks := killswitch.New(mgr.GetClient(), "default")
-	if err := ks.SetupWithManager(mgr); err != nil {
-		t.Fatalf("killswitch SetupWithManager: %v", err)
-	}
-
-	_, rc := newMiniredisClient(t)
-	ww := workloadwatcher.New(mgr.GetClient(), ks, rc)
-	if err := ww.SetupWithManager(mgr); err != nil {
-		t.Fatalf("workloadwatcher SetupWithManager: %v", err)
+	mr := miniredis.RunT(t)
+	if err := workloadwatcher.Setup(mgr, "default", "redis://"+mr.Addr()); err != nil {
+		t.Fatalf("workloadwatcher Setup: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
