@@ -51,6 +51,31 @@ func namespacedPolicy(namespace, name string, priority int32, sel ballastv1.Poli
 	}
 }
 
+func assertPolicy(t *testing.T, got *policy.ResolvedPolicy, err error, wantPolicy string, wantErr bool) {
+	t.Helper()
+	if wantErr {
+		if err == nil {
+			t.Error("expected error, got nil")
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wantPolicy == "" {
+		if got != nil {
+			t.Errorf("expected nil, got policy %q", got.Name)
+		}
+		return
+	}
+	if got == nil {
+		t.Fatalf("expected policy %q, got nil", wantPolicy)
+	}
+	if got.Name != wantPolicy {
+		t.Errorf("got policy %q, want %q", got.Name, wantPolicy)
+	}
+}
+
 func TestResolve(t *testing.T) {
 	const ns = "team-prod"
 
@@ -371,29 +396,7 @@ func TestResolve(t *testing.T) {
 			c := newClient(t, tc.objs...)
 			r := policy.NewResolver(c, logr.Discard())
 			got, err := r.Resolve(context.Background(), tc.input)
-
-			if tc.wantErr {
-				if err == nil {
-					t.Error("expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if tc.wantPolicy == "" {
-				if got != nil {
-					t.Errorf("expected nil, got policy %q", got.Name)
-				}
-				return
-			}
-			if got == nil {
-				t.Fatalf("expected policy %q, got nil", tc.wantPolicy)
-			}
-			if got.Name != tc.wantPolicy {
-				t.Errorf("got policy %q, want %q", got.Name, tc.wantPolicy)
-			}
+			assertPolicy(t, got, err, tc.wantPolicy, tc.wantErr)
 		})
 	}
 }

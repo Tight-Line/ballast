@@ -46,22 +46,7 @@ func ValidateAnnotations(annotations map[string]string) error {
 		errs = append(errs, "autoresize and automagic are mutually exclusive")
 	}
 
-	// autoresize/automagic are mutually exclusive with explicit apply/resize/evict
-	if autoresize || automagic {
-		mode := "autoresize"
-		if automagic {
-			mode = "automagic"
-		}
-		if apply {
-			errs = append(errs, fmt.Sprintf("%s is mutually exclusive with apply", mode))
-		}
-		if resize {
-			errs = append(errs, fmt.Sprintf("%s is mutually exclusive with resize", mode))
-		}
-		if evict {
-			errs = append(errs, fmt.Sprintf("%s is mutually exclusive with evict", mode))
-		}
-	}
+	errs = append(errs, autoModeConflicts(autoresize, automagic, apply, resize, evict)...)
 
 	// apply requires measure
 	if apply && !measure {
@@ -82,4 +67,27 @@ func ValidateAnnotations(annotations map[string]string) error {
 		return errors.New("invalid Ballast annotation combination: " + strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// autoModeConflicts returns errors for conflicts between an auto mode (autoresize or automagic)
+// and explicit action annotations.
+func autoModeConflicts(autoresize, automagic, apply, resize, evict bool) []string {
+	if !autoresize && !automagic {
+		return nil
+	}
+	mode := "autoresize"
+	if automagic {
+		mode = "automagic"
+	}
+	var errs []string
+	if apply {
+		errs = append(errs, fmt.Sprintf("%s is mutually exclusive with apply", mode))
+	}
+	if resize {
+		errs = append(errs, fmt.Sprintf("%s is mutually exclusive with resize", mode))
+	}
+	if evict {
+		errs = append(errs, fmt.Sprintf("%s is mutually exclusive with evict", mode))
+	}
+	return errs
 }
