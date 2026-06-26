@@ -287,7 +287,7 @@ _`make check` passing is the gate. If a test cluster with metrics-server is avai
 
 **Status:** `[x]`
 **Depends on:** Phases 3, 4, 5
-**PR:** https://github.com/Tight-Line/ballast/pull/7
+**PR:** https://github.com/Tight-Line/ballast/pull/9
 
 ### What to build
 
