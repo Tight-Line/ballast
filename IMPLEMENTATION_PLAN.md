@@ -324,9 +324,9 @@ _Deploy to a test cluster with a pod carrying the `measure` annotation. Confirm 
 
 ## Phase 8 — MetricsCollector Controller
 
-**Status:** `[ ]`
+**Status:** `[x]`
 **Depends on:** Phases 3, 4, 5, 6, 7
-**PR:** —
+**PR:** TBD
 
 ### What to build
 
