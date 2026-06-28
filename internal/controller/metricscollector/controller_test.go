@@ -2,6 +2,7 @@ package metricscollector_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -510,6 +511,242 @@ func TestReconcile_ExistingContainersPreserved(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected 'app' container to be preserved from previous cycle")
+	}
+}
+
+func TestReconcile_PluginNotFound(t *testing.T) {
+	// MetricsSource type has no registered plugin — collectAllSamples skips it.
+	src := &ballastv1.MetricsSource{
+		ObjectMeta: metav1.ObjectMeta{Name: "k8s-metrics"},
+		Spec: ballastv1.MetricsSourceSpec{
+			Type:   "unknownType",
+			Config: ballastv1.MetricsSourceConfig{PollInterval: "60s"},
+		},
+	}
+	profile := defaultProfile(map[string]string{"app": "web"})
+	fc := newFakeClient(defaultBallastConfig(), defaultPolicy(), src, profile)
+	if err := fc.Status().Update(context.Background(), profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+	_, sc := newMiniredisClient(t)
+	p := &mockPlugin{typeName: "kubernetesMetrics"} // type mismatch with source
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+
+	result, err := reconcileProfile(t, r, "app--web")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected requeue even when plugin not found")
+	}
+}
+
+func TestReconcile_FetchStatsError(t *testing.T) {
+	// Plugin returns an error from FetchStats — collectFromSource logs and continues.
+	profile := defaultProfile(map[string]string{"app": "web"})
+	fc := newFakeClient(defaultBallastConfig(), defaultPolicy(), defaultMetricsSource(), profile)
+	if err := fc.Status().Update(context.Background(), profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+	_, sc := newMiniredisClient(t)
+	p := &mockPlugin{typeName: "kubernetesMetrics", err: errors.New("metrics unavailable")}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+
+	result, err := reconcileProfile(t, r, "app--web")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected requeue even when FetchStats fails")
+	}
+}
+
+func TestReconcile_BadAggregation(t *testing.T) {
+	// Policy uses an unknown aggregation — ComputeRecommendation fails, field left empty.
+	ctx := context.Background()
+	badPolicy := &ballastv1.ClusterResourcePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform-defaults"},
+		Spec: ballastv1.ClusterResourcePolicySpec{
+			Metrics: []ballastv1.MetricConfig{
+				{Resource: "cpu", Field: "request", Source: "k8s-metrics", Aggregation: "badagg", Headroom: "1.0"},
+			},
+			Readiness: ballastv1.ReadinessConfig{MinDataPoints: 2, MinTimeSpan: "1ms", MaxCV: "99.0"},
+		},
+	}
+	tupleLabels := map[string]string{"app": "web"}
+	profile := defaultProfile(tupleLabels)
+	fc := newFakeClient(defaultBallastConfig(), badPolicy, defaultMetricsSource(), profile)
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+	_, sc := newMiniredisClient(t)
+	now := time.Now()
+	p := &mockPlugin{typeName: "kubernetesMetrics", samples: []plugin.ContainerStats{
+		cpuSample("app", 200, now.Add(-10*time.Millisecond)),
+		cpuSample("app", 300, now),
+	}}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+
+	_, err := reconcileProfile(t, r, "app--web")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: "app--web"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.Status.Containers) > 0 {
+		if recs := got.Status.Containers[0].Recommendations; recs != nil {
+			if cpuRec, ok := recs["cpu"]; ok && cpuRec.Request != "" {
+				t.Error("expected empty recommendation when aggregation is invalid")
+			}
+		}
+	}
+}
+
+func TestReconcile_InvalidRetentionWindow(t *testing.T) {
+	// BallastConfig with an unparseable RetentionWindow falls back to 168h default.
+	cfg := &ballastv1.BallastConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: killswitch.BallastConfigName},
+		Spec:       ballastv1.BallastConfigSpec{RetentionWindow: "not-a-duration"},
+	}
+	profile := defaultProfile(map[string]string{"app": "web"})
+	fc := newFakeClient(cfg, defaultPolicy(), defaultMetricsSource(), profile)
+	if err := fc.Status().Update(context.Background(), profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+	_, sc := newMiniredisClient(t)
+	p := &mockPlugin{typeName: "kubernetesMetrics", samples: []plugin.ContainerStats{
+		cpuSample("app", 200, time.Now()),
+	}}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+
+	result, err := reconcileProfile(t, r, "app--web")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected requeue with invalid retention window")
+	}
+}
+
+func TestReconcile_ShortPollInterval(t *testing.T) {
+	// MetricsSource PollInterval shorter than defaultPollInterval — minPollInterval returns it.
+	src := &ballastv1.MetricsSource{
+		ObjectMeta: metav1.ObjectMeta{Name: "k8s-metrics"},
+		Spec: ballastv1.MetricsSourceSpec{
+			Type:   "kubernetesMetrics",
+			Config: ballastv1.MetricsSourceConfig{PollInterval: "30s", ReservoirSize: 10000},
+		},
+	}
+	profile := defaultProfile(map[string]string{"app": "web"})
+	fc := newFakeClient(defaultBallastConfig(), defaultPolicy(), src, profile)
+	if err := fc.Status().Update(context.Background(), profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+	_, sc := newMiniredisClient(t)
+	p := &mockPlugin{typeName: "kubernetesMetrics", samples: []plugin.ContainerStats{
+		cpuSample("app", 200, time.Now()),
+	}}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+
+	result, err := reconcileProfile(t, r, "app--web")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter != 30*time.Second {
+		t.Errorf("expected 30s requeue interval, got %v", result.RequeueAfter)
+	}
+}
+
+func TestReconcile_MemoryMetric(t *testing.T) {
+	// Non-CPU metric exercises quantityToStoreValue and formatResourceValue memory paths.
+	ctx := context.Background()
+	memPolicy := &ballastv1.ClusterResourcePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform-defaults"},
+		Spec: ballastv1.ClusterResourcePolicySpec{
+			Metrics: []ballastv1.MetricConfig{
+				{Resource: "memory", Field: "request", Source: "k8s-metrics", Aggregation: "p95", Headroom: "1.1"},
+			},
+			Readiness: ballastv1.ReadinessConfig{MinDataPoints: 2, MinTimeSpan: "1ms", MaxCV: "99.0"},
+		},
+	}
+	tupleLabels := map[string]string{"app": "web"}
+	profile := defaultProfile(tupleLabels)
+	fc := newFakeClient(defaultBallastConfig(), memPolicy, defaultMetricsSource(), profile)
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+	_, sc := newMiniredisClient(t)
+	now := time.Now()
+	p := &mockPlugin{
+		typeName: "kubernetesMetrics",
+		samples: []plugin.ContainerStats{
+			{ContainerName: "app", Resource: "memory", Value: *resource.NewQuantity(128*1024*1024, resource.BinarySI), Timestamp: now.Add(-10 * time.Millisecond)},
+			{ContainerName: "app", Resource: "memory", Value: *resource.NewQuantity(256*1024*1024, resource.BinarySI), Timestamp: now},
+		},
+	}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+
+	_, err := reconcileProfile(t, r, "app--web")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: "app--web"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Status.MeetsThreshold {
+		t.Error("expected meetsThreshold=true")
+	}
+	if len(got.Status.Containers) == 0 {
+		t.Fatal("expected containers in status")
+	}
+	memRec, ok := got.Status.Containers[0].Recommendations["memory"]
+	if !ok {
+		t.Fatal("expected memory recommendation")
+	}
+	if memRec.Request == "" {
+		t.Error("expected memory request to be populated")
+	}
+}
+
+func TestReconcile_DuplicateContainerMerge(t *testing.T) {
+	// Existing profile has app/cpu AND new FetchStats also returns app/cpu.
+	// mergeContainerSets calls appendUnique twice for the same pair; second call returns early.
+	ctx := context.Background()
+	tupleLabels := map[string]string{"app": "web"}
+	profile := defaultProfile(tupleLabels)
+	fc := newFakeClient(defaultBallastConfig(), defaultPolicy(), defaultMetricsSource(), profile)
+	profile.Status.Containers = []ballastv1.ContainerProfile{{
+		Name:       "app",
+		UsageStats: []ballastv1.ContainerUsageStats{{Resource: "cpu", Source: "k8s-metrics", Samples: 5}},
+	}}
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+	_, sc := newMiniredisClient(t)
+	p := &mockPlugin{typeName: "kubernetesMetrics", samples: []plugin.ContainerStats{
+		cpuSample("app", 200, time.Now()),
+	}}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+
+	_, err := reconcileProfile(t, r, "app--web")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: "app--web"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	found := false
+	for _, cp := range got.Status.Containers {
+		if cp.Name == "app" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected app container in status after duplicate merge")
 	}
 }
 

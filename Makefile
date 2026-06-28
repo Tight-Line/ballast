@@ -1,4 +1,4 @@
-.PHONY: build test test-coverage test-coverage-check lint lint-fix lint-config fmt vet tidy tools \
+.PHONY: build clean test test-coverage test-coverage-check lint lint-fix lint-config fmt vet tidy tools \
         setup-hooks docker check \
         manifests generate install uninstall deploy undeploy \
         setup-envtest setup-test-e2e test-e2e cleanup-test-e2e \
@@ -62,6 +62,10 @@ setup-hooks: ## Install git pre-commit hook.
 
 build: manifests generate fmt vet ## Build the ballastd binary.
 	go build -o bin/ballastd ./cmd/ballastd
+
+clean: ## Remove build artifacts and coverage files; clear the Go test cache.
+	go clean -testcache
+	rm -f bin/ballastd coverage.out coverage.filtered.out coverage.html
 
 run: manifests generate fmt vet ## Run ballastd from your host (uses current kubeconfig).
 	go run ./cmd/ballastd
