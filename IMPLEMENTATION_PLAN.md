@@ -404,9 +404,9 @@ _Deploy to test cluster with cert-manager. Create a pod with `ballast.tightlines
 
 ## Phase 10 — ResourceAdjuster Controller
 
-**Status:** `[ ]`
+**Status:** `[~]`
 **Depends on:** Phases 3, 4, 7, 8, 9
-**PR:** —
+**PR:** https://github.com/Tight-Line/ballast/pull/13
 
 ### What to build
 
