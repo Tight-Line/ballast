@@ -135,14 +135,14 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 		return ctrl.Result{}, err // coverage:ignore - transient API error
 	}
 
-	tupleLabels, err := extractTupleLabels(pod.Labels, cfg.Spec.IdentityLabels)
+	tupleLabels, err := ExtractTupleLabels(pod.Labels, cfg.Spec.IdentityLabels)
 	if err != nil {
 		log.Info("pod missing required identity labels, skipping",
 			"pod", pod.Name, "namespace", pod.Namespace, "error", err.Error())
 		return ctrl.Result{}, nil
 	}
 
-	profName := profileName(tupleLabels)
+	profName := ProfileName(tupleLabels)
 
 	if err := r.ensureProfile(ctx, profName, tupleLabels); err != nil { // coverage:ignore - transient API error
 		return ctrl.Result{}, err
@@ -333,9 +333,9 @@ func (r *ProfileReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// extractTupleLabels returns a map of identityLabel key -> pod label value.
+// ExtractTupleLabels returns a map of identityLabel key -> pod label value.
 // Returns an error listing any keys absent from podLabels.
-func extractTupleLabels(podLabels map[string]string, identityLabels []string) (map[string]string, error) {
+func ExtractTupleLabels(podLabels map[string]string, identityLabels []string) (map[string]string, error) {
 	out := make(map[string]string, len(identityLabels))
 	var missing []string
 	for _, k := range identityLabels {
@@ -352,10 +352,10 @@ func extractTupleLabels(podLabels map[string]string, identityLabels []string) (m
 	return out, nil
 }
 
-// profileName derives a deterministic Kubernetes-safe name from a label tuple.
+// ProfileName derives a deterministic Kubernetes-safe name from a label tuple.
 // Keys are sorted alphabetically and joined with values as "key--value" pairs
 // separated by "--". Each segment is sanitized to lowercase alphanumeric-and-dash.
-func profileName(tupleLabels map[string]string) string {
+func ProfileName(tupleLabels map[string]string) string {
 	keys := make([]string, 0, len(tupleLabels))
 	for k := range tupleLabels {
 		keys = append(keys, k)

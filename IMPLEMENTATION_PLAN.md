@@ -363,9 +363,9 @@ _Deploy to test cluster. After one `pollInterval`, confirm `WorkloadProfile` sta
 
 ## Phase 9 — Admission Webhook
 
-**Status:** `[ ]`
+**Status:** `[x]`
 **Depends on:** Phases 3, 4, 7, 8
-**PR:** —
+**PR:** https://github.com/Tight-Line/ballast/pull/13
 
 ### What to build
 
@@ -389,11 +389,12 @@ _Deploy to test cluster. After one `pollInterval`, confirm `WorkloadProfile` sta
   - `meetsThreshold: false` → no patch even with `apply` annotation
   - autoresize/automagic: before threshold (measure-only), after threshold (full behavior)
 
-### Key files (fill in after complete)
+### Key files
 
-- `internal/webhook/pod_mutator.go`
-- `internal/webhook/pod_mutator_test.go`
-- `cmd/ballastd/main.go` (webhook registration)
+- `internal/webhook/pod_mutator.go` — `PodMutator` admission handler; `Handle`, `resolveApplyProfile`, `mutate`, `stampPolicyRef`, `lookupProfile`, `applyRecommendations`
+- `internal/webhook/pod_mutator_test.go` — 19 unit tests + envtest `SetupWithManager` test
+- `cmd/ballastd/main.go` — `--dry-run-apply` flag; `NewPodMutator(...).SetupWithManager(mgr)` registration
+- `internal/controller/workloadwatcher/controller.go` — exported `ProfileName` and `ExtractTupleLabels` for webhook use
 
 ### User testing instructions
 

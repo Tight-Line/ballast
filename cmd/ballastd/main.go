@@ -30,6 +30,7 @@ import (
 	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/logger"
 	"github.com/tight-line/ballast/internal/store"
+	ballastwebhook "github.com/tight-line/ballast/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -82,6 +83,10 @@ func main() {
 	var dryRunMeasure bool
 	flag.BoolVar(&dryRunMeasure, "dry-run-measure", false,
 		"If set, metrics are computed but not written to Redis and WorkloadProfile status is not updated.")
+
+	var dryRunApply bool
+	flag.BoolVar(&dryRunApply, "dry-run-apply", false,
+		"If set, resource recommendations are computed at admission time but the pod spec is not patched.")
 
 	var logLevel, logLevelWebhook, logLevelWatcher, logLevelCollector, logLevelAdjuster, logFormat string
 	flag.StringVar(&logLevel, "log-level", "info", "Global log level (debug|info|warn|error).")
@@ -183,6 +188,8 @@ func main() {
 		setupLog.Error(err, "Failed to set up metricscollector controller")
 		os.Exit(1)
 	}
+
+	ballastwebhook.NewPodMutator(mgr.GetClient(), ks, dryRunApply).SetupWithManager(mgr)
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")

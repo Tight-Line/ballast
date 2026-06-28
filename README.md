@@ -29,7 +29,7 @@ Progressive modes (`autoresize`, `automagic`) start in measure-only mode and aut
 | 6 | Plugin interface and `kubernetesMetrics` plugin | Complete |
 | 7 | WorkloadWatcher controller | Complete |
 | 8 | MetricsCollector controller | Complete |
-| 9 | Admission webhook | Not started |
+| 9 | Admission webhook | Complete |
 | 10 | ResourceAdjuster controller | Not started |
 | 11 | Helm chart | Not started |
 | 12 | Polish and release readiness | Not started |

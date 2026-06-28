@@ -8,3 +8,9 @@ Before opening or finalizing a PR, keep these two files consistent with each oth
 - `README.md` — update the Implementation Status table to match
 
 Rule: if all features of a phase are done and a PR is open, mark the phase complete (`[x]` / "Complete"). PRs are only opened once the feature set is finished.
+
+## Coverage gate: required before every commit
+
+A commit is not complete until `make test-coverage-check` passes (which runs `make check` internally).
+
+When a line is uncovered: write a test for it first. Use `// coverage:ignore - <reason>` only when testing is genuinely impossible (e.g. `json.Marshal` on a well-typed struct, transient API errors that require a broken client). Do not use `// coverage:ignore` as a first resort — it defeats the purpose of the coverage gate.
