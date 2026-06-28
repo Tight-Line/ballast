@@ -25,8 +25,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
+	"github.com/tight-line/ballast/internal/controller/metricscollector"
 	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
+	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/logger"
+	"github.com/tight-line/ballast/internal/store"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -75,6 +78,10 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+
+	var dryRunMeasure bool
+	flag.BoolVar(&dryRunMeasure, "dry-run-measure", false,
+		"If set, metrics are computed but not written to Redis and WorkloadProfile status is not updated.")
 
 	var logLevel, logLevelWebhook, logLevelWatcher, logLevelCollector, logLevelAdjuster, logFormat string
 	flag.StringVar(&logLevel, "log-level", "info", "Global log level (debug|info|warn|error).")
@@ -155,8 +162,25 @@ func main() {
 
 	// +kubebuilder:scaffold:builder
 
-	if err := workloadwatcher.Setup(mgr, operatorNamespace, redisURL); err != nil {
-		setupLog.Error(err, "Failed to set up controllers")
+	storeClient, err := store.NewClient(redisURL)
+	if err != nil {
+		setupLog.Error(err, "Failed to create Redis client")
+		os.Exit(1)
+	}
+
+	ks := killswitch.New(mgr.GetClient(), operatorNamespace)
+	if err := ks.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up kill switch")
+		os.Exit(1)
+	}
+
+	if err := workloadwatcher.New(mgr.GetClient(), ks, storeClient).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up workloadwatcher controller")
+		os.Exit(1)
+	}
+
+	if err := metricscollector.Setup(mgr, ks, storeClient, dryRunMeasure); err != nil {
+		setupLog.Error(err, "Failed to set up metricscollector controller")
 		os.Exit(1)
 	}
 
