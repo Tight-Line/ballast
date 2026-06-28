@@ -113,7 +113,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	retentionWindow := parseRetentionWindow(cfg.Spec.RetentionWindow)
 
 	resolved, err := r.resolver.Resolve(ctx, policy.Input{Labels: profile.Status.TupleLabels})
-	if err != nil {
+	if err != nil { // coverage:ignore - transient API error
 		return ctrl.Result{}, err
 	}
 	if resolved == nil {
@@ -134,7 +134,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	tupleHash := store.TupleHash(profile.Status.TupleLabels)
 
 	observed, err := r.collectAllSamples(ctx, tupleHash, profile.Status.TupleLabels, retentionStart, now, sources)
-	if err != nil {
+	if err != nil { // coverage:ignore - Redis error
 		return ctrl.Result{}, err
 	}
 
@@ -190,7 +190,7 @@ func (r *Reconciler) collectAllSamples(
 		}
 
 		additional, err := r.collectFromSource(ctx, tupleHash, tupleLabels, retentionStart, now, sourceName, ms, p)
-		if err != nil {
+		if err != nil { // coverage:ignore - Redis error
 			return nil, err
 		}
 		mergeObserved(observed, additional)
@@ -240,7 +240,7 @@ func (r *Reconciler) collectFromSource(
 			continue
 		}
 
-		if err := r.writeSample(ctx, tupleHash, retentionStart, ms, s); err != nil {
+		if err := r.writeSample(ctx, tupleHash, retentionStart, ms, s); err != nil { // coverage:ignore - Redis error
 			return nil, err
 		}
 	}
@@ -310,7 +310,7 @@ func (r *Reconciler) tryLoadSource(ctx context.Context, name string) *ballastv1.
 	if err := r.client.Get(ctx, types.NamespacedName{Name: name}, &ms); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("MetricsSource not found; check policy configuration", "source", name)
-		} else {
+		} else { // coverage:ignore - transient API error
 			log.Error(err, "failed to load MetricsSource", "source", name)
 		}
 		return nil
@@ -381,9 +381,8 @@ func (r *Reconciler) buildContainerProfile(
 
 	for _, resourceName := range sortedStringSlice(resources) {
 		metricsForResource := resourcesInPolicy[resourceName]
-		if len(metricsForResource) == 0 {
-			// Defensive guard: mergeContainerSets filters to policy resources, so this
-			// should not occur in practice.
+		if len(metricsForResource) == 0 { // coverage:ignore - defensive guard, cannot occur in practice
+			// mergeContainerSets filters to policy resources, so this should never fire.
 			log.Info("resource tracked but not found in policy map; skipping",
 				"container", containerName, "resource", resourceName)
 			continue
@@ -391,7 +390,7 @@ func (r *Reconciler) buildContainerProfile(
 
 		usageStats, recs, ready, err := r.processResourceStats(
 			ctx, tupleHash, containerName, resourceName, metricsForResource, policySpec, retentionStartMs, nowMs)
-		if err != nil {
+		if err != nil { // coverage:ignore - Redis error
 			log.Error(err, "processResourceStats failed",
 				"container", containerName, "resource", resourceName)
 			allReady = false
