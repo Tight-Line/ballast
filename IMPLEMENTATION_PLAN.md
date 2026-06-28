@@ -365,7 +365,7 @@ _Deploy to test cluster. After one `pollInterval`, confirm `WorkloadProfile` sta
 
 **Status:** `[x]`
 **Depends on:** Phases 3, 4, 7, 8
-**PR:** https://github.com/Tight-Line/ballast/pull/13
+**PR:** https://github.com/Tight-Line/ballast/pull/12
 
 ### What to build
 
