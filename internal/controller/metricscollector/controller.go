@@ -9,6 +9,8 @@ package metricscollector
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -405,9 +407,7 @@ func (r *Reconciler) buildContainerProfile(
 		if cp.Recommendations == nil {
 			cp.Recommendations = make(map[string]ballastv1.ResourceRecommendation)
 		}
-		for k, v := range recs {
-			cp.Recommendations[k] = v
-		}
+		maps.Copy(cp.Recommendations, recs)
 	}
 
 	return cp, allReady
@@ -434,7 +434,7 @@ func (r *Reconciler) processResourceStats(
 	metricsForResource []ballastv1.MetricConfig,
 	policySpec ballastv1.ClusterResourcePolicySpec,
 	retentionStartMs, nowMs int64,
-) (ballastv1.ContainerUsageStats, map[string]ballastv1.ResourceRecommendation, bool, error) {
+) (containerStats ballastv1.ContainerUsageStats, resourceRecs map[string]ballastv1.ResourceRecommendation, meetsReadiness bool, err error) {
 	key := store.MetricKey(tupleHash, containerName, resourceName)
 
 	svs, err := store.QueryWindow(ctx, r.storeClient, key, retentionStartMs, nowMs)
@@ -517,7 +517,7 @@ func parseValues(svs []store.ScoredValue) []int64 {
 			values = append(values, v)
 		}
 	}
-	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	slices.Sort(values)
 	return values
 }
 
@@ -623,10 +623,8 @@ func mergeObserved(dst, src map[string]map[string]struct{}) {
 }
 
 func appendUnique(slice []string, s string) []string {
-	for _, existing := range slice {
-		if existing == s {
-			return slice
-		}
+	if slices.Contains(slice, s) {
+		return slice
 	}
 	return append(slice, s)
 }

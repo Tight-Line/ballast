@@ -132,7 +132,7 @@ func TestComputeRecommendation(t *testing.T) {
 		{
 			name:   "memory p99 bytes",
 			metric: ballastv1.MetricConfig{Resource: "memory", Aggregation: "p99", Headroom: "1.1"},
-			want:   *resource.NewQuantity(330, resource.BinarySI), // 300 * 1.1 = 330
+			want:   *resource.NewQuantity(330, resource.BinarySI),
 		},
 		{
 			name:   "p50 aggregation",
