@@ -29,9 +29,7 @@ const (
 	AnnotationMeasure    = "ballast.tightlinesoftware.com/measure"
 	AnnotationApply      = "ballast.tightlinesoftware.com/apply"
 	AnnotationResize     = "ballast.tightlinesoftware.com/resize"
-	AnnotationEvict      = "ballast.tightlinesoftware.com/evict"
 	AnnotationAutoresize = "ballast.tightlinesoftware.com/autoresize"
-	AnnotationAutomagic  = "ballast.tightlinesoftware.com/automagic"
 	AnnotationProfileRef = "ballast.tightlinesoftware.com/profile-ref"
 
 	FinalizerName = "ballast.tightlinesoftware.com/workloadwatcher"
@@ -43,9 +41,7 @@ var behaviorAnnotations = []string{
 	AnnotationMeasure,
 	AnnotationApply,
 	AnnotationResize,
-	AnnotationEvict,
 	AnnotationAutoresize,
-	AnnotationAutomagic,
 }
 
 // Controller bundles the PodReconciler and ProfileReconciler.

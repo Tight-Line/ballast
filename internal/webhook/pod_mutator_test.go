@@ -293,38 +293,6 @@ func TestPodMutator_Autoresize_AboveThreshold(t *testing.T) {
 	}
 }
 
-func TestPodMutator_Automagic_BelowThreshold(t *testing.T) {
-	fc := newFakeClient(defaultBallastConfig(), notReadyProfile())
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
-
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationAutomagic: "true",
-	})))
-
-	if !resp.Allowed {
-		t.Fatalf("expected Allowed (measure-only) for automagic below threshold, got: %s", resp.Result.Message)
-	}
-	if len(resp.Patches) != 0 {
-		t.Errorf("expected no patches below threshold, got %d", len(resp.Patches))
-	}
-}
-
-func TestPodMutator_Automagic_AboveThreshold(t *testing.T) {
-	fc := newFakeClient(defaultBallastConfig(), readyProfile())
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
-
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationAutomagic: "true",
-	})))
-
-	if !resp.Allowed {
-		t.Fatalf("expected Allowed with patch for automagic above threshold, got: %s", resp.Result.Message)
-	}
-	if !hasResourcePatch(resp) {
-		t.Errorf("expected patches for automagic above threshold, got: %v", resp.Patches)
-	}
-}
-
 func TestPodMutator_MalformedRequest(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig())
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false)

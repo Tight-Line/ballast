@@ -34,20 +34,8 @@ func TestValidateAnnotations(t *testing.T) {
 			ann:  ann(validation.AnnotationMeasure, "true", validation.AnnotationApply, "true", validation.AnnotationResize, "true"),
 		},
 		{
-			name: "measure + apply + resize + evict",
-			ann:  ann(validation.AnnotationMeasure, "true", validation.AnnotationApply, "true", validation.AnnotationResize, "true", validation.AnnotationEvict, "true"),
-		},
-		{
-			name: "measure + apply + evict (no resize)",
-			ann:  ann(validation.AnnotationMeasure, "true", validation.AnnotationApply, "true", validation.AnnotationEvict, "true"),
-		},
-		{
 			name: "autoresize only",
 			ann:  ann(validation.AnnotationAutoresize, "true"),
-		},
-		{
-			name: "automagic only",
-			ann:  ann(validation.AnnotationAutomagic, "true"),
 		},
 		{
 			name:    "no ballast annotations",
@@ -71,21 +59,6 @@ func TestValidateAnnotations(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "evict without apply or resize",
-			ann:     ann(validation.AnnotationMeasure, "true", validation.AnnotationEvict, "true"),
-			wantErr: true,
-		},
-		{
-			name:    "evict with no other annotations",
-			ann:     ann(validation.AnnotationEvict, "true"),
-			wantErr: true,
-		},
-		{
-			name:    "autoresize + automagic",
-			ann:     ann(validation.AnnotationAutoresize, "true", validation.AnnotationAutomagic, "true"),
-			wantErr: true,
-		},
-		{
 			name:    "autoresize + apply",
 			ann:     ann(validation.AnnotationAutoresize, "true", validation.AnnotationApply, "true"),
 			wantErr: true,
@@ -93,26 +66,6 @@ func TestValidateAnnotations(t *testing.T) {
 		{
 			name:    "autoresize + resize",
 			ann:     ann(validation.AnnotationAutoresize, "true", validation.AnnotationResize, "true"),
-			wantErr: true,
-		},
-		{
-			name:    "autoresize + evict",
-			ann:     ann(validation.AnnotationAutoresize, "true", validation.AnnotationEvict, "true"),
-			wantErr: true,
-		},
-		{
-			name:    "automagic + apply",
-			ann:     ann(validation.AnnotationAutomagic, "true", validation.AnnotationApply, "true"),
-			wantErr: true,
-		},
-		{
-			name:    "automagic + resize",
-			ann:     ann(validation.AnnotationAutomagic, "true", validation.AnnotationResize, "true"),
-			wantErr: true,
-		},
-		{
-			name:    "automagic + evict",
-			ann:     ann(validation.AnnotationAutomagic, "true", validation.AnnotationEvict, "true"),
 			wantErr: true,
 		},
 		{

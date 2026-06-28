@@ -31,7 +31,7 @@ type ClusterResourcePolicySpec struct {
 	// +optional
 	Readiness ReadinessConfig `json:"readiness,omitempty"`
 
-	// Behaviors defines thresholds and parameters for resize and eviction.
+	// Behaviors defines thresholds and parameters for resize.
 	// +optional
 	Behaviors BehaviorConfig `json:"behaviors,omitempty"`
 }
@@ -114,7 +114,7 @@ type ReadinessConfig struct {
 	MaxCV string `json:"maxCV,omitempty"`
 }
 
-// BehaviorConfig defines thresholds and parameters for resize and eviction actions.
+// BehaviorConfig defines thresholds and parameters for resize actions.
 type BehaviorConfig struct {
 	// Thresholds defines drift thresholds that trigger actions.
 	// +optional
@@ -123,13 +123,9 @@ type BehaviorConfig struct {
 	// Resize configures in-place pod resize behavior.
 	// +optional
 	Resize ResizeConfig `json:"resize,omitempty"`
-
-	// Eviction configures pod eviction behavior.
-	// +optional
-	Eviction EvictionConfig `json:"eviction,omitempty"`
 }
 
-// ThresholdConfig defines drift thresholds for resize and eviction.
+// ThresholdConfig defines drift thresholds for resize.
 type ThresholdConfig struct {
 	// Default is the global fallback drift threshold for all behaviors and resources.
 	// +optional
@@ -139,10 +135,6 @@ type ThresholdConfig struct {
 	// Resize contains thresholds specific to the resize behavior.
 	// +optional
 	Resize ResizeThresholds `json:"resize,omitempty"`
-
-	// Eviction contains thresholds specific to the eviction behavior.
-	// +optional
-	Eviction EvictionThresholds `json:"eviction,omitempty"`
 }
 
 // ResizeThresholds defines drift thresholds for resize triggering.
@@ -154,19 +146,6 @@ type ResizeThresholds struct {
 
 	// ResourceThresholds provides per-resource per-field overrides.
 	// Coalesce order: resourceThresholds -> resize.default -> thresholds.default
-	// +optional
-	ResourceThresholds map[string]ResourceFieldThresholds `json:"resourceThresholds,omitempty"`
-}
-
-// EvictionThresholds defines drift thresholds for eviction triggering.
-type EvictionThresholds struct {
-	// Default overrides the global default threshold for eviction.
-	// +optional
-	// +kubebuilder:default="40%"
-	Default string `json:"default,omitempty"`
-
-	// ResourceThresholds provides per-resource per-field overrides.
-	// Coalesce order: resourceThresholds -> eviction.default -> thresholds.default
 	// +optional
 	ResourceThresholds map[string]ResourceFieldThresholds `json:"resourceThresholds,omitempty"`
 }
@@ -193,28 +172,6 @@ type ResizeConfig struct {
 	// +optional
 	// +kubebuilder:default="15m"
 	Interval string `json:"interval,omitempty"`
-}
-
-// EvictionConfig configures pod eviction behavior.
-type EvictionConfig struct {
-	// Cooldown is the minimum time between evictions for the same workload.
-	// +optional
-	// +kubebuilder:default="1h"
-	Cooldown string `json:"cooldown,omitempty"`
-
-	// MaxConcurrentEvictions limits how many pods for a given profile can be
-	// terminating or not-yet-ready simultaneously.
-	// +optional
-	// +kubebuilder:default=1
-	// +kubebuilder:validation:Minimum=0
-	MaxConcurrentEvictions int32 `json:"maxConcurrentEvictions,omitempty"`
-
-	// MinOtherHealthyReplicas is the minimum number of other healthy replicas
-	// that must exist before an eviction is allowed.
-	// +optional
-	// +kubebuilder:default=1
-	// +kubebuilder:validation:Minimum=0
-	MinOtherHealthyReplicas int32 `json:"minOtherHealthyReplicas,omitempty"`
 }
 
 // ClusterResourcePolicyStatus defines the observed state of ClusterResourcePolicy.

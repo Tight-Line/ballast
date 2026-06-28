@@ -410,26 +410,21 @@ _Deploy to test cluster with cert-manager. Create a pod with `ballast.tightlines
 
 ### What to build
 
+Pod eviction is out of scope for Ballast — delegated to [Kubernetes Descheduler](https://github.com/kubernetes-sigs/descheduler). Ballast keeps resource requests/limits accurate; Descheduler rebalances the cluster based on those corrected values. See README for rationale.
+
 - `internal/controller/resourceadjuster/controller.go`:
   - Watches `WorkloadProfile` status changes (triggered when MetricsCollector updates status)
   - Re-evaluates on `behaviors.resize.interval` timer
-  - **Drift detection:** for each container/resource/field in `recommendations`, compare current pod value to recommended value; compute drift as `|current - recommended| / recommended`; look up threshold via coalesce order (`resourceThresholds -> behavior.default -> global default`); trigger if drift exceeds threshold for any field
-  - **Resize path (if `resize` annotation present and drift exceeds resize threshold):**
+  - **Drift detection:** for each container/resource/field in `recommendations`, compare current pod value to recommended value; compute drift as `|current - recommended| / recommended`; look up threshold via coalesce order (`resourceThresholds -> resize.default -> thresholds.default`); trigger if drift exceeds threshold for any field
+  - **Resize path (if `resize` annotation present and drift exceeds threshold):**
     1. Cap adjustment to `maxChangePerCycle` relative to current value
     2. Patch pod via `resize` subresource (`v1.Pod` resize API, Kubernetes 1.35+)
     3. On success: record in pod annotation and profile status
-    4. On failure (node pressure / infeasible): fall through to eviction check
-  - **Eviction path (if `evict` annotation present, or resize blocked):**
-    1. Check `minOtherHealthyReplicas`: count ready pods in the same workload (same namespace + same owner Deployment/StatefulSet only; pods from other workloads sharing the same WorkloadProfile are not counted); skip if fewer than the minimum would remain after eviction
-    2. Check PDB: attempt Eviction API dry-run; if it returns 429, PDB blocks — skip
-    3. Check per-workload cooldown: read last eviction timestamp for this `(namespace, owner-kind, owner-name)` from a map in the WorkloadProfile status; skip if `now - last < cooldown`. Each workload has its own independent clock — workloads sharing the same profile are not affected by each other's cooldowns.
-    4. Check `maxConcurrentEvictions`: count pods **cluster-wide** (all namespaces) with matching `profile-ref` that are terminating (`deletionTimestamp != nil`) or not yet ready; skip if count >= limit
-    5. If all pass: evict via Eviction API; record timestamp in the per-workload cooldown map in profile status
-    6. If any check fails: emit Kubernetes Event, record blocked state in profile status, requeueAfter cooldown
-  - **`autoresize` / `automagic`:** once `WorkloadProfile.meetsThreshold` transitions from false to true, the progressive annotations automatically enable resize (autoresize) or resize+evict (automagic); controller respects this dynamically per reconcile
-  - **Dry-run:** `--dry-run-resize` suppresses the resize patch; `--dry-run-evict` suppresses eviction; both log at `info` with `dry_run: true`
+    4. On failure (node pressure / infeasible): emit Kubernetes Event, record blocked state in profile status, requeueAfter interval
+  - **`autoresize`:** once `WorkloadProfile.meetsThreshold` transitions from false to true, the controller dynamically enables resize per reconcile
+  - **Dry-run (`--dry-run-resize`):** log the resize; pod not touched
   - **Kill switch:** suppresses all action
-  - envtest tests: drift detection, resize, eviction (all guard conditions), cooldown, concurrent eviction limit, autoresize/automagic threshold flip
+  - envtest tests: drift detection, resize success, resize blocked, autoresize threshold flip, dry-run, kill switch
 
 ### Key files (fill in after complete)
 
@@ -438,7 +433,7 @@ _Deploy to test cluster with cert-manager. Create a pod with `ballast.tightlines
 
 ### User testing instructions
 
-_Deploy to test cluster with a pod carrying `resize` and `evict` annotations and a ready profile. Artificially update the profile's recommendations to force drift beyond threshold. Confirm resize attempt is made. Confirm eviction is issued when resize is blocked._
+_Deploy to test cluster with a pod carrying `resize` annotation and a ready profile. Artificially update the profile's recommendations to force drift beyond threshold. Confirm resize attempt is made via the pod resize subresource._
 
 ---
 
@@ -461,13 +456,19 @@ _Deploy to test cluster with a pod carrying `resize` and `evict` annotations and
   - `ballastConfig.identityLabels`, `ballastConfig.orphanTTL`, `ballastConfig.retentionWindow`
   - `valkey.enabled: true`, `valkey.architecture: replication`
   - `store.endpoint` (used when `valkey.enabled: false`)
-  - `certManager.enabled: true`, `certManager.issuerRef`
+  - `certManager.enabled: true` (see TLS note below)
 - `templates/deployment.yaml` — mounts cert Secret; passes all flags from values
 - `templates/serviceaccount.yaml`, `templates/clusterrole.yaml`, `templates/clusterrolebinding.yaml` — exact permissions: CRD read/write for all Ballast types, Pod get/list/watch/patch (for resize and eviction), ConfigMap get/watch (kill switch), Event create
 - `templates/mutatingwebhookconfiguration.yaml` — `failurePolicy: Fail`; cert-manager `caBundle` injection annotation (`cert-manager.io/inject-ca-from`)
-- `templates/certificate.yaml`, `templates/issuer.yaml` — cert-manager resources (rendered when `certManager.enabled: true`)
+- `templates/certificate.yaml`, `templates/issuer.yaml` — self-signed `Issuer` + `Certificate`; rendered when `certManager.enabled: true`
 - `templates/ballastconfig.yaml` — creates the `BallastConfig` singleton from values
 - `crds/` — CRD manifests (copied from `config/crd/bases/` at build time)
+
+**TLS options — implement option 1 now; 2 and 3 are future improvements:**
+
+1. **cert-manager (default):** self-signed `Issuer` + `Certificate`; cert-manager injects `caBundle` into `MutatingWebhookConfiguration`. Uses whatever cert-manager is already installed in the cluster — Ballast does not install it. Works on air-gapped clusters; no DNS/HTTP challenge.
+2. **Kubernetes CertificateSigningRequest:** Helm pre-install Job generates a key pair, submits a CSR to the cluster CA, writes cert+key to a Secret. Removes the cert-manager dependency but requires `certificates.k8s.io/approve` permission; may need manual `kubectl certificate approve` on restricted clusters.
+3. **User-provided certificate:** user supplies cert material via Helm values; chart skips cert-manager and CSR resources entirely. User is responsible for setting `caBundle` in the `MutatingWebhookConfiguration`.
 
 `helm lint` must pass. Smoke test: `helm template . | kubectl apply --dry-run=client -f -` produces no errors.
 
