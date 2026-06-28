@@ -326,7 +326,7 @@ _Deploy to a test cluster with a pod carrying the `measure` annotation. Confirm 
 
 **Status:** `[x]`
 **Depends on:** Phases 3, 4, 5, 6, 7
-**PR:** TBD
+**PR:** https://github.com/Tight-Line/ballast/pull/11
 
 ### What to build
 
