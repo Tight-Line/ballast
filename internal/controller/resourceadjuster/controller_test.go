@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -41,6 +42,50 @@ func newFakeClient(objs ...client.Object) client.Client {
 		WithStatusSubresource(&ballastv1.WorkloadProfile{}).
 		WithObjects(objs...).
 		Build()
+}
+
+// resizeFakeClient wraps a fake client so that SubResource("resize").Patch()
+// actually persists the modified object via a regular Update, making the new
+// resource values visible to subsequent Get calls in tests.
+type resizeFakeClient struct{ client.Client }
+
+func newResizeFakeClient(objs ...client.Object) *resizeFakeClient {
+	return &resizeFakeClient{Client: newFakeClient(objs...)}
+}
+
+func (c *resizeFakeClient) SubResource(sub string) client.SubResourceClient {
+	base := c.Client.SubResource(sub)
+	if sub != "resize" {
+		return base
+	}
+	return &resizeSubClient{base: base, fc: c.Client}
+}
+
+type resizeSubClient struct {
+	base client.SubResourceClient
+	fc   client.Client
+}
+
+func (r *resizeSubClient) Get(ctx context.Context, obj, sub client.Object, opts ...client.SubResourceGetOption) error {
+	return r.base.Get(ctx, obj, sub, opts...)
+}
+
+func (r *resizeSubClient) Create(ctx context.Context, obj, sub client.Object, opts ...client.SubResourceCreateOption) error {
+	return r.base.Create(ctx, obj, sub, opts...)
+}
+
+func (r *resizeSubClient) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	return r.base.Update(ctx, obj, opts...)
+}
+
+// Patch ignores the patch and persists the modified object directly so tests
+// can inspect the resulting resource values via a subsequent Get.
+func (r *resizeSubClient) Patch(ctx context.Context, obj client.Object, _ client.Patch, _ ...client.SubResourcePatchOption) error {
+	return r.fc.Update(ctx, obj)
+}
+
+func (r *resizeSubClient) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+	return r.base.Apply(ctx, obj, opts...)
 }
 
 func inactiveKS(t *testing.T) *killswitch.KillSwitch {
@@ -160,11 +205,21 @@ func TestReconcile_ProfileNotFound(t *testing.T) {
 
 func TestReconcile_KillSwitchActive(t *testing.T) {
 	profile := readyProfile("200m", "400m")
-	fc := newFakeClient(profile, noResizePolicy())
+	// Pod has enough drift to trigger a resize if the kill switch were inactive.
+	pod := resizePod("100m", "200m")
+	fc := newFakeClient(profile, noResizePolicy(), pod)
 	r := resourceadjuster.New(fc, activeKS(t), false)
+	resizeCalled := false
+	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
+		resizeCalled = true
+		return nil
+	}
 	result, err := doReconcile(t, r, profile.Name)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if resizeCalled {
+		t.Error("resize should not be called when kill switch is active")
 	}
 	if result.RequeueAfter == 0 {
 		t.Error("expected requeue when kill switch active")
@@ -552,10 +607,11 @@ func TestReconcile_ContainerNotInRecommendations_Skipped(t *testing.T) {
 	if _, err := doReconcile(t, r, profile.Name); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, name := range adjustedContainers {
-		if name == "sidecar" {
-			t.Error("sidecar container with no recommendations should not be in adjustments")
-		}
+	if !slices.Contains(adjustedContainers, "app") {
+		t.Error("app container with recommendations should have been adjusted")
+	}
+	if slices.Contains(adjustedContainers, "sidecar") {
+		t.Error("sidecar container with no recommendations should not be in adjustments")
 	}
 }
 
@@ -594,22 +650,31 @@ func TestReconcile_NilContainerResources_HandledGracefully(t *testing.T) {
 }
 
 func TestReconcile_ApplyResizeDefault_FakeClientSucceeds(t *testing.T) {
-	// Don't override ResizePod — exercises the real applyResize path via fake client.
+	// Exercises the real applyResize path end-to-end using resizeFakeClient so the
+	// SubResource("resize").Patch() actually persists the new resource values.
+	// current=100m req / 200m limit; recommended=200m req / 400m limit; maxChangePct=50%
+	// → req capped at 150m (100m + 50%), limit capped at 300m (200m + 50%)
 	profile := readyProfile("200m", "400m")
 	pod := resizePod("100m", "200m")
-	fc := newFakeClient(profile, noResizePolicy(), pod)
+	fc := newResizeFakeClient(profile, noResizePolicy(), pod)
 	r := resourceadjuster.New(fc, inactiveKS(t), false)
-	// ResizePod is not overridden — uses applyResize which calls SubResource("resize").Patch.
 	if _, err := doReconcile(t, r, profile.Name); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Verify last-resize annotation was stamped (success path).
 	var updated corev1.Pod
 	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web-abc"}, &updated); err != nil {
 		t.Fatalf("getting pod: %v", err)
 	}
 	if updated.Annotations[resourceadjuster.AnnotationLastResize] == "" {
-		t.Error("expected last-resize annotation after successful resize via applyResize")
+		t.Error("expected last-resize annotation after successful resize")
+	}
+	gotReq := updated.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]
+	if gotReq.Cmp(resource.MustParse("150m")) != 0 {
+		t.Errorf("CPU request: want 150m, got %s", gotReq.String())
+	}
+	gotLim := updated.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU]
+	if gotLim.Cmp(resource.MustParse("300m")) != 0 {
+		t.Errorf("CPU limit: want 300m, got %s", gotLim.String())
 	}
 }
 
@@ -645,6 +710,13 @@ func TestReconcile_PodNilAnnotations_BlockedAnnotationStamped(t *testing.T) {
 	if _, err := doReconcile(t, r, profile.Name); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	var updated corev1.Pod
+	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web-noanns"}, &updated); err != nil {
+		t.Fatalf("getting pod: %v", err)
+	}
+	if updated.Annotations[resourceadjuster.AnnotationResizeBlocked] != "true" {
+		t.Errorf("expected resize-blocked annotation to be stamped, got %q", updated.Annotations[resourceadjuster.AnnotationResizeBlocked])
+	}
 }
 
 func TestReconcile_EmptyMaxChangePerCycle_UsesDefault(t *testing.T) {
@@ -678,8 +750,8 @@ func TestResolveFieldThreshold_AllLevelsEmpty_UsesHardcodedDefault(t *testing.T)
 }
 
 func TestReconcile_ApplyResize_MultiContainer_SkipsNonMatching(t *testing.T) {
-	// Pod has two containers; only "app" has recommendations. The "sidecar" container
-	// should be skipped inside applyResize (line 359 — the name-mismatch continue).
+	// Pod has two containers; only "app" has recommendations.
+	// After resize: "app" resources are updated, "sidecar" resources are unchanged.
 	profile := readyProfile("200m", "400m")
 	pod := resizePod("100m", "200m")
 	pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{
@@ -689,8 +761,7 @@ func TestReconcile_ApplyResize_MultiContainer_SkipsNonMatching(t *testing.T) {
 			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
 		},
 	})
-	fc := newFakeClient(profile, noResizePolicy(), pod)
-	// No ResizePod override — uses real applyResize.
+	fc := newResizeFakeClient(profile, noResizePolicy(), pod)
 	r := resourceadjuster.New(fc, inactiveKS(t), false)
 	if _, err := doReconcile(t, r, profile.Name); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -702,11 +773,22 @@ func TestReconcile_ApplyResize_MultiContainer_SkipsNonMatching(t *testing.T) {
 	if updated.Annotations[resourceadjuster.AnnotationLastResize] == "" {
 		t.Error("expected last-resize annotation after successful resize")
 	}
+	// "app": current=100m, recommended=200m, maxChangePct=50% → capped at 150m
+	appReq := updated.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]
+	if appReq.Cmp(resource.MustParse("150m")) != 0 {
+		t.Errorf("app CPU request: want 150m, got %s", appReq.String())
+	}
+	// "sidecar": has no recommendations, should be unchanged at 50m
+	sidecarReq := updated.Spec.Containers[1].Resources.Requests[corev1.ResourceCPU]
+	if sidecarReq.Cmp(resource.MustParse("50m")) != 0 {
+		t.Errorf("sidecar CPU request should be unchanged at 50m, got %s", sidecarReq.String())
+	}
 }
 
 func TestReconcile_ApplyResize_NilResources_InitializedCorrectly(t *testing.T) {
 	// Pod container has nil Requests and Limits. applyResize must initialize them
-	// before writing (lines 362, 365).
+	// before writing. When current is zero, CapChange returns recommended directly
+	// (no cap), so the result should equal the full recommended value.
 	profile := readyProfile("200m", "400m")
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -724,8 +806,7 @@ func TestReconcile_ApplyResize_NilResources_InitializedCorrectly(t *testing.T) {
 			}},
 		},
 	}
-	fc := newFakeClient(profile, noResizePolicy(), pod)
-	// No ResizePod override — uses real applyResize.
+	fc := newResizeFakeClient(profile, noResizePolicy(), pod)
 	r := resourceadjuster.New(fc, inactiveKS(t), false)
 	if _, err := doReconcile(t, r, profile.Name); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -736,6 +817,16 @@ func TestReconcile_ApplyResize_NilResources_InitializedCorrectly(t *testing.T) {
 	}
 	if updated.Annotations[resourceadjuster.AnnotationLastResize] == "" {
 		t.Error("expected last-resize annotation after successful resize with nil resources")
+	}
+	// current=0, recommended=200m → no cap, result is the full recommended value
+	gotReq := updated.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]
+	if gotReq.Cmp(resource.MustParse("200m")) != 0 {
+		t.Errorf("CPU request: want 200m, got %s", gotReq.String())
+	}
+	// current=0, recommended=400m → no cap
+	gotLim := updated.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU]
+	if gotLim.Cmp(resource.MustParse("400m")) != 0 {
+		t.Errorf("CPU limit: want 400m, got %s", gotLim.String())
 	}
 }
 
