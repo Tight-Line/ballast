@@ -1,0 +1,22 @@
+apiVersion: v2
+name: ballast
+description: Kubernetes resource right-sizing operator — measures real usage and adjusts pod requests via in-place resize.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - resource-management
+  - right-sizing
+  - operator
+home: https://github.com/tight-line/ballast
+sources:
+  - https://github.com/tight-line/ballast
+maintainers:
+  - name: Tight Line LLC
+    email: hello@tightlinesoftware.com
+dependencies:
+  - name: valkey
+    version: ">=0.1.0"
+    repository: "https://valkey-io.github.io/valkey-helm/"
+    condition: valkey.enabled

@@ -32,7 +32,7 @@ Pod eviction for cluster rebalancing is handled by [Kubernetes Descheduler](http
 | 8 | MetricsCollector controller | Complete |
 | 9 | Admission webhook | Complete |
 | 10 | ResourceAdjuster controller | Complete |
-| 11 | Helm chart | Not started |
+| 11 | Helm chart | Complete |
 | 12 | Polish and release readiness | Not started |
 
 ## Prerequisites

@@ -1,0 +1,29 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "ballast.fullname" . }}
+  labels:
+    {{- include "ballast.labels" . | nindent 4 }}
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "patch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: ["ballast.tightlinesoftware.com"]
+  resources:
+    - ballastconfigs
+    - clusterresourcepolicies
+    - metricssources
+    - resourcepolicies
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["ballast.tightlinesoftware.com"]
+  resources: ["workloadprofiles"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["ballast.tightlinesoftware.com"]
+  resources: ["workloadprofiles/status"]
+  verbs: ["get", "update", "patch"]

@@ -439,7 +439,7 @@ _Deploy to test cluster with a pod carrying `resize` annotation and a ready prof
 
 ## Phase 11 — Helm Chart
 
-**Status:** `[ ]`
+**Status:** `[x]`
 **Depends on:** all prior phases (chart reflects final binary)
 **PR:** —
 

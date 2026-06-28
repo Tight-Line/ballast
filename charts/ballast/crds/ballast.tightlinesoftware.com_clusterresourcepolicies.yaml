@@ -1,0 +1,273 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: clusterresourcepolicies.ballast.tightlinesoftware.com
+spec:
+  group: ballast.tightlinesoftware.com
+  names:
+    kind: ClusterResourcePolicy
+    listKind: ClusterResourcePolicyList
+    plural: clusterresourcepolicies
+    singular: clusterresourcepolicy
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.priority
+      name: Priority
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: ClusterResourcePolicy is the Schema for the clusterresourcepolicies
+          API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of ClusterResourcePolicy
+            properties:
+              behaviors:
+                description: Behaviors defines thresholds and parameters for resize.
+                properties:
+                  resize:
+                    description: Resize configures in-place pod resize behavior.
+                    properties:
+                      interval:
+                        default: 15m
+                        description: Interval is how often the ResourceAdjuster re-evaluates
+                          drift.
+                        type: string
+                      maxChangePerCycle:
+                        default: 50%
+                        description: MaxChangePerCycle caps how much a single adjustment
+                          cycle can change a value.
+                        type: string
+                    type: object
+                  thresholds:
+                    description: Thresholds defines drift thresholds that trigger
+                      actions.
+                    properties:
+                      default:
+                        default: 20%
+                        description: Default is the global fallback drift threshold
+                          for all behaviors and resources.
+                        type: string
+                      resize:
+                        description: Resize contains thresholds specific to the resize
+                          behavior.
+                        properties:
+                          default:
+                            default: 20%
+                            description: Default overrides the global default threshold
+                              for resize.
+                            type: string
+                          resourceThresholds:
+                            additionalProperties:
+                              description: ResourceFieldThresholds maps resource fields
+                                (request, limit) to drift thresholds.
+                              properties:
+                                limit:
+                                  description: Limit is the drift threshold for the
+                                    limit field.
+                                  type: string
+                                request:
+                                  description: Request is the drift threshold for
+                                    the request field.
+                                  type: string
+                              type: object
+                            description: |-
+                              ResourceThresholds provides per-resource per-field overrides.
+                              Coalesce order: resourceThresholds -> resize.default -> thresholds.default
+                            type: object
+                        type: object
+                    type: object
+                type: object
+              metrics:
+                description: Metrics defines what resource fields to measure and recommend.
+                items:
+                  description: MetricConfig maps a resource usage measurement to a
+                    Kubernetes resource field.
+                  properties:
+                    aggregation:
+                      description: 'Aggregation is the usage percentile to use: p50,
+                        p95, p99, max, avg.'
+                      enum:
+                      - p50
+                      - p95
+                      - p99
+                      - max
+                      - avg
+                      type: string
+                    field:
+                      description: 'Field is the Kubernetes resource field to set:
+                        "request" or "limit".'
+                      enum:
+                      - request
+                      - limit
+                      type: string
+                    headroom:
+                      default: "1.0"
+                      description: |-
+                        Headroom is the multiplier applied to the aggregated usage value.
+                        Expressed as a decimal string (e.g. "1.2"); must be greater than 0.
+                      type: string
+                    resource:
+                      description: Resource is the Kubernetes resource being measured
+                        (e.g. "cpu", "memory").
+                      minLength: 1
+                      type: string
+                    source:
+                      description: Source is the name of the MetricsSource to use.
+                      minLength: 1
+                      type: string
+                  required:
+                  - aggregation
+                  - field
+                  - resource
+                  - source
+                  type: object
+                type: array
+              priority:
+                default: 0
+                description: |-
+                  Priority determines which policy wins when multiple match a workload.
+                  Higher value wins. Same-priority ties break alphabetically by name.
+                format: int32
+                type: integer
+              readiness:
+                description: Readiness defines the conditions that must pass before
+                  Ballast acts.
+                properties:
+                  maxCV:
+                    default: "1.5"
+                    description: MaxCV is the maximum coefficient of variation (stddev/mean)
+                      allowed.
+                    type: string
+                  minDataPoints:
+                    default: 500
+                    description: MinDataPoints is the minimum number of samples required.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  minTimeSpan:
+                    default: 24h
+                    description: MinTimeSpan is the minimum duration of observed history
+                      required.
+                    type: string
+                type: object
+              selector:
+                description: Selector controls which workloads this policy applies
+                  to.
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: Annotations maps annotation keys to regex patterns
+                      that must match on the pod.
+                    type: object
+                  kinds:
+                    description: |-
+                      Kinds lists the owner kinds this policy applies to (e.g. Deployment, StatefulSet).
+                      Empty means all kinds.
+                    items:
+                      type: string
+                    type: array
+                  labelSelector:
+                    description: LabelSelector is a standard Kubernetes label selector
+                      applied to pod labels.
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector
+                          requirements. The requirements are ANDed.
+                        items:
+                          description: |-
+                            A label selector requirement is a selector that contains values, a key, and an operator that
+                            relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector
+                                applies to.
+                              type: string
+                            operator:
+                              description: |-
+                                operator represents a key's relationship to a set of values.
+                                Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: |-
+                                values is an array of string values. If the operator is In or NotIn,
+                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                the values array must be empty. This array is replaced during a strategic
+                                merge patch.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                          map is equivalent to an element of matchExpressions, whose key field is "key", the
+                          operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  namespaces:
+                    description: Namespaces filters by namespace name patterns.
+                    properties:
+                      exclude:
+                        description: |-
+                          Exclude is a list of patterns; the pod's namespace must NOT match any.
+                          Uses the same /regex/ or exact syntax as Include.
+                          A namespace matching both Include and Exclude is excluded (logged at WARN).
+                        items:
+                          type: string
+                        type: array
+                      include:
+                        description: |-
+                          Include is a list of patterns; the pod's namespace must match at least one.
+                          Patterns wrapped in forward slashes are full-string regexes (e.g. /.*-prod/).
+                          All other patterns are exact string matches. Absent means all namespaces pass.
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                type: object
+            type: object
+          status:
+            description: status defines the observed state of ClusterResourcePolicy
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}
