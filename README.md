@@ -44,9 +44,7 @@ Pod eviction for cluster rebalancing is handled by [Kubernetes Descheduler](http
 
 ## Installation
 
-> **Note:** The Helm chart is not yet available (Phase 11). These instructions will be updated when the chart ships.
-
-Once the chart is available, installation will look like:
+cert-manager must already be installed in the cluster (Ballast does not install it):
 
 ```bash
 helm repo add tight-line https://tight-line.github.io/ballast
@@ -54,10 +52,52 @@ helm repo update
 
 helm install ballast tight-line/ballast \
   --namespace ballast-system \
-  --create-namespace \
-  --set ballastConfig.identityLabels[0]=app.kubernetes.io/name \
-  --set ballastConfig.identityLabels[1]=ballast.tightlinesoftware.com/profile
+  --create-namespace
 ```
+
+The chart ships with a sensible default for `ballastConfig.identityLabels` (`app.kubernetes.io/name` + `app.kubernetes.io/component`). Read the section below before overriding it — the choice has cluster-wide consequences.
+
+## WorkloadProfile Identity
+
+Ballast groups pods into `WorkloadProfile` objects by matching a configurable set of pod label keys called the **identity tuple**. The tuple is defined once in `BallastConfig.spec.identityLabels` and applies to every namespace in the cluster.
+
+**WorkloadProfiles are cluster-scoped.** Every pod in every namespace that shares the same label values for the identity keys feeds measurements into the same profile. This is intentional: forty dev namespaces all running the same billing app produce one well-sampled `WorkloadProfile`, not forty thin ones.
+
+### Default: `name` + `component`
+
+```yaml
+ballastConfig:
+  identityLabels:
+    - app.kubernetes.io/name
+    - app.kubernetes.io/component
+```
+
+This works well for clusters that run a single environment class. The frontend and backend of the same app get separate profiles; forty developers' copies of billing all contribute to the same `(billing, api)` profile.
+
+### Mixed environments in the same cluster
+
+If your cluster runs dev, staging, and production side-by-side and you want separate profiles per environment, add `ballast.tightlinesoftware.com/profile` to the identity tuple and apply it to your pods:
+
+```yaml
+# BallastConfig / Helm values
+ballastConfig:
+  identityLabels:
+    - app.kubernetes.io/name
+    - app.kubernetes.io/component
+    - ballast.tightlinesoftware.com/profile
+```
+
+```yaml
+# Pod template labels
+labels:
+  app.kubernetes.io/name: billing
+  app.kubernetes.io/component: api
+  ballast.tightlinesoftware.com/profile: prod
+```
+
+Now `(billing, api, prod)` and `(billing, api, dev)` are measured independently. Pods without the label are simply excluded from measurement — they produce no profile.
+
+> **Changing `identityLabels` wipes your operational history.** It redefines what constitutes a workload identity, so all existing `WorkloadProfile` objects are renamed and their accumulated Redis history is orphaned. Ballast starts fresh from zero samples. Plan your tuple before enrolling workloads.
 
 ## Annotation Contract
 

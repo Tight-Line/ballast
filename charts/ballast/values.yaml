@@ -42,10 +42,23 @@ dryRun:
 
 ballastConfig:
   # identityLabels: ordered list of pod label keys that form a WorkloadProfile
-  # identity tuple. Must be set at install time; changing it later requires a
-  # migration. Must have at least one entry.
+  # identity tuple. Must be set at install time; changing it requires migration.
+  #
+  # WorkloadProfiles are cluster-scoped. Every pod in every namespace that shares
+  # the same label values for these keys contributes measurements to the same
+  # profile. This is intentional — 40 dev namespaces running the same app produce
+  # one well-sampled profile, not 40 thin ones.
+  #
+  # If your cluster runs mixed environments (dev + staging + prod) and you want
+  # separate profiles per environment, add ballast.tightlinesoftware.com/profile
+  # to this list and apply it to your pods:
+  #   identityLabels:
+  #     - app.kubernetes.io/name
+  #     - app.kubernetes.io/component
+  #     - ballast.tightlinesoftware.com/profile
   identityLabels:
     - app.kubernetes.io/name
+    - app.kubernetes.io/component
   orphanTTL: "168h"
   retentionWindow: "168h"
 
