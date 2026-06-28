@@ -26,6 +26,7 @@ import (
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/controller/metricscollector"
+	"github.com/tight-line/ballast/internal/controller/resourceadjuster"
 	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
 	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/logger"
@@ -87,6 +88,10 @@ func main() {
 	var dryRunApply bool
 	flag.BoolVar(&dryRunApply, "dry-run-apply", false,
 		"If set, resource recommendations are computed at admission time but the pod spec is not patched.")
+
+	var dryRunResize bool
+	flag.BoolVar(&dryRunResize, "dry-run-resize", false,
+		"If set, resize decisions are logged but no in-place resize patches are issued.")
 
 	var logLevel, logLevelWebhook, logLevelWatcher, logLevelCollector, logLevelAdjuster, logFormat string
 	flag.StringVar(&logLevel, "log-level", "info", "Global log level (debug|info|warn|error).")
@@ -190,6 +195,11 @@ func main() {
 	}
 
 	ballastwebhook.NewPodMutator(mgr.GetClient(), ks, dryRunApply).SetupWithManager(mgr)
+
+	if err := resourceadjuster.Setup(mgr, ks, dryRunResize); err != nil {
+		setupLog.Error(err, "Failed to set up resourceadjuster controller")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")
