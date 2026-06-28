@@ -1,6 +1,6 @@
 # Ballast — Design Document
 
-Ballast is a Kubernetes operator that automatically right-sizes workload resource requests and limits based on real operational history. It is a more active alternative to Fairwinds Goldilocks: rather than suggesting changes, it applies them — at admission time, on running pods via in-place resize (Kubernetes 1.35+), and via eviction when in-place adjustment is unavailable or insufficient.
+Ballast is a Kubernetes operator that automatically right-sizes workload resource requests and limits based on real operational history. It is a more active alternative to Fairwinds Goldilocks: rather than suggesting changes, it applies them — at admission time and on running pods via in-place resize (Kubernetes 1.35+). Cluster rebalancing (pod eviction to force rescheduling) is deliberately out of scope and delegated to [Kubernetes Descheduler](https://github.com/kubernetes-sigs/descheduler), which has the cluster-level view needed to make sound eviction decisions.
 
 ---
 
@@ -21,11 +21,9 @@ The deployment tool sets these annotations on pod template specs. They are the o
 | `ballast.tightlinesoftware.com/measure: "true"` | Collect metrics for this workload; required for any other behavior |
 | `ballast.tightlinesoftware.com/apply: "true"` | Patch resource requests/limits at admission time; requires `measure` |
 | `ballast.tightlinesoftware.com/resize: "true"` | Adjust resources on running pods via in-place resize; requires `apply` |
-| `ballast.tightlinesoftware.com/evict: "true"` | Evict pods to force re-admission with updated resources, either because resize is not enabled or because resize cannot achieve the target; requires `apply` or `resize` |
 | `ballast.tightlinesoftware.com/autoresize: "true"` | Progressive mode: behaves as `measure` only until the WorkloadProfile meets its history threshold, then automatically behaves as `apply` + `resize` |
-| `ballast.tightlinesoftware.com/automagic: "true"` | Progressive mode: behaves as `measure` only until the WorkloadProfile meets its history threshold, then automatically behaves as `apply` + `resize` + `evict` |
 
-The full dependency chain for the explicit annotations is `measure` -> `apply` -> `resize` -> (optionally) `evict`. Invalid combinations are rejected by the admission webhook with a clear error message. `autoresize` and `automagic` are mutually exclusive with each other and with the explicit `apply`, `resize`, and `evict` annotations.
+The dependency chain for the explicit annotations is `measure` -> `apply` -> `resize`. Invalid combinations are rejected by the admission webhook with a clear error message. `autoresize` is mutually exclusive with `apply` and `resize`.
 
 The following annotation is set by Ballast itself (not by the deployment tool):
 
@@ -153,36 +151,13 @@ spec:
           memory:
             limit: "10%"
             # memory.request uses resize.default = "20%"
-      eviction:
-        default: "40%"            # default: 40% — higher bar; eviction is more disruptive than resize
-        resourceThresholds:       # coalesce: resourceThresholds -> eviction.default -> default
-          cpu:
-            limit: "50%"
     # a drift in ANY field exceeding its threshold independently triggers the behavior
     resize:
       maxChangePerCycle: "50%"    # default: 50% — cap single-cycle adjustment
       interval: "15m"             # default: 15m — how often ResourceAdjuster re-evaluates
-    eviction:
-      cooldown: "1h"              # default: 1h — per-workload (one Deployment/StatefulSet in one
-                                  # namespace). Each workload gets its own independent cooldown clock,
-                                  # even if many workloads share the same WorkloadProfile. Example:
-                                  # 40 dev namespaces all matched by profile "billing--dev" can all
-                                  # be evicted within the same hour; the cooldown only prevents
-                                  # rapid re-eviction of the *same* Deployment/StatefulSet.
-      maxConcurrentEvictions: 1   # default: 1 — per WorkloadProfile, across all namespaces.
-                                  # Before evicting, count all pods cluster-wide whose profile-ref
-                                  # matches this profile and are terminating or not-yet-ready.
-                                  # If that count >= limit, skip. This bounds total in-flight churn
-                                  # for a given identity tuple regardless of how many namespaces
-                                  # contribute to it.
-      minOtherHealthyReplicas: 1  # default: 1 — per-workload (one Deployment/StatefulSet in one
-                                  # namespace). Skip eviction unless at least this many other ready
-                                  # pods exist in that same workload. Set to 0 to allow evicting
-                                  # singletons. Does not count pods from other workloads sharing
-                                  # the same WorkloadProfile.
 ```
 
-Behaviors in the policy are **parameters**, not switches. Whether a workload gets resized or evicted is still gated by the `ballast.tightlinesoftware.com/resize` and `ballast.tightlinesoftware.com/evict` annotations on the pod template. Policy says how; annotations say whether.
+Behaviors in the policy are **parameters**, not switches. Whether a workload gets resized is still gated by the `ballast.tightlinesoftware.com/resize` annotation on the pod template. Policy says how; annotations say whether.
 
 Cardinality: N policies -> M workloads (selector match); one workload -> at most one effective policy (ResourcePolicy beats ClusterResourcePolicy; within the same class, highest priority wins).
 
@@ -379,17 +354,10 @@ When any field's recommendation drifts beyond its configured threshold (per `beh
 1. Finds all running pods for contributing workloads.
 2. If `resize` annotation present: patches the pod via the `resize` subresource (Kubernetes 1.35+ in-place resize).
    - Success: records in pod annotation and profile status.
-   - Blocked (node cannot satisfy request): if `evict` annotation present, proceed to eviction.
-3. If `resize` is not present but `evict` is: proceed directly to eviction (no resize attempt).
-4. If evicting: checks that other healthy replicas in the same workload meet `minOtherHealthyReplicas`, checks PodDisruptionBudget allows it, checks per-workload cooldown, checks `maxConcurrentEvictions`.
-   - If allowed: evicts via the Eviction API (respects PDBs). The Deployment controller recreates the pod; the admission webhook applies updated resources on the new pod.
-   - If blocked by any check: emits a Kubernetes Event, records blocked state in profile status, retries after cooldown.
+   - Blocked (node cannot satisfy request): emits a Kubernetes Event, records blocked state in profile status, retries after interval.
+3. If `resize` is not present: emits a Kubernetes Event noting that drift exceeds threshold but no action is configured.
 
-**Eviction cooldown** is **per-workload** (one Deployment/StatefulSet in one namespace), not per-WorkloadProfile. The cooldown timestamp is stored per `(namespace, owner-kind, owner-name)` — for example as a map in the WorkloadProfile status keyed by workload identity. Multiple workloads that share the same WorkloadProfile (e.g. the `billing` Deployment in 40 different dev namespaces all matched by profile `billing--dev`) each have their own independent cooldown clock. Ballast can evict pods from all of them within the same hour; the cooldown only prevents rapid re-eviction of the *same* Deployment/StatefulSet.
-
-**`minOtherHealthyReplicas`** is also **per-workload**: before evicting a pod, count the ready pods in that same Deployment/StatefulSet (same namespace, same owner). Pods from other workloads sharing the same WorkloadProfile are not counted.
-
-**Enforcing `maxConcurrentEvictions`:** before evicting, count all pods **cluster-wide** whose `ballast.tightlinesoftware.com/profile-ref` matches this profile and are either terminating (`deletionTimestamp != nil`) or not yet ready (`Pending` or `ContainerCreating`). This count spans all namespaces. Both states indicate an in-flight eviction cycle. If that count is at or above `maxConcurrentEvictions`, skip and retry after cooldown. This is stateless and self-correcting — no separate counter is needed, and the check survives controller restarts cleanly.
+Pod eviction is not performed by Ballast. For cluster rebalancing, pair Ballast with [Kubernetes Descheduler](https://github.com/kubernetes-sigs/descheduler) (`LowNodeUtilization` strategy). Once Ballast has corrected resource requests via resize, Descheduler can repack the cluster based on those accurate values.
 
 ---
 
@@ -441,40 +409,6 @@ Plugins are compiled into the binary and registered by type name. Additional plu
 
 ---
 
-## Eviction -> Re-admission Flow
-
-```
-Any field recommendation drifts beyond its configured threshold
-         │
-         ▼
-  resize annotation present?
-    │
-    ├─ Yes -> PATCH pod resize subresource
-    │            │
-    │            ├─ Success -> record in pod annotation + profile status
-    │            │
-    │            └─ Blocked (node pressure / infeasible)
-    │                      -> fall through to eviction check
-    │
-    └─ No -> fall through to eviction check
-
-evict annotation present?
-    No -> stop, emit Event, record blocked state
-    Yes -> PDB allows eviction?
-              │
-              ├─ Yes, cooldown elapsed, concurrency ok
-              │   -> evict via Eviction API
-              │     -> ReplicaSet controller recreates pod
-              │     -> admission webhook applies new recommendation
-              │
-              └─ No (PDB blocks, cooldown active, or concurrency limit)
-                 -> stop, emit Event, record blocked state, retry after cooldown
-```
-
-There is no explicit callback from the Eviction API to the webhook. The re-admission is implicit: eviction causes pod deletion; the Deployment/ReplicaSet controller issues a new pod CREATE; the admission webhook fires normally on that CREATE and applies the current recommendation from the profile.
-
----
-
 ## Helm Chart
 
 The Ballast Helm chart ships:
@@ -500,7 +434,7 @@ Ballast has no knowledge of any specific deployment tool's internals. The annota
 
 A deployment tool that wants to integrate with Ballast needs only to:
 
-- Maintain per-environment toggles for the four behaviors (measure, apply, resize, evict) at whatever granularity makes sense (per-service, per-environment-type, per-specific-environment)
+- Maintain per-environment toggles for the behaviors (measure, apply, resize, autoresize) at whatever granularity makes sense (per-service, per-environment-type, per-specific-environment)
 - Emit the corresponding `ballast.tightlinesoftware.com/*` annotations on pod template specs at manifest generation time
 - Set whatever pod labels constitute the configured identity tuple on pod templates
 
@@ -594,7 +528,7 @@ All log entries carry a consistent set of fields where applicable:
 | `pod` | Pod name |
 | `profile` | `WorkloadProfile` name |
 | `policy` | Matching policy name |
-| `action` | `measure`, `apply`, `resize`, `evict` |
+| `action` | `measure`, `apply`, `resize` |
 | `dry_run` | `true` when a dry-run flag suppresses the action |
 | `kill_switch` | `true` when suppression is due to an active kill switch |
 
@@ -615,7 +549,7 @@ kubectl create configmap ballast-kill-switch -n ballast-system
 Presence of this ConfigMap (any content; existence is sufficient) causes:
 
 - The admission webhook to pass all pods through without mutation.
-- All controllers to halt external actions: no Redis writes, no resource patches, no evictions. Reconcile loops continue running (to avoid a thundering herd on resume) but take no action.
+- All controllers to halt external actions: no Redis writes, no resource patches. Reconcile loops continue running (to avoid a thundering herd on resume) but take no action.
 - All suppressed actions logged at `warn` level with `kill_switch: true`.
 
 To resume:
@@ -651,10 +585,9 @@ Dry-run allows operators to validate Ballast's behavior without committing chang
 dry-run: measure
   implies dry-run: apply
     implies dry-run: resize
-      implies dry-run: evict
 ```
 
-You can widen or narrow dry-run scope from the top. Requesting dry-run for an upstream action (e.g., `measure`) automatically dry-runs everything downstream. Requesting dry-run for a downstream action alone (e.g., `evict`) is also valid — measurement and apply proceed normally, but no evictions are issued.
+You can widen or narrow dry-run scope from the top. Requesting dry-run for an upstream action (e.g., `measure`) automatically dry-runs everything downstream. Requesting dry-run for a downstream action alone (e.g., `resize`) is also valid — measurement and apply proceed normally, but no resize patches are issued.
 
 ### Configuration
 
@@ -665,7 +598,6 @@ Dry-run flags are global (apply to all workloads) and set at the Helm / CLI leve
 | measure | `--dry-run-measure` | `dryRun.measure` |
 | apply | `--dry-run-apply` | `dryRun.apply` |
 | resize | `--dry-run-resize` | `dryRun.resize` |
-| evict | `--dry-run-evict` | `dryRun.evict` |
 
 Any flag also activates all downstream flags implied by the cascade rule. The effective dry-run set is logged at `info` level on startup.
 
@@ -676,7 +608,6 @@ Any flag also activates all downstream flags implied by the cascade rule. The ef
 | measure | Writes samples to Redis; updates `WorkloadProfile` stats | Computes stats, logs what would be written; no Redis writes, no status update |
 | apply | Patches pod resource requests/limits at admission | Logs the patch that would be applied; pod admitted without modification |
 | resize | Patches running pod via the resize subresource | Logs the resize that would be issued; pod is not touched |
-| evict | Evicts pod via the Eviction API | Logs which pod would be evicted and why; no eviction issued |
 
 All dry-run actions are logged at `info` level with `dry_run: true` in structured fields.
 

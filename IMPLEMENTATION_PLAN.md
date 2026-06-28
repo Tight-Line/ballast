@@ -85,7 +85,7 @@ Run `kubebuilder create api --group ballast --version v1 --kind <Kind> --resourc
 Fill in all Go struct fields per `DESIGN.md`:
 
 - `MetricsSource`: `spec.type`, `spec.config` (pollInterval, reservoirSize)
-- `ClusterResourcePolicy` / `ResourcePolicy`: full selector types (kinds, namespace include/exclude regex, annotation map, labelSelector), full metrics slice (resource, field, source, aggregation, headroom), readiness (minDataPoints, minTimeSpan, maxCV), behaviors (thresholds with full coalesce hierarchy, resize.maxChangePerCycle, resize.interval, eviction.cooldown, eviction.maxConcurrentEvictions, eviction.minOtherHealthyReplicas)
+- `ClusterResourcePolicy` / `ResourcePolicy`: full selector types (kinds, namespace include/exclude regex, annotation map, labelSelector), full metrics slice (resource, field, source, aggregation, headroom), readiness (minDataPoints, minTimeSpan, maxCV), behaviors (thresholds with full coalesce hierarchy, resize.maxChangePerCycle, resize.interval)
 - `WorkloadProfile`: status only — tupleLabels, containers (usageStats per resource/source, recommendations per resource, meetsThreshold), activeWorkloads, conditions (Ready, Orphaned)
 - `BallastConfig`: identityLabels, orphanTTL, retentionWindow, suspended
 
@@ -292,7 +292,7 @@ _`make check` passing is the gate. If a test cluster with metrics-server is avai
 ### What to build
 
 - `internal/controller/workloadwatcher/controller.go`:
-  - Watches pods using a predicate that passes only pods carrying at least one Ballast **behavior** annotation (`ballast.tightlinesoftware.com/measure`, `apply`, `resize`, `evict`, `autoresize`, or `automagic`). The `profile-ref` annotation (set by Ballast itself) is excluded from the predicate to avoid self-triggering. Identity labels are not part of the predicate — they are read during processing.
+  - Watches pods using a predicate that passes only pods carrying at least one Ballast **behavior** annotation (`ballast.tightlinesoftware.com/measure`, `apply`, `resize`, or `autoresize`). The `profile-ref` annotation (set by Ballast itself) is excluded from the predicate to avoid self-triggering. Identity labels are not part of the predicate — they are read during processing.
   - **On pod CREATE/UPDATE (new pod):**
     1. Reads `BallastConfig` to get `identityLabels`
     2. Extracts identity tuple from pod labels using `identityLabels` as the key list; logs a warning and skips if any required label is absent. Derives `WorkloadProfile` name (sorted `key--value--...` from the label values).
@@ -372,7 +372,7 @@ _Deploy to test cluster. After one `pollInterval`, confirm `WorkloadProfile` sta
 - `internal/webhook/pod_mutator.go` — implements `admission.Handler` for pod CREATE:
   1. **Kill switch:** if active, return allow without mutation; log `warn`
   2. **Annotation validation:** call `validation.ValidateAnnotations`; if invalid, return deny with descriptive message
-  3. **Resolve progressive mode:** if `autoresize` or `automagic` annotation set, read `WorkloadProfile.meetsThreshold`; if false, treat as `measure`-only; if true, treat as `apply+resize` (autoresize) or `apply+resize+evict` (automagic)
+  3. **Resolve progressive mode:** if `autoresize` annotation set, read `WorkloadProfile.meetsThreshold`; if false, treat as `measure`-only; if true, treat as `apply+resize`
   4. **Apply path:** if effective `apply` is active and `WorkloadProfile.meetsThreshold` is true:
      - Resolve policy via `policy.Resolver`
      - For each regular container in the pod spec, patch `resources.requests` and `resources.limits` per `WorkloadProfile.status.recommendations`; skip containers not present in recommendations
@@ -387,7 +387,7 @@ _Deploy to test cluster. After one `pollInterval`, confirm `WorkloadProfile` sta
   - Dry-run passthrough
   - Successful patch (verify container resources are updated)
   - `meetsThreshold: false` → no patch even with `apply` annotation
-  - autoresize/automagic: before threshold (measure-only), after threshold (full behavior)
+  - autoresize: before threshold (measure-only), after threshold (apply + resize)
 
 ### Key files
 
@@ -452,13 +452,13 @@ _Deploy to test cluster with a pod carrying `resize` annotation and a ready prof
   - `image.repository`, `image.tag`, `image.pullPolicy`
   - `replicaCount: 1`
   - `logging.level`, `logging.webhook`, `logging.watcher`, `logging.collector`, `logging.adjuster`, `logging.format`
-  - `dryRun.measure`, `dryRun.apply`, `dryRun.resize`, `dryRun.evict` (all false)
+  - `dryRun.measure`, `dryRun.apply`, `dryRun.resize` (all false)
   - `ballastConfig.identityLabels`, `ballastConfig.orphanTTL`, `ballastConfig.retentionWindow`
   - `valkey.enabled: true`, `valkey.architecture: replication`
   - `store.endpoint` (used when `valkey.enabled: false`)
   - `certManager.enabled: true` (see TLS note below)
 - `templates/deployment.yaml` — mounts cert Secret; passes all flags from values
-- `templates/serviceaccount.yaml`, `templates/clusterrole.yaml`, `templates/clusterrolebinding.yaml` — exact permissions: CRD read/write for all Ballast types, Pod get/list/watch/patch (for resize and eviction), ConfigMap get/watch (kill switch), Event create
+- `templates/serviceaccount.yaml`, `templates/clusterrole.yaml`, `templates/clusterrolebinding.yaml` — exact permissions: CRD read/write for all Ballast types, Pod get/list/watch/patch (for resize), ConfigMap get/watch (kill switch), Event create
 - `templates/mutatingwebhookconfiguration.yaml` — `failurePolicy: Fail`; cert-manager `caBundle` injection annotation (`cert-manager.io/inject-ca-from`)
 - `templates/certificate.yaml`, `templates/issuer.yaml` — self-signed `Issuer` + `Certificate`; rendered when `certManager.enabled: true`
 - `templates/ballastconfig.yaml` — creates the `BallastConfig` singleton from values
