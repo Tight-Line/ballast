@@ -17,6 +17,12 @@ webhooks:
       path: /mutate-v1-pod
   failurePolicy: Fail
   name: mpod.ballast.tightlinesoftware.com
+  namespaceSelector:
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values:
+      - {{ .Release.Namespace }}
   rules:
   - apiGroups: [""]
     apiVersions: ["v1"]
