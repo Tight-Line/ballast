@@ -35,3 +35,4 @@ coverage.filtered.out
 
 # Build artifacts
 dist/
+asterix_story_log.json
