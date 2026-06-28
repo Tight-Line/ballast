@@ -1,0 +1,25 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "ballast.fullname" . }}
+  labels:
+    {{- include "ballast.labels" . | nindent 4 }}
+  {{- if .Values.certManager.enabled }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "ballast.fullname" . }}-serving-cert
+  {{- end }}
+webhooks:
+- admissionReviewVersions: ["v1"]
+  clientConfig:
+    service:
+      name: {{ include "ballast.webhookServiceName" . }}
+      namespace: {{ .Release.Namespace }}
+      path: /mutate-v1-pod
+  failurePolicy: Fail
+  name: mpod.ballast.tightlinesoftware.com
+  rules:
+  - apiGroups: [""]
+    apiVersions: ["v1"]
+    operations: ["CREATE"]
+    resources: ["pods"]
+  sideEffects: None

@@ -2,7 +2,8 @@
         setup-hooks docker check \
         manifests generate install uninstall deploy undeploy \
         setup-envtest setup-test-e2e test-e2e cleanup-test-e2e \
-        build-installer help
+        build-installer help \
+        helm-dep-update helm-lint helm-template
 
 # Build variables
 VERSION ?= 0.1.0
@@ -104,6 +105,20 @@ lint-config: golangci-lint ## Verify golangci-lint configuration.
 
 check: lint test-coverage-check build ## Full pre-release gate: lint + coverage + build.
 	@echo "All checks passed. Ready for release."
+
+##@ Helm Chart
+
+HELM ?= helm
+CHART_DIR ?= charts/ballast
+
+helm-dep-update: ## Download Helm chart dependencies (run once before helm-lint/helm-template).
+	$(HELM) dependency update $(CHART_DIR)
+
+helm-lint: ## Lint the Helm chart (run helm-dep-update first).
+	$(HELM) lint $(CHART_DIR)
+
+helm-template: ## Render Helm templates to stdout for inspection.
+	$(HELM) template ballast $(CHART_DIR) --namespace ballast-system
 
 ##@ Cluster Deployment
 

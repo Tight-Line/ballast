@@ -1,0 +1,13 @@
+{{- if .Values.leaderElect }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "ballast.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ballast.labels" . | nindent 4 }}
+rules:
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+{{- end }}

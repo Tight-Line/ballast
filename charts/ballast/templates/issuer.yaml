@@ -1,0 +1,11 @@
+{{- if .Values.certManager.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "ballast.fullname" . }}-selfsigned
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ballast.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+{{- end }}

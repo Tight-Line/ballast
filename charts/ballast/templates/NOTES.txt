@@ -1,0 +1,26 @@
+Ballast has been installed.
+
+PREREQUISITES
+  cert-manager must be installed in the cluster (certManager.enabled=true is the default).
+  Run: kubectl get pods -n cert-manager
+
+VERIFY THE OPERATOR
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "ballast.name" . }}
+  kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "ballast.name" . }} --tail=50
+
+CHECK THE SINGLETON CONFIG
+  kubectl get ballastconfig ballast -o yaml
+
+NEXT STEP — enroll a workload
+  Add the annotation to a Deployment pod template to start measurement:
+    ballast.tightlinesoftware.com/enroll: measure
+
+  After a few minutes a WorkloadProfile will appear:
+    kubectl get workloadprofiles -A
+{{- if not .Values.certManager.enabled }}
+
+NOTE: certManager.enabled=false — you must create the webhook TLS Secret manually:
+  kubectl create secret tls {{ include "ballast.webhookCertSecret" . }} \
+    --cert=tls.crt --key=tls.key \
+    -n {{ .Release.Namespace }}
+{{- end }}

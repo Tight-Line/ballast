@@ -1,0 +1,65 @@
+image:
+  repository: ghcr.io/tight-line/ballast
+  # Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  name: ""
+
+# leaderElect enables Kubernetes leader election so only one replica runs the
+# controllers at a time. Must be true when replicaCount > 1; otherwise all
+# replicas run every controller simultaneously, causing duplicate Redis writes,
+# concurrent WorkloadProfile patches, and racing resize decisions.
+leaderElect: false
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+logging:
+  level: info
+  # Per-component overrides. Leave empty to inherit the global level.
+  webhook: ""
+  watcher: ""
+  collector: ""
+  adjuster: ""
+  format: json
+
+dryRun:
+  measure: false
+  apply: false
+  resize: false
+
+ballastConfig:
+  # identityLabels: ordered list of pod label keys that form a WorkloadProfile
+  # identity tuple. Must be set at install time; changing it later requires a
+  # migration. Must have at least one entry.
+  identityLabels:
+    - app.kubernetes.io/name
+  orphanTTL: "168h"
+  retentionWindow: "168h"
+
+# Official Valkey subchart (valkey-io/valkey-helm, BSD-licensed). Set enabled: false
+# and provide store.endpoint to use an external Redis/Valkey instance instead.
+valkey:
+  enabled: true
+
+store:
+  # endpoint is used when valkey.enabled is false.
+  endpoint: "redis://localhost:6379"
+
+certManager:
+  # When true, a self-signed Issuer and Certificate are created and cert-manager
+  # injects the caBundle into the MutatingWebhookConfiguration automatically.
+  # cert-manager must already be installed in the cluster.
+  enabled: true

@@ -1,0 +1,16 @@
+{{- if not .Values.ballastConfig.identityLabels }}
+{{- fail "ballastConfig.identityLabels must contain at least one label key" }}
+{{- end }}
+apiVersion: ballast.tightlinesoftware.com/v1
+kind: BallastConfig
+metadata:
+  name: ballast
+  labels:
+    {{- include "ballast.labels" . | nindent 4 }}
+spec:
+  identityLabels:
+  {{- range .Values.ballastConfig.identityLabels }}
+  - {{ . | quote }}
+  {{- end }}
+  orphanTTL: {{ .Values.ballastConfig.orphanTTL | quote }}
+  retentionWindow: {{ .Values.ballastConfig.retentionWindow | quote }}

@@ -1,0 +1,101 @@
+{{- if and (gt (int .Values.replicaCount) 1) (not .Values.leaderElect) }}
+{{- fail "leaderElect must be true when replicaCount > 1 (multiple replicas without leader election causes split-brain controller conflicts)" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ballast.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ballast.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ballast.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ballast.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ballast.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: ballastd
+        image: {{ include "ballast.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        args:
+        - --health-probe-bind-address=:8081
+        - --metrics-bind-address=0
+        - --webhook-cert-path=/certs/webhook
+        - --redis-url={{ include "ballast.redisURL" . }}
+        - --log-level={{ .Values.logging.level }}
+        - --log-format={{ .Values.logging.format }}
+        {{- with .Values.logging.webhook }}
+        - --log-level-webhook={{ . }}
+        {{- end }}
+        {{- with .Values.logging.watcher }}
+        - --log-level-watcher={{ . }}
+        {{- end }}
+        {{- with .Values.logging.collector }}
+        - --log-level-collector={{ . }}
+        {{- end }}
+        {{- with .Values.logging.adjuster }}
+        - --log-level-adjuster={{ . }}
+        {{- end }}
+        {{- if .Values.dryRun.measure }}
+        - --dry-run-measure
+        {{- end }}
+        {{- if .Values.dryRun.apply }}
+        - --dry-run-apply
+        {{- end }}
+        {{- if .Values.dryRun.resize }}
+        - --dry-run-resize
+        {{- end }}
+        {{- if .Values.leaderElect }}
+        - --leader-elect
+        {{- end }}
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        ports:
+        - name: health
+          containerPort: 8081
+          protocol: TCP
+        - name: webhook
+          containerPort: 9443
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: webhook-cert
+          mountPath: /certs/webhook
+          readOnly: true
+      volumes:
+      - name: webhook-cert
+        secret:
+          secretName: {{ include "ballast.webhookCertSecret" . }}
+      terminationGracePeriodSeconds: 10
