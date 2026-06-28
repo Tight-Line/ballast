@@ -190,8 +190,6 @@ func containerRecsByName(profile *ballastv1.WorkloadProfile) map[string]map[stri
 	return m
 }
 
-// containerAdjustment captures the target resources for one container after
-// drift detection and maxChangePerCycle capping.
 // ContainerAdjustment captures the target resources for one container after
 // drift detection and maxChangePerCycle capping.
 type ContainerAdjustment struct {
