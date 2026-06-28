@@ -13,9 +13,10 @@ Workloads opt in with annotations on their pod templates. Ballast observes real 
 1. **Measure** — collect per-container usage samples into a time-series store (Redis/Valkey).
 2. **Apply** — patch resource requests and limits at admission time when a pod is created.
 3. **Resize** — adjust resources on running pods via the Kubernetes in-place resize API (1.35+).
-4. **Evict** — evict pods to force re-admission with updated resources when resize is blocked.
 
-Progressive modes (`autoresize`, `automagic`) start in measure-only mode and automatically activate adjustment once enough history has been collected.
+`autoresize` starts in measure-only mode and automatically activates apply and resize once enough history has been collected.
+
+Pod eviction for cluster rebalancing is handled by [Kubernetes Descheduler](https://github.com/kubernetes-sigs/descheduler) — see the Annotation Contract section for details.
 
 ## Implementation Status
 
@@ -38,7 +39,7 @@ Progressive modes (`autoresize`, `automagic`) start in measure-only mode and aut
 
 - Kubernetes 1.35+ (required for in-place pod resize; earlier versions support measure/apply/evict but not resize)
 - [metrics-server](https://github.com/kubernetes-sigs/metrics-server) installed in the cluster
-- [cert-manager](https://cert-manager.io) installed (manages the admission webhook TLS certificate)
+- TLS certificate for the admission webhook (see [Webhook TLS](#webhook-tls) below)
 - A Redis-compatible store (Ballast ships with a bundled Valkey via Helm; an existing Redis or Valkey instance works too)
 
 ## Installation
@@ -67,9 +68,9 @@ Add these annotations to your pod template specs to enroll workloads. Ballast ne
 | `ballast.tightlinesoftware.com/measure: "true"` | Collect metrics; required for any other behavior |
 | `ballast.tightlinesoftware.com/apply: "true"` | Patch requests/limits at admission time; requires `measure` |
 | `ballast.tightlinesoftware.com/resize: "true"` | Adjust resources on running pods via in-place resize; requires `apply` |
-| `ballast.tightlinesoftware.com/evict: "true"` | Evict pods to force re-admission with updated resources; requires `apply` or `resize` |
 | `ballast.tightlinesoftware.com/autoresize: "true"` | Progressive: measure-only until history threshold met, then `apply` + `resize` |
-| `ballast.tightlinesoftware.com/automagic: "true"` | Progressive: measure-only until history threshold met, then `apply` + `resize` + `evict` |
+
+**Pod eviction** is deliberately out of scope for Ballast. Ballast keeps resource requests and limits accurate; cluster rebalancing based on those corrected values is best handled by [Kubernetes Descheduler](https://github.com/kubernetes-sigs/descheduler) (specifically its `LowNodeUtilization` strategy). This is a clean division of labor: Ballast gets the weight right, Descheduler decides where pods should sit.
 
 **Example — full automation:**
 
@@ -81,7 +82,7 @@ spec:
         app.kubernetes.io/name: billing
         ballast.tightlinesoftware.com/profile: prod
       annotations:
-        ballast.tightlinesoftware.com/automagic: "true"
+        ballast.tightlinesoftware.com/autoresize: "true"
 ```
 
 **Example — measure only (safe first step):**
@@ -138,6 +139,34 @@ kubectl delete configmap ballast-kill-switch -n ballast-system
 All suppressed actions are logged at `warn` level with `kill_switch: true`. Pod admission continues normally (webhook passes pods through without mutation).
 
 For planned, GitOps-managed suspension, set `BallastConfig.spec.suspended: true` instead.
+
+## Webhook TLS
+
+Kubernetes requires the admission webhook server to present a TLS certificate trusted by the API server. Ballast supports three approaches, in order of preference:
+
+**1. cert-manager (default)**
+
+The Helm chart creates a self-signed `Issuer` and a `Certificate` resource. cert-manager provisions the cert, mounts it into the operator pod, and injects the CA bundle into the `MutatingWebhookConfiguration` automatically. This works on air-gapped clusters — no DNS or HTTP challenge, no external CA.
+
+Requires [cert-manager](https://cert-manager.io) already installed in the cluster (Ballast uses it but does not install it). If cert-manager is already present — a common case — no extra setup is needed.
+
+```yaml
+# values.yaml (default)
+certManager:
+  enabled: true
+```
+
+**2. Kubernetes CertificateSigningRequest (future improvement)**
+
+A Helm pre-install Job submits a CSR to the cluster's built-in CA. The resulting cert is written to a Secret that the operator mounts. No cert-manager dependency, but requires the Job's ServiceAccount to have `certificates.k8s.io/approve` permission — which some clusters restrict, requiring manual `kubectl certificate approve`.
+
+Not yet implemented; tracked as a future Helm chart improvement.
+
+**3. User-provided certificate (future improvement)**
+
+Supply your own cert material (e.g. from an internal PKI or Vault) via Helm values. The chart skips cert-manager and CSR resources entirely and uses the provided Secret directly. The `caBundle` in the `MutatingWebhookConfiguration` must be set to the corresponding CA cert.
+
+Not yet implemented; tracked as a future Helm chart improvement.
 
 ## Dry-run Mode
 

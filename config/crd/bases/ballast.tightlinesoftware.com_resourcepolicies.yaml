@@ -50,31 +50,6 @@ spec:
                 description: Behaviors defines thresholds and parameters for resize
                   and eviction.
                 properties:
-                  eviction:
-                    description: Eviction configures pod eviction behavior.
-                    properties:
-                      cooldown:
-                        default: 1h
-                        description: Cooldown is the minimum time between evictions
-                          for the same workload.
-                        type: string
-                      maxConcurrentEvictions:
-                        default: 1
-                        description: |-
-                          MaxConcurrentEvictions limits how many pods for a given profile can be
-                          terminating or not-yet-ready simultaneously.
-                        format: int32
-                        minimum: 0
-                        type: integer
-                      minOtherHealthyReplicas:
-                        default: 1
-                        description: |-
-                          MinOtherHealthyReplicas is the minimum number of other healthy replicas
-                          that must exist before an eviction is allowed.
-                        format: int32
-                        minimum: 0
-                        type: integer
-                    type: object
                   resize:
                     description: Resize configures in-place pod resize behavior.
                     properties:
@@ -98,34 +73,6 @@ spec:
                         description: Default is the global fallback drift threshold
                           for all behaviors and resources.
                         type: string
-                      eviction:
-                        description: Eviction contains thresholds specific to the
-                          eviction behavior.
-                        properties:
-                          default:
-                            default: 40%
-                            description: Default overrides the global default threshold
-                              for eviction.
-                            type: string
-                          resourceThresholds:
-                            additionalProperties:
-                              description: ResourceFieldThresholds maps resource fields
-                                (request, limit) to drift thresholds.
-                              properties:
-                                limit:
-                                  description: Limit is the drift threshold for the
-                                    limit field.
-                                  type: string
-                                request:
-                                  description: Request is the drift threshold for
-                                    the request field.
-                                  type: string
-                              type: object
-                            description: |-
-                              ResourceThresholds provides per-resource per-field overrides.
-                              Coalesce order: resourceThresholds -> eviction.default -> thresholds.default
-                            type: object
-                        type: object
                       resize:
                         description: Resize contains thresholds specific to the resize
                           behavior.

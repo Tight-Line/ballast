@@ -105,7 +105,6 @@ func wantsApply(ann map[string]string) bool {
 	for _, key := range []string{
 		validation.AnnotationApply,
 		validation.AnnotationAutoresize,
-		validation.AnnotationAutomagic,
 	} {
 		if v, ok := ann[key]; ok && strings.EqualFold(v, "true") {
 			return true

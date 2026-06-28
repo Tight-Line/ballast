@@ -2,7 +2,6 @@ package validation
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 )
 
@@ -10,9 +9,7 @@ const (
 	AnnotationMeasure    = "ballast.tightlinesoftware.com/measure"
 	AnnotationApply      = "ballast.tightlinesoftware.com/apply"
 	AnnotationResize     = "ballast.tightlinesoftware.com/resize"
-	AnnotationEvict      = "ballast.tightlinesoftware.com/evict"
 	AnnotationAutoresize = "ballast.tightlinesoftware.com/autoresize"
-	AnnotationAutomagic  = "ballast.tightlinesoftware.com/automagic"
 	AnnotationProfileRef = "ballast.tightlinesoftware.com/profile-ref"
 	AnnotationPolicyRef  = "ballast.tightlinesoftware.com/policy-ref"
 )
@@ -20,12 +17,10 @@ const (
 // ValidateAnnotations checks that the Ballast annotations on a pod form a valid combination.
 // Invalid combinations return a non-nil error with a descriptive message.
 //
-// Valid rules (full dependency chain: measure -> apply -> resize -> (optionally) evict):
+// Valid rules:
 //   - apply requires measure
 //   - resize requires apply (which implies measure)
-//   - evict requires apply or resize
-//   - autoresize and automagic are mutually exclusive with each other
-//   - autoresize and automagic are mutually exclusive with apply, resize, and evict
+//   - autoresize is mutually exclusive with apply and resize
 func ValidateAnnotations(annotations map[string]string) error {
 	has := func(key string) bool {
 		v, ok := annotations[key]
@@ -35,18 +30,11 @@ func ValidateAnnotations(annotations map[string]string) error {
 	measure := has(AnnotationMeasure)
 	apply := has(AnnotationApply)
 	resize := has(AnnotationResize)
-	evict := has(AnnotationEvict)
 	autoresize := has(AnnotationAutoresize)
-	automagic := has(AnnotationAutomagic)
 
 	var errs []string
 
-	// autoresize and automagic are mutually exclusive
-	if autoresize && automagic {
-		errs = append(errs, "autoresize and automagic are mutually exclusive")
-	}
-
-	errs = append(errs, autoModeConflicts(autoresize, automagic, apply, resize, evict)...)
+	errs = append(errs, autoresizeConflicts(autoresize, apply, resize)...)
 
 	// apply requires measure
 	if apply && !measure {
@@ -58,36 +46,23 @@ func ValidateAnnotations(annotations map[string]string) error {
 		errs = append(errs, "resize requires apply")
 	}
 
-	// evict requires apply or resize
-	if evict && !apply && !resize {
-		errs = append(errs, "evict requires apply or resize")
-	}
-
 	if len(errs) > 0 {
 		return errors.New("invalid Ballast annotation combination: " + strings.Join(errs, "; "))
 	}
 	return nil
 }
 
-// autoModeConflicts returns errors for conflicts between an auto mode (autoresize or automagic)
-// and explicit action annotations.
-func autoModeConflicts(autoresize, automagic, apply, resize, evict bool) []string {
-	if !autoresize && !automagic {
+// autoresizeConflicts returns errors when autoresize is combined with explicit action annotations.
+func autoresizeConflicts(autoresize, apply, resize bool) []string {
+	if !autoresize {
 		return nil
-	}
-	mode := "autoresize"
-	if automagic {
-		mode = "automagic"
 	}
 	var errs []string
 	if apply {
-		errs = append(errs, fmt.Sprintf("%s is mutually exclusive with apply", mode))
+		errs = append(errs, "autoresize is mutually exclusive with apply")
 	}
 	if resize {
-		errs = append(errs, fmt.Sprintf("%s is mutually exclusive with resize", mode))
-	}
-	if evict {
-		errs = append(errs, fmt.Sprintf("%s is mutually exclusive with evict", mode))
+		errs = append(errs, "autoresize is mutually exclusive with resize")
 	}
 	return errs
 }
