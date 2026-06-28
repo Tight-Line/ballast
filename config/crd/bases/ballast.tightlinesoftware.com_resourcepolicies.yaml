@@ -47,8 +47,7 @@ spec:
             description: spec defines the desired state of ResourcePolicy
             properties:
               behaviors:
-                description: Behaviors defines thresholds and parameters for resize
-                  and eviction.
+                description: Behaviors defines thresholds and parameters for resize.
                 properties:
                   resize:
                     description: Resize configures in-place pod resize behavior.
