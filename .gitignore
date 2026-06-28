@@ -37,3 +37,5 @@ coverage.filtered.out
 dist/
 asterix_story_log.json
 charts/ballast/charts/
+charts/ballast/crds/
+dist/
