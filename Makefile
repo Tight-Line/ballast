@@ -3,7 +3,7 @@
         manifests generate install uninstall deploy undeploy \
         setup-envtest setup-test-e2e test-e2e cleanup-test-e2e \
         build-installer help \
-        helm-dep-update helm-lint helm-template
+        helm-build helm-lint helm-template helm-package
 
 # Build variables
 VERSION ?= 0.1.0
@@ -111,14 +111,19 @@ check: lint test-coverage-check build ## Full pre-release gate: lint + coverage 
 HELM ?= helm
 CHART_DIR ?= charts/ballast
 
-helm-dep-update: ## Download Helm chart dependencies (run once before helm-lint/helm-template).
+helm-build: manifests ## Sync CRDs from config/crd/bases/ and download chart dependencies.
+	cp config/crd/bases/*.yaml $(CHART_DIR)/crds/
 	$(HELM) dependency update $(CHART_DIR)
 
-helm-lint: ## Lint the Helm chart (run helm-dep-update first).
+helm-lint: helm-build ## Lint the Helm chart.
 	$(HELM) lint $(CHART_DIR)
 
-helm-template: ## Render Helm templates to stdout for inspection.
+helm-template: helm-build ## Render Helm templates to stdout for inspection.
 	$(HELM) template ballast $(CHART_DIR) --namespace ballast-system
+
+helm-package: helm-build ## Package the chart into a self-contained .tgz release artifact under dist/.
+	mkdir -p dist
+	$(HELM) package $(CHART_DIR) --destination dist/
 
 ##@ Cluster Deployment
 
