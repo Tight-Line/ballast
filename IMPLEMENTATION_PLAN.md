@@ -441,7 +441,7 @@ _Deploy to test cluster with a pod carrying `resize` annotation and a ready prof
 
 **Status:** `[x]`
 **Depends on:** all prior phases (chart reflects final binary)
-**PR:** —
+**PR:** https://github.com/Tight-Line/ballast/pull/16
 
 ### What to build
 
