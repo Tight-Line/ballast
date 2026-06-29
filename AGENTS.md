@@ -40,17 +40,17 @@ make generate     # Regenerate DeepCopy methods
 | `internal/killswitch/killswitch.go` | `KillSwitch` reconciler; `IsActive()`/`Reason()` hot path; watches ConfigMap `ballast-kill-switch` and `BallastConfig.spec.suspended` |
 | `internal/logger/logger.go` | `New(component, level, format) logr.Logger` backed by zap; `newWithWriter` is the testable variant |
 | `internal/policy/resolver.go` | `Resolver`; `Resolve(ctx, Input) (*ResolvedPolicy, error)` — evaluates namespace/annotation/label selectors; `ResourcePolicy` beats `ClusterResourcePolicy` regardless of priority |
-| `internal/store/client.go` | `Client` interface (go-redis subset); `NewClient(redisURL)` |
+| `internal/store/client.go` | `Client` interface (go-redis subset: RPush, LTrim, LRange, LLen, SetNX, Get, Del, Scan); `NewClient(redisURL)` |
 | `internal/store/keys.go` | `TupleHash(labels)`, `MetricKey(hash, container, resource)`, `AllKeysForHash(ctx, client, hash)` |
-| `internal/store/metrics.go` | `AddSample`, `QueryWindow`, `ExpireOlderThan`, `SampleCount`, `TimeRange`, `DeleteKey`, `EnforceReservoirCap` |
+| `internal/store/metrics.go` | `AddSample`, `QueryAll`, `FirstSeenMs`, `SampleCount`, `DeleteKey` — list-based API; see Redis Data Model |
 | `internal/store/percentiles.go` | `ComputeStats([]int64) Stats` — p50/p95/p99/max/mean/stddev/CV |
 | `internal/plugin/plugin.go` | `MetricsPlugin` interface; `WorkloadIdentity`, `TimeWindow`, `ContainerStats` types |
 | `internal/plugin/registry.go` | `Register(p)`, `Get(typeName)` — global plugin registry; plugins self-register via `init()` |
 | `internal/plugin/kubernetes/plugin.go` | `kubernetesMetrics` plugin — calls in-cluster metrics API; token-bucket rate limiting; exponential backoff on errors |
 | `internal/stats/aggregator.go` | `EvaluateReadiness(Stats, firstMs, lastMs, ReadinessConfig) bool`; `ComputeRecommendation(Stats, MetricConfig) (resource.Quantity, error)` |
 | `internal/validation/annotations.go` | `ValidateAnnotations(map[string]string) error` — enforces annotation combination rules |
-| `internal/controller/workloadwatcher/controller.go` | Watches pods; creates/updates `WorkloadProfile`; `ProfileName(tupleLabels)` and `ExtractTupleLabels(podLabels, identityLabels)` exported for webhook use |
-| `internal/controller/metricscollector/controller.go` | Reconciles `WorkloadProfile` on timer; polls plugins; writes to Redis; updates status with stats and recommendations |
+| `internal/controller/workloadwatcher/controller.go` | Watches pods; creates/updates `WorkloadProfile`; `ProfileName(tupleLabels, identityLabels)` and `ExtractTupleLabels(podLabels, identityLabels)` exported for webhook use |
+| `internal/controller/metricscollector/controller.go` | Reconciles `WorkloadProfile` on timer; polls plugins; writes to Redis lists; updates status with stats and recommendations |
 | `internal/controller/resourceadjuster/controller.go` | Watches `WorkloadProfile` status changes; detects drift; issues in-place pod resize patches; exports `ExceedsDrift`, `CapChange`, `ResolveFieldThreshold`, `ParseResizeInterval` |
 | `internal/webhook/pod_mutator.go` | `PodMutator` admission handler; `Handle`, `resolveApplyProfile`, `mutate`, `applyRecommendations`; registered at `/mutate-v1-pod` |
 | `charts/ballast/values.yaml` | All Helm configurable settings with defaults |
@@ -77,8 +77,8 @@ Pod CREATE ──► PodMutator (admission webhook)
                   ▼
            MetricsCollector (controller, timer)
                   │  polls kubernetesMetrics plugin
-                  │  writes samples to Redis sorted sets
-                  │  enforces retention window + reservoir cap
+                  │  writes samples to Redis lists (RPUSH+LTRIM reservoir cap)
+                  │  records first-seen timestamp per key (SET NX)
                   │  computes p50/p95/p99/CV; evaluates readiness
                   │  updates WorkloadProfile status with recommendations
                   │
@@ -103,7 +103,7 @@ All types are in `api/v1/`. Auto-generated files (`zz_generated.*.go`) must neve
 | `ResourcePolicy` | Namespace | Same spec as `ClusterResourcePolicy`; namespace-scoped; overrides any `ClusterResourcePolicy` |
 | `WorkloadProfile` | Cluster | Status-only; holds usage stats, recommendations, `meetsThreshold`, `activeWorkloads`, and conditions |
 
-`WorkloadProfile` names are derived by sorting identity label values and joining them with `--`, e.g., labels `{app: billing, component: api}` → `billing--api`. The `ProfileName(tupleLabels)` function in `internal/controller/workloadwatcher/controller.go` is authoritative.
+`WorkloadProfile` names are derived by joining identity label values in `identityLabels` order with `--`, e.g., `identityLabels = ["app", "component"]` with labels `{app: billing, component: api}` → `billing--api`. The `ProfileName(tupleLabels, identityLabels)` function in `internal/controller/workloadwatcher/controller.go` is authoritative.
 
 ## Controllers
 
@@ -118,21 +118,23 @@ Two reconcilers share the package:
 - `PodReconciler` — watches pods carrying any Ballast behavior annotation. On CREATE: reads `BallastConfig.identityLabels`, extracts the identity tuple, creates `WorkloadProfile` if absent, increments `activeWorkloads`, stamps `profile-ref` annotation on the pod. On DELETE: decrements `activeWorkloads`; sets `Orphaned` condition when it reaches zero. Kill switch suppresses CREATE path only; DELETE path always runs so accounting stays correct.
 - `ProfileReconciler` — watches `WorkloadProfile` objects. Checks orphan TTL; if exceeded, purges Redis keys via `AllKeysForHash`/`DeleteKey` and deletes the profile.
 
-Exported helpers used by the webhook: `ExtractTupleLabels(podLabels, identityLabels)` and `ProfileName(tupleLabels)`.
+Exported helpers used by the webhook: `ExtractTupleLabels(podLabels, identityLabels)` and `ProfileName(tupleLabels, identityLabels)`. `ProfileName` joins label values in `identityLabels` order (not alphabetically) so the name reads naturally, e.g., `nginx--nocomponent` when `identityLabels = ["name", "component"]`.
 
 ### MetricsCollector (`internal/controller/metricscollector/`)
 
 Reconciles `WorkloadProfile` objects. On each cycle:
-1. Resolves matched policy via `policy.Resolver`; loads `MetricsSource` from policy
-2. Looks up plugin from the global registry by source type
-3. Calls `plugin.FetchStats(ctx, identity, window)`
-4. Writes samples to Redis; enforces retention window and reservoir cap
-5. Queries Redis for the full retention window; computes stats via `store.ComputeStats`
-6. Evaluates readiness via `stats.EvaluateReadiness`
-7. If ready, computes recommendations via `stats.ComputeRecommendation`
-8. Updates `WorkloadProfile` status
+1. Guards on `status.selectorLabels` being set (written by WorkloadWatcher); requeues after 5s if nil to avoid collecting from all cluster pods during startup race
+2. Resolves matched policy via `policy.Resolver`; loads `MetricsSource` from policy
+3. Looks up plugin from the global registry by source type
+4. Calls `plugin.FetchStats(ctx, identity, window)`
+5. Appends samples to Redis lists via `store.AddSample` (RPUSH + LTRIM reservoir cap + SET NX first-seen timestamp)
+6. Queries all samples via `store.QueryAll`; computes stats via `store.ComputeStats`
+7. Gets first-seen timestamp via `store.FirstSeenMs` to evaluate time span coverage
+8. Evaluates readiness via `stats.EvaluateReadiness`
+9. If ready, computes recommendations via `stats.ComputeRecommendation`
+10. Updates `WorkloadProfile` status
 
-Dry-run (`--dry-run-measure`) skips steps 4 and 8. Kill switch skips both.
+Dry-run (`--dry-run-measure`) skips steps 5 and 10. Kill switch skips both.
 
 ### ResourceAdjuster (`internal/controller/resourceadjuster/`)
 
@@ -183,18 +185,27 @@ The `kubernetesMetrics` plugin uses a token-bucket rate limiter (configurable RP
 
 ## Redis Data Model
 
-Keys follow the pattern `ballast:metrics:{tupleHash}:{container}:{resource}`.
+Metric keys follow the pattern `ballast:metrics:{tupleHash}:{container}:{resource}`.
 
 - `tupleHash` — 16-character lowercase hex prefix of SHA-256 of sorted `key=value\n` pairs from the identity tuple (see `store.TupleHash`)
 - `container` — container name as it appears in the pod spec
 - `resource` — `cpu`, `memory`, or `ephemeral-storage`
 
-Each key is a Redis sorted set. Score = Unix timestamp in milliseconds. Member = string-encoded value (millicores for CPU, bytes for memory/ephemeral-storage).
+Each metric key is a **Redis list** (not a sorted set). Values are string-encoded integers: millicores for CPU, bytes for memory/ephemeral-storage. RPUSH appends; LTRIM enforces the reservoir cap (oldest entries dropped). Lists preserve duplicates, which is essential — identical consecutive values (e.g., CPU always measuring at `1m`) must each count as a distinct sample.
+
+Each metric key also has a companion `{key}:first_seen` key storing the Unix timestamp (ms) of the first sample, set via SET NX. This gives a wall-clock time span for readiness evaluation without storing a timestamp in every list entry. `AllKeysForHash` returns both the list key and its `:first_seen` key so orphan cleanup deletes the full set.
+
+Store API in `internal/store/metrics.go`:
+- `AddSample(ctx, c, key, timestampMs, valueStr, cap)` — RPUSH + LTRIM (if cap > 0) + SET NX first_seen
+- `QueryAll(ctx, c, key) ([]string, error)` — LRANGE 0 -1
+- `FirstSeenMs(ctx, c, key) (int64, error)` — GET key:first_seen; returns 0 if absent
+- `SampleCount(ctx, c, key) (int64, error)` — LLEN
+- `DeleteKey(ctx, c, key) error` — DEL
 
 Key helpers in `internal/store/`:
 - `TupleHash(labels map[string]string) string` — deterministic hash
 - `MetricKey(tupleHash, container, resource string) string` — full key
-- `AllKeysForHash(ctx, client, tupleHash) ([]string, error)` — scans with `SCAN` + prefix match for orphan cleanup
+- `AllKeysForHash(ctx, client, tupleHash) ([]string, error)` — scans with `SCAN` + prefix match; returns both list keys and their `:first_seen` companions
 
 ## Testing Strategy
 

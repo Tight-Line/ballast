@@ -8,44 +8,33 @@ import (
 	"github.com/tight-line/ballast/internal/store"
 )
 
-func TestAddSampleAndQueryWindow(t *testing.T) {
+func TestAddSampleAndQueryAll(t *testing.T) {
 	ctx := context.Background()
 	c := newTestClient(t)
 	key := "ballast:metrics:test:app:cpu"
 
-	for _, s := range []struct {
-		ts  int64
-		val string
-	}{
-		{1000, "100"},
-		{2000, "200"},
-		{3000, "300"},
-		{4000, "400"},
-	} {
-		if err := store.AddSample(ctx, c, key, s.ts, s.val); err != nil {
+	for _, v := range []string{"100", "200", "300"} {
+		if err := store.AddSample(ctx, c, key, 1000, v, 0); err != nil {
 			t.Fatalf("AddSample: %v", err)
 		}
 	}
 
-	got, err := store.QueryWindow(ctx, c, key, 2000, 3000)
+	got, err := store.QueryAll(ctx, c, key)
 	if err != nil {
-		t.Fatalf("QueryWindow: %v", err)
+		t.Fatalf("QueryAll: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 results, got %d: %v", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 entries, got %d: %v", len(got), got)
 	}
-	if got[0].TimestampMs != 2000 || got[0].Value != "200" {
-		t.Errorf("got[0] = %+v, want {2000 200}", got[0])
-	}
-	if got[1].TimestampMs != 3000 || got[1].Value != "300" {
-		t.Errorf("got[1] = %+v, want {3000 300}", got[1])
+	if got[0] != "100" || got[1] != "200" || got[2] != "300" {
+		t.Errorf("unexpected values: %v", got)
 	}
 }
 
-func TestQueryWindow_Empty(t *testing.T) {
+func TestQueryAll_Empty(t *testing.T) {
 	ctx := context.Background()
 	c := newTestClient(t)
-	got, err := store.QueryWindow(ctx, c, "ballast:metrics:test:app:cpu", 0, 9999)
+	got, err := store.QueryAll(ctx, c, "ballast:metrics:test:app:cpu")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,27 +43,87 @@ func TestQueryWindow_Empty(t *testing.T) {
 	}
 }
 
-func TestExpireOlderThan(t *testing.T) {
+func TestAddSample_SameValueNotDeduplicated(t *testing.T) {
+	// Regression: sorted sets silently deduplicated identical values.
+	// A list must store one entry per AddSample call.
 	ctx := context.Background()
 	c := newTestClient(t)
 	key := "ballast:metrics:test:app:cpu"
 
-	for _, ts := range []int64{1000, 2000, 3000, 4000} {
-		_ = store.AddSample(ctx, c, key, ts, strconv.FormatInt(ts, 10))
-	}
-
-	if err := store.ExpireOlderThan(ctx, c, key, 3000); err != nil {
-		t.Fatalf("ExpireOlderThan: %v", err)
-	}
-
-	remaining, _ := store.QueryWindow(ctx, c, key, 0, 9999)
-	if len(remaining) != 2 {
-		t.Fatalf("expected 2 remaining, got %d: %v", len(remaining), remaining)
-	}
-	for _, sv := range remaining {
-		if sv.TimestampMs < 3000 {
-			t.Errorf("sample with ts %d survived cutoff 3000", sv.TimestampMs)
+	for i := 0; i < 5; i++ {
+		if err := store.AddSample(ctx, c, key, int64(i*1000), "1", 0); err != nil {
+			t.Fatalf("AddSample: %v", err)
 		}
+	}
+
+	got, err := store.QueryAll(ctx, c, key)
+	if err != nil {
+		t.Fatalf("QueryAll: %v", err)
+	}
+	if len(got) != 5 {
+		t.Errorf("expected 5 entries (one per call), got %d", len(got))
+	}
+}
+
+func TestAddSample_ReservoirCap(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+	key := "ballast:metrics:test:app:cpu"
+
+	for i := int64(1); i <= 7; i++ {
+		if err := store.AddSample(ctx, c, key, i*1000, strconv.FormatInt(i, 10), 5); err != nil {
+			t.Fatalf("AddSample: %v", err)
+		}
+	}
+
+	n, err := store.SampleCount(ctx, c, key)
+	if err != nil || n != 5 {
+		t.Errorf("expected cap=5, got count=%d err=%v", n, err)
+	}
+
+	got, _ := store.QueryAll(ctx, c, key)
+	if got[0] != "3" {
+		t.Errorf("oldest remaining = %q, want \"3\"", got[0])
+	}
+}
+
+func TestAddSample_CapZeroNoTrim(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+	key := "ballast:metrics:test:app:cpu"
+
+	for i := int64(1); i <= 10; i++ {
+		if err := store.AddSample(ctx, c, key, i*1000, strconv.FormatInt(i, 10), 0); err != nil {
+			t.Fatalf("AddSample: %v", err)
+		}
+	}
+
+	n, _ := store.SampleCount(ctx, c, key)
+	if n != 10 {
+		t.Errorf("expected 10 entries with cap=0, got %d", n)
+	}
+}
+
+func TestFirstSeenMs(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+	key := "ballast:metrics:test:app:cpu"
+
+	ms, err := store.FirstSeenMs(ctx, c, key)
+	if err != nil || ms != 0 {
+		t.Fatalf("empty key: ms=%d err=%v", ms, err)
+	}
+
+	_ = store.AddSample(ctx, c, key, 1000, "v", 0)
+	_ = store.AddSample(ctx, c, key, 5000, "v", 0)
+	_ = store.AddSample(ctx, c, key, 9000, "v", 0)
+
+	ms, err = store.FirstSeenMs(ctx, c, key)
+	if err != nil {
+		t.Fatalf("FirstSeenMs: %v", err)
+	}
+	if ms != 1000 {
+		t.Errorf("first_seen = %d, want 1000", ms)
 	}
 }
 
@@ -88,39 +137,13 @@ func TestSampleCount(t *testing.T) {
 		t.Fatalf("empty key: count=%d err=%v", n, err)
 	}
 
-	_ = store.AddSample(ctx, c, key, 1, "a")
-	_ = store.AddSample(ctx, c, key, 2, "b")
-	_ = store.AddSample(ctx, c, key, 3, "c")
+	_ = store.AddSample(ctx, c, key, 1, "a", 0)
+	_ = store.AddSample(ctx, c, key, 2, "b", 0)
+	_ = store.AddSample(ctx, c, key, 3, "c", 0)
 
 	n, err = store.SampleCount(ctx, c, key)
 	if err != nil || n != 3 {
 		t.Fatalf("expected 3, got count=%d err=%v", n, err)
-	}
-}
-
-func TestTimeRange(t *testing.T) {
-	ctx := context.Background()
-	c := newTestClient(t)
-	key := "ballast:metrics:test:app:cpu"
-
-	first, last, err := store.TimeRange(ctx, c, key)
-	if err != nil || first != 0 || last != 0 {
-		t.Fatalf("empty key: first=%d last=%d err=%v", first, last, err)
-	}
-
-	_ = store.AddSample(ctx, c, key, 1000, "a")
-	_ = store.AddSample(ctx, c, key, 5000, "b")
-	_ = store.AddSample(ctx, c, key, 3000, "c")
-
-	first, last, err = store.TimeRange(ctx, c, key)
-	if err != nil {
-		t.Fatalf("TimeRange: %v", err)
-	}
-	if first != 1000 {
-		t.Errorf("first = %d, want 1000", first)
-	}
-	if last != 5000 {
-		t.Errorf("last = %d, want 5000", last)
 	}
 }
 
@@ -129,7 +152,7 @@ func TestDeleteKey(t *testing.T) {
 	c := newTestClient(t)
 	key := "ballast:metrics:test:app:cpu"
 
-	_ = store.AddSample(ctx, c, key, 1000, "v")
+	_ = store.AddSample(ctx, c, key, 1000, "v", 0)
 	if err := store.DeleteKey(ctx, c, key); err != nil {
 		t.Fatalf("DeleteKey: %v", err)
 	}
@@ -137,48 +160,5 @@ func TestDeleteKey(t *testing.T) {
 	n, _ := store.SampleCount(ctx, c, key)
 	if n != 0 {
 		t.Errorf("key still has %d entries after delete", n)
-	}
-}
-
-func TestEnforceReservoirCap(t *testing.T) {
-	ctx := context.Background()
-	c := newTestClient(t)
-	key := "ballast:metrics:test:app:cpu"
-
-	for i := int64(1); i <= 7; i++ {
-		_ = store.AddSample(ctx, c, key, i*1000, strconv.FormatInt(i, 10))
-	}
-
-	if err := store.EnforceReservoirCap(ctx, c, key, 5); err != nil {
-		t.Fatalf("EnforceReservoirCap: %v", err)
-	}
-
-	n, _ := store.SampleCount(ctx, c, key)
-	if n != 5 {
-		t.Errorf("after cap=5, count = %d, want 5", n)
-	}
-
-	remaining, _ := store.QueryWindow(ctx, c, key, 0, 99999)
-	if remaining[0].TimestampMs != 3000 {
-		t.Errorf("oldest remaining ts = %d, want 3000", remaining[0].TimestampMs)
-	}
-}
-
-func TestEnforceReservoirCap_NopWhenUnderCap(t *testing.T) {
-	ctx := context.Background()
-	c := newTestClient(t)
-	key := "ballast:metrics:test:app:cpu"
-
-	for i := int64(1); i <= 3; i++ {
-		_ = store.AddSample(ctx, c, key, i*1000, strconv.FormatInt(i, 10))
-	}
-
-	if err := store.EnforceReservoirCap(ctx, c, key, 5); err != nil {
-		t.Fatalf("EnforceReservoirCap: %v", err)
-	}
-
-	n, _ := store.SampleCount(ctx, c, key)
-	if n != 3 {
-		t.Errorf("count changed to %d, expected 3", n)
 	}
 }

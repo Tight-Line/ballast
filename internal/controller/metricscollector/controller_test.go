@@ -113,17 +113,6 @@ func reconcileProfile(t *testing.T, r *metricscollector.Reconciler, name string)
 
 // -- fixture helpers --
 
-func defaultBallastConfig() *ballastv1.BallastConfig {
-	return &ballastv1.BallastConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: killswitch.BallastConfigName},
-		Spec: ballastv1.BallastConfigSpec{
-			IdentityLabels:  []string{"app"},
-			OrphanTTL:       "168h",
-			RetentionWindow: "168h",
-		},
-	}
-}
-
 func defaultMetricsSource() *ballastv1.MetricsSource {
 	return &ballastv1.MetricsSource{
 		ObjectMeta: metav1.ObjectMeta{Name: "k8s-metrics"},
@@ -176,7 +165,7 @@ func cpuSample(container string, milliCores int64, ts time.Time) plugin.Containe
 // -- unit tests --
 
 func TestReconcile_ProfileNotFound(t *testing.T) {
-	fc := newFakeClient(defaultBallastConfig())
+	fc := newFakeClient()
 	_, sc := newMiniredisClient(t)
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, nil)
 
@@ -189,9 +178,17 @@ func TestReconcile_ProfileNotFound(t *testing.T) {
 	}
 }
 
-func TestReconcile_NoBallastConfig(t *testing.T) {
-	profile := defaultProfile(map[string]string{"app": "web"})
-	fc := newFakeClient(profile) // no BallastConfig
+func TestReconcile_NilSelectorLabels(t *testing.T) {
+	// SelectorLabels is written by workloadwatcher in a separate update; if the metrics
+	// controller fires first, it must requeue rather than collect from every pod.
+	profile := &ballastv1.WorkloadProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: "web"},
+		Status: ballastv1.WorkloadProfileStatus{
+			TupleLabels: map[string]string{"app": "web"},
+			// SelectorLabels intentionally nil
+		},
+	}
+	fc := newFakeClient(profile)
 	_, sc := newMiniredisClient(t)
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, nil)
 
@@ -200,13 +197,13 @@ func TestReconcile_NoBallastConfig(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.RequeueAfter == 0 {
-		t.Error("expected requeue when BallastConfig is absent")
+		t.Error("expected requeue when SelectorLabels is nil")
 	}
 }
 
 func TestReconcile_NoMatchingPolicy(t *testing.T) {
 	profile := defaultProfile(map[string]string{"app": "web"})
-	fc := newFakeClient(defaultBallastConfig(), profile)
+	fc := newFakeClient(profile)
 	// No ClusterResourcePolicy that matches
 	_, sc := newMiniredisClient(t)
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, nil)
@@ -223,7 +220,7 @@ func TestReconcile_NoMatchingPolicy(t *testing.T) {
 func TestReconcile_KillSwitchActive(t *testing.T) {
 	ctx := context.Background()
 	profile := defaultProfile(map[string]string{"app": "web"})
-	fc := newFakeClient(defaultBallastConfig(), defaultPolicy(), defaultMetricsSource(), profile)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile)
 	_, sc := newMiniredisClient(t)
 
 	// Seed the profile status via fake client.
@@ -256,7 +253,7 @@ func TestReconcile_KillSwitchActive(t *testing.T) {
 func TestReconcile_DryRun(t *testing.T) {
 	ctx := context.Background()
 	profile := defaultProfile(map[string]string{"app": "web"})
-	fc := newFakeClient(defaultBallastConfig(), defaultPolicy(), defaultMetricsSource(), profile)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile)
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -301,7 +298,7 @@ func TestReconcile_MetricsSourceNotFound(t *testing.T) {
 		},
 	}
 	profile := defaultProfile(map[string]string{"app": "web"})
-	fc := newFakeClient(defaultBallastConfig(), policy, profile)
+	fc := newFakeClient(policy, profile)
 	if err := fc.Status().Update(context.Background(), profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -323,7 +320,7 @@ func TestReconcile_CollectAndUpdate(t *testing.T) {
 	ctx := context.Background()
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(defaultBallastConfig(), defaultPolicy(), defaultMetricsSource(), profile)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile)
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -394,7 +391,7 @@ func TestReconcile_ReadinessNotMet(t *testing.T) {
 	}
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(defaultBallastConfig(), policy, defaultMetricsSource(), profile)
+	fc := newFakeClient(policy, defaultMetricsSource(), profile)
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -426,7 +423,7 @@ func TestReconcile_ReadinessMet_RecommendationsPopulated(t *testing.T) {
 	ctx := context.Background()
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(defaultBallastConfig(), defaultPolicy(), defaultMetricsSource(), profile)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile)
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -477,7 +474,7 @@ func TestReconcile_ExistingContainersPreserved(t *testing.T) {
 	ctx := context.Background()
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(defaultBallastConfig(), defaultPolicy(), defaultMetricsSource(), profile)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile)
 
 	// Pre-populate profile with a prior cycle's container stats.
 	profile.Status.Containers = []ballastv1.ContainerProfile{{
@@ -525,7 +522,7 @@ func TestReconcile_PluginNotFound(t *testing.T) {
 		},
 	}
 	profile := defaultProfile(map[string]string{"app": "web"})
-	fc := newFakeClient(defaultBallastConfig(), defaultPolicy(), src, profile)
+	fc := newFakeClient(defaultPolicy(), src, profile)
 	if err := fc.Status().Update(context.Background(), profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -545,7 +542,7 @@ func TestReconcile_PluginNotFound(t *testing.T) {
 func TestReconcile_FetchStatsError(t *testing.T) {
 	// Plugin returns an error from FetchStats — collectFromSource logs and continues.
 	profile := defaultProfile(map[string]string{"app": "web"})
-	fc := newFakeClient(defaultBallastConfig(), defaultPolicy(), defaultMetricsSource(), profile)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile)
 	if err := fc.Status().Update(context.Background(), profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -576,7 +573,7 @@ func TestReconcile_BadAggregation(t *testing.T) {
 	}
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(defaultBallastConfig(), badPolicy, defaultMetricsSource(), profile)
+	fc := newFakeClient(badPolicy, defaultMetricsSource(), profile)
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -641,7 +638,7 @@ func TestReconcile_ShortPollInterval(t *testing.T) {
 		},
 	}
 	profile := defaultProfile(map[string]string{"app": "web"})
-	fc := newFakeClient(defaultBallastConfig(), defaultPolicy(), src, profile)
+	fc := newFakeClient(defaultPolicy(), src, profile)
 	if err := fc.Status().Update(context.Background(), profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -674,7 +671,7 @@ func TestReconcile_MemoryMetric(t *testing.T) {
 	}
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(defaultBallastConfig(), memPolicy, defaultMetricsSource(), profile)
+	fc := newFakeClient(memPolicy, defaultMetricsSource(), profile)
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -712,13 +709,97 @@ func TestReconcile_MemoryMetric(t *testing.T) {
 	}
 }
 
+func TestReconcile_MemoryMetric_GiScale(t *testing.T) {
+	// Exercises the >=1Gi branch in formatResourceValue.
+	ctx := context.Background()
+	memPolicy := &ballastv1.ClusterResourcePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform-defaults"},
+		Spec: ballastv1.ClusterResourcePolicySpec{
+			Metrics:   []ballastv1.MetricConfig{{Resource: "memory", Field: "request", Source: "k8s-metrics", Aggregation: "p95", Headroom: "1.0"}},
+			Readiness: ballastv1.ReadinessConfig{MinDataPoints: 2, MinTimeSpan: "1ms", MaxCV: "99.0"},
+		},
+	}
+	tupleLabels := map[string]string{"app": "web"}
+	profile := defaultProfile(tupleLabels)
+	fc := newFakeClient(memPolicy, defaultMetricsSource(), profile)
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+	_, sc := newMiniredisClient(t)
+	now := time.Now()
+	p := &mockPlugin{
+		typeName: "kubernetesMetrics",
+		samples: []plugin.ContainerStats{
+			{ContainerName: "app", Resource: "memory", Value: *resource.NewQuantity(2*1024*1024*1024, resource.BinarySI), Timestamp: now.Add(-10 * time.Millisecond)},
+			{ContainerName: "app", Resource: "memory", Value: *resource.NewQuantity(3*1024*1024*1024, resource.BinarySI), Timestamp: now},
+		},
+	}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+	if _, err := reconcileProfile(t, r, "web"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.Status.Containers) == 0 || len(got.Status.Containers[0].UsageStats) == 0 {
+		t.Fatal("expected container usage stats")
+	}
+	p50 := got.Status.Containers[0].UsageStats[0].P50
+	if len(p50) == 0 || p50[len(p50)-2:] != "Gi" {
+		t.Errorf("expected Gi suffix in P50 %q", p50)
+	}
+}
+
+func TestReconcile_MemoryMetric_KiScale(t *testing.T) {
+	// Exercises the <1Mi (Ki) branch in formatResourceValue.
+	ctx := context.Background()
+	memPolicy := &ballastv1.ClusterResourcePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform-defaults"},
+		Spec: ballastv1.ClusterResourcePolicySpec{
+			Metrics:   []ballastv1.MetricConfig{{Resource: "memory", Field: "request", Source: "k8s-metrics", Aggregation: "p95", Headroom: "1.0"}},
+			Readiness: ballastv1.ReadinessConfig{MinDataPoints: 2, MinTimeSpan: "1ms", MaxCV: "99.0"},
+		},
+	}
+	tupleLabels := map[string]string{"app": "web"}
+	profile := defaultProfile(tupleLabels)
+	fc := newFakeClient(memPolicy, defaultMetricsSource(), profile)
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+	_, sc := newMiniredisClient(t)
+	now := time.Now()
+	p := &mockPlugin{
+		typeName: "kubernetesMetrics",
+		samples: []plugin.ContainerStats{
+			{ContainerName: "app", Resource: "memory", Value: *resource.NewQuantity(512*1024, resource.BinarySI), Timestamp: now.Add(-10 * time.Millisecond)},
+			{ContainerName: "app", Resource: "memory", Value: *resource.NewQuantity(768*1024, resource.BinarySI), Timestamp: now},
+		},
+	}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+	if _, err := reconcileProfile(t, r, "web"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.Status.Containers) == 0 || len(got.Status.Containers[0].UsageStats) == 0 {
+		t.Fatal("expected container usage stats")
+	}
+	p50 := got.Status.Containers[0].UsageStats[0].P50
+	if len(p50) == 0 || p50[len(p50)-2:] != "Ki" {
+		t.Errorf("expected Ki suffix in P50 %q", p50)
+	}
+}
+
 func TestReconcile_DuplicateContainerMerge(t *testing.T) {
 	// Existing profile has app/cpu AND new FetchStats also returns app/cpu.
 	// mergeContainerSets calls appendUnique twice for the same pair; second call returns early.
 	ctx := context.Background()
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(defaultBallastConfig(), defaultPolicy(), defaultMetricsSource(), profile)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile)
 	profile.Status.Containers = []ballastv1.ContainerProfile{{
 		Name:       "app",
 		UsageStats: []ballastv1.ContainerUsageStats{{Resource: "cpu", Source: "k8s-metrics", Samples: 5}},

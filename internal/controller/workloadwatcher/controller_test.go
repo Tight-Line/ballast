@@ -539,6 +539,11 @@ func TestPodReconciler_DeleteNoFinalizer(t *testing.T) {
 	profName := "web"
 	profile := &ballastv1.WorkloadProfile{ObjectMeta: metav1.ObjectMeta{Name: profName}}
 	// Pod is being deleted (held by a foreign finalizer) but lacks our finalizer.
+	// Our finalizer is the "we've counted this pod" marker — without it, we skip
+	// the decrement to avoid double-counting the reconcile that fires after we
+	// remove the finalizer on a normally-tracked pod. If the finalizer was externally
+	// stripped, activeWorkloads leaks by 1; recovery requires manual correction of
+	// the WorkloadProfile status.
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "web-abc",
@@ -565,13 +570,14 @@ func TestPodReconciler_DeleteNoFinalizer(t *testing.T) {
 
 	reconcilePod(t, c, "default", "web-abc")
 
-	// Decrement must still happen even though we have no finalizer.
+	// No decrement: our finalizer is absent, so this is a no-op to prevent
+	// the double-decrement that would occur when we remove our own finalizer.
 	var got ballastv1.WorkloadProfile
 	if err := fc.Get(ctx, types.NamespacedName{Name: profName}, &got); err != nil {
 		t.Fatalf("Get profile: %v", err)
 	}
-	if got.Status.ActiveWorkloads != 0 {
-		t.Errorf("activeWorkloads: got %d, want 0", got.Status.ActiveWorkloads)
+	if got.Status.ActiveWorkloads != 1 {
+		t.Errorf("activeWorkloads: got %d, want 1 (no decrement without our finalizer)", got.Status.ActiveWorkloads)
 	}
 }
 
@@ -850,10 +856,10 @@ func TestProfileReconciler_OrphanTTLExpired(t *testing.T) {
 	tupleHash := store.TupleHash(tupleLabels)
 	key1 := store.MetricKey(tupleHash, "app", "cpu")
 	key2 := store.MetricKey(tupleHash, "app", "memory")
-	if err := store.AddSample(ctx, rc, key1, 1000, "100m"); err != nil {
+	if err := store.AddSample(ctx, rc, key1, 1000, "100m", 0); err != nil {
 		t.Fatalf("AddSample key1: %v", err)
 	}
-	if err := store.AddSample(ctx, rc, key2, 1000, "256Mi"); err != nil {
+	if err := store.AddSample(ctx, rc, key2, 1000, "256Mi", 0); err != nil {
 		t.Fatalf("AddSample key2: %v", err)
 	}
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -134,7 +133,7 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 
 	tupleLabels := ExtractTupleLabels(pod.Labels, cfg.Spec.IdentityLabels)
 	selectorLabels := ExtractSelectorLabels(pod.Labels, cfg.Spec.IdentityLabels)
-	profName := ProfileName(tupleLabels)
+	profName := ProfileName(tupleLabels, cfg.Spec.IdentityLabels)
 
 	if err := r.ensureProfile(ctx, profName, tupleLabels, selectorLabels); err != nil { // coverage:ignore - transient API error
 		return ctrl.Result{}, err
@@ -158,6 +157,15 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 }
 
 func (r *PodReconciler) handleDelete(ctx context.Context, pod *corev1.Pod) (ctrl.Result, error) {
+	// Only decrement when our finalizer is present. The finalizer is added atomically
+	// with the increment, so its presence means "not yet decremented." Without this
+	// guard, removing the finalizer triggers a MODIFIED event → second reconcile →
+	// second decrement. If the finalizer was externally stripped, activeWorkloads leaks
+	// by 1; no automatic recovery exists.
+	if !controllerutil.ContainsFinalizer(pod, FinalizerName) {
+		return ctrl.Result{}, nil
+	}
+
 	// Kill switch does NOT suppress decrement — accounting must stay correct.
 	if profName := pod.Annotations[AnnotationProfileRef]; profName != "" {
 		if err := r.decrementActiveWorkloads(ctx, profName); err != nil { // coverage:ignore - transient API error
@@ -165,11 +173,8 @@ func (r *PodReconciler) handleDelete(ctx context.Context, pod *corev1.Pod) (ctrl
 		}
 	}
 
-	if controllerutil.ContainsFinalizer(pod, FinalizerName) {
-		controllerutil.RemoveFinalizer(pod, FinalizerName)
-		return ctrl.Result{}, r.client.Update(ctx, pod)
-	}
-	return ctrl.Result{}, nil
+	controllerutil.RemoveFinalizer(pod, FinalizerName)
+	return ctrl.Result{}, r.client.Update(ctx, pod)
 }
 
 func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupleLabels, selectorLabels map[string]string) error {
@@ -384,18 +389,14 @@ func missingLabelPlaceholder(key string) string {
 }
 
 // ProfileName derives a deterministic Kubernetes-safe name from a label tuple.
-// Keys are sorted alphabetically; only their values are joined with "--".
-// Each value is sanitized to lowercase alphanumeric-and-dash.
-func ProfileName(tupleLabels map[string]string) string {
-	keys := make([]string, 0, len(tupleLabels))
-	for k := range tupleLabels {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
+// Values are joined with "--" in identityLabels order. Each value is sanitized
+// to lowercase alphanumeric-and-dash.
+func ProfileName(tupleLabels map[string]string, identityLabels []string) string {
 	var parts []string
-	for _, k := range keys {
-		parts = append(parts, sanitizeName(tupleLabels[k]))
+	for _, k := range identityLabels {
+		if v, ok := tupleLabels[k]; ok {
+			parts = append(parts, sanitizeName(v))
+		}
 	}
 	name := strings.Join(parts, "--")
 	if len(name) > 253 { // coverage:ignore - triggered only with extremely long label values

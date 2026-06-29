@@ -76,7 +76,7 @@ func TestAllKeysForHash(t *testing.T) {
 	k3 := store.MetricKey(otherHash, "app", "cpu")
 
 	for _, k := range []string{k1, k2, k3} {
-		if err := store.AddSample(ctx, c, k, 1000, "100"); err != nil {
+		if err := store.AddSample(ctx, c, k, 1000, "100", 0); err != nil {
 			t.Fatalf("AddSample: %v", err)
 		}
 	}
@@ -86,7 +86,9 @@ func TestAllKeysForHash(t *testing.T) {
 		t.Fatalf("AllKeysForHash: %v", err)
 	}
 	sort.Strings(keys)
-	want := []string{k1, k2}
+	// AddSample also writes a :first_seen key per metric; AllKeysForHash must return
+	// them so the cleanup pass deletes the full key set.
+	want := []string{k1, k1 + ":first_seen", k2, k2 + ":first_seen"}
 	sort.Strings(want)
 	if len(keys) != len(want) {
 		t.Fatalf("AllKeysForHash = %v, want %v", keys, want)

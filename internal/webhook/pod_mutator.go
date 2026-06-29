@@ -159,7 +159,7 @@ func (m *PodMutator) lookupProfile(ctx context.Context, pod *corev1.Pod) (*balla
 	tupleLabels := workloadwatcher.ExtractTupleLabels(pod.Labels, cfg.Spec.IdentityLabels)
 
 	var wp ballastv1.WorkloadProfile
-	if err := m.client.Get(ctx, types.NamespacedName{Name: workloadwatcher.ProfileName(tupleLabels)}, &wp); err != nil {
+	if err := m.client.Get(ctx, types.NamespacedName{Name: workloadwatcher.ProfileName(tupleLabels, cfg.Spec.IdentityLabels)}, &wp); err != nil {
 		return nil, nil //nolint:nilerr // not-found is expected for new workloads
 	}
 
