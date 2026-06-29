@@ -7,7 +7,10 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: ["pods"]
-  verbs: ["get", "list", "watch", "patch"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: [""]
+  resources: ["pods/resize"]
+  verbs: ["patch"]
 - apiGroups: [""]
   resources: ["configmaps"]
   verbs: ["get", "list", "watch"]
