@@ -50,7 +50,7 @@ func TestAddSample_SameValueNotDeduplicated(t *testing.T) {
 	c := newTestClient(t)
 	key := "ballast:metrics:test:app:cpu"
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if err := store.AddSample(ctx, c, key, int64(i*1000), "1", 0); err != nil {
 			t.Fatalf("AddSample: %v", err)
 		}

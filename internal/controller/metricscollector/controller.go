@@ -20,7 +20,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/killswitch"
@@ -69,7 +71,7 @@ func Setup(mgr ctrl.Manager, ks *killswitch.KillSwitch, sc store.Client, dryRunM
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("metricscollector").
-		For(&ballastv1.WorkloadProfile{}).
+		For(&ballastv1.WorkloadProfile{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }
 

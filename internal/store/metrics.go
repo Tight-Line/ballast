@@ -11,12 +11,12 @@ import (
 // AddSample appends valueStr to the list at key, trims to the most recent cap
 // entries (keeping newest), and records the first-seen timestamp via SET NX.
 // cap <= 0 skips the trim.
-func AddSample(ctx context.Context, c Client, key string, timestampMs int64, valueStr string, cap int64) error {
+func AddSample(ctx context.Context, c Client, key string, timestampMs int64, valueStr string, maxEntries int64) error {
 	if err := c.RPush(ctx, key, valueStr).Err(); err != nil { // coverage:ignore - Redis error
 		return fmt.Errorf("RPUSH %s: %w", key, err)
 	}
-	if cap > 0 {
-		if err := c.LTrim(ctx, key, -cap, -1).Err(); err != nil { // coverage:ignore - Redis error
+	if maxEntries > 0 {
+		if err := c.LTrim(ctx, key, -maxEntries, -1).Err(); err != nil { // coverage:ignore - Redis error
 			return fmt.Errorf("LTRIM %s: %w", key, err)
 		}
 	}
