@@ -57,6 +57,8 @@ make generate     # Regenerate DeepCopy methods
 | `charts/ballast/templates/deployment.yaml` | Operator deployment; mounts cert Secret; passes all CLI flags from values |
 | `charts/ballast/templates/mutatingwebhookconfiguration.yaml` | Webhook registration; `failurePolicy: Fail`; cert-manager `caBundle` injection annotation |
 | `charts/ballast/templates/ballastconfig.yaml` | Creates the `BallastConfig` singleton from Helm values |
+| `charts/ballast/templates/metricssource.yaml` | Creates the default `kubernetes-metrics` MetricsSource (opt-out via `defaultMetricsSource.enabled: false`) |
+| `charts/ballast/templates/clusterresourcepolicy.yaml` | Creates the default `default` ClusterResourcePolicy (opt-out via `defaultClusterResourcePolicy.enabled: false`) |
 
 ## Architecture
 
@@ -221,6 +223,9 @@ Run the full gate: `make check` (lint + coverage + build).
 | `make generate` | Regenerate DeepCopy methods |
 | `make tools` | Install goimports |
 | `make setup-hooks` | Install pre-commit hook (`scripts/pre-commit`) |
+| `make docker-kind KIND_CLUSTER=<name>` | Build image for host arch (auto-detected via `uname -m`) tagged `:local` and load into the named kind cluster |
+| `make helm-install-local` | Install/upgrade chart into the current kubeconfig cluster using the locally loaded `:local` image (`pullPolicy: Never`) |
+| `make helm-update-local KIND_CLUSTER=<name>` | Combined: `docker-kind` + `helm-install-local` in one step — the normal local dev iteration command |
 
 ### GitHub Actions
 

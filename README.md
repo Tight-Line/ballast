@@ -208,6 +208,123 @@ Supply your own cert material (e.g. from an internal PKI or Vault) via Helm valu
 
 Not yet implemented; tracked as a future Helm chart improvement.
 
+## Default MetricsSource and ClusterResourcePolicy
+
+A fresh `helm install` ships two objects out of the box so measurements work without any extra setup:
+
+### MetricsSource: `kubernetes-metrics`
+
+```yaml
+spec:
+  type: kubernetesMetrics
+  config:
+    pollInterval: "60s"
+    reservoirSize: 10000
+```
+
+This wires Ballast to the cluster's [metrics-server](https://github.com/kubernetes-sigs/metrics-server) (which must already be installed — it is not bundled). Samples are collected every 60 seconds and up to 10,000 samples per container per metric are retained in Redis.
+
+To opt out and manage `MetricsSource` objects yourself:
+
+```yaml
+# values.yaml
+defaultMetricsSource:
+  enabled: false
+```
+
+### ClusterResourcePolicy: `default`
+
+```yaml
+spec:
+  priority: 0
+  metrics:
+    - resource: cpu
+      field: request
+      source: kubernetes-metrics
+      aggregation: p95
+      headroom: "1.2"
+    - resource: memory
+      field: request
+      source: kubernetes-metrics
+      aggregation: p95
+      headroom: "1.3"
+  readiness:
+    minDataPoints: 500
+    minTimeSpan: "24h"
+    maxCV: "1.5"
+  behaviors:
+    thresholds:
+      default: "20%"
+    resize:
+      maxChangePerCycle: "50%"
+      interval: "15m"
+```
+
+This catch-all policy applies to every opted-in pod in the cluster. Key design decisions:
+
+- **Requests only, no limits.** Setting memory limits without careful profiling causes OOMKills; CPU limits cause throttling. Add limit entries in a higher-priority policy once you have enough history to trust the recommendations.
+- **p95 with headroom.** CPU requests are set to the 95th-percentile usage × 1.2; memory at p95 × 1.3. Memory gets slightly more headroom because usage spikes are harder to absorb than CPU ones.
+- **500 samples over 24 hours before acting.** This prevents premature resizes on workloads that haven't been observed long enough to produce stable recommendations. A high coefficient of variation (CV > 1.5) also blocks action — it means the workload is too spiky to size reliably.
+- **20% drift threshold.** A resize only fires when the current resource value deviates from the recommendation by more than 20%, avoiding churn from minor fluctuations.
+- **50% max change per cycle.** Caps how aggressively a single resize can move a value, giving workloads time to stabilize between adjustments.
+- **Priority 0.** This is the lowest possible priority. Any `ClusterResourcePolicy` or `ResourcePolicy` with `priority > 0` wins for matched workloads, so you can override specific namespaces or workload kinds without touching this default.
+
+To opt out and manage policies yourself:
+
+```yaml
+# values.yaml
+defaultClusterResourcePolicy:
+  enabled: false
+```
+
+To override just the readiness threshold or headroom for all workloads, patch the values directly:
+
+```yaml
+# values.yaml
+defaultClusterResourcePolicy:
+  readiness:
+    minDataPoints: 200
+    minTimeSpan: "6h"
+  metrics:
+    - resource: cpu
+      field: request
+      aggregation: p95
+      headroom: "1.1"
+    - resource: memory
+      field: request
+      aggregation: p95
+      headroom: "1.2"
+```
+
+To add a tighter policy for production namespaces alongside the default, create a higher-priority `ClusterResourcePolicy`:
+
+```yaml
+apiVersion: ballast.tightlinesoftware.com/v1
+kind: ClusterResourcePolicy
+metadata:
+  name: production
+spec:
+  priority: 10
+  selector:
+    namespaces:
+      include: ["/.*-prod/", "/.*-production/"]
+  metrics:
+    - resource: cpu
+      field: request
+      source: kubernetes-metrics
+      aggregation: p99
+      headroom: "1.15"
+    - resource: memory
+      field: request
+      source: kubernetes-metrics
+      aggregation: p99
+      headroom: "1.25"
+  readiness:
+    minDataPoints: 1000
+    minTimeSpan: "72h"
+    maxCV: "1.0"
+```
+
 ## Dry-run Mode
 
 Each action has an independent dry-run flag. They cascade: dry-running `measure` implies dry-running everything downstream.
@@ -240,6 +357,53 @@ make generate       # Regenerate DeepCopy methods
 ```
 
 The `make check` target is the gate for every PR and release. It runs golangci-lint, enforces 100% test coverage (uncovered lines require a `// coverage:ignore - <reason>` comment), and builds the binary.
+
+### Local kind cluster
+
+For iterating against a real cluster without pushing to GHCR, use the `helm-update-local` workflow. It builds a local image, loads it directly into kind (no registry push/pull), and installs the Helm chart.
+
+**One-time setup**
+
+```bash
+# Create the kind cluster (any name works; pass it to every make command below)
+kind create cluster --name ballast-dev
+
+# Install cert-manager (required by the Ballast webhook)
+helm repo add jetstack https://charts.jetstack.io --force-update
+helm install cert-manager jetstack/cert-manager \
+  --namespace cert-manager --create-namespace \
+  --set crds.enabled=true
+
+# Wait for cert-manager to be ready before deploying Ballast
+kubectl rollout status deployment/cert-manager -n cert-manager
+```
+
+**Iterate: change code → rebuild → redeploy**
+
+```bash
+make helm-update-local KIND_CLUSTER=ballast-dev
+```
+
+This runs three steps in sequence:
+
+1. **Build** — `docker build --platform linux/<host-arch>` tagged `:local`. The host architecture is detected automatically via `uname -m`, so the same command works on both ARM and x86 machines.
+2. **Load** — `kind load docker-image` injects the image directly into the kind node; no registry push or GHCR credentials needed.
+3. **Install** — `helm upgrade --install` deploys the chart into `ballast-system` with `image.pullPolicy=Never`, pinning it to the locally loaded image.
+
+**Individual targets** (when you only need part of the cycle):
+
+```bash
+make docker-kind KIND_CLUSTER=ballast-dev      # Build + load image only
+make helm-install-local                        # Install/upgrade chart only (uses last loaded image)
+```
+
+**Verify the deployment**
+
+```bash
+kubectl get pods -n ballast-system             # operator pod should be Running
+kubectl logs -n ballast-system -l app.kubernetes.io/name=ballast -f
+kubectl get ballastconfig                      # confirm CRD is installed
+```
 
 ## Logging
 

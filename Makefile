@@ -1,13 +1,14 @@
 .PHONY: build clean test test-coverage test-coverage-check lint lint-fix lint-config fmt vet tidy tools \
-        setup-hooks docker check \
+        setup-hooks docker docker-kind check \
         manifests generate install uninstall deploy undeploy \
         setup-envtest setup-test-e2e test-e2e cleanup-test-e2e \
         build-installer help \
-        helm-build helm-lint helm-template helm-package
+        helm-build helm-lint helm-template helm-package helm-install-local helm-update-local
 
 # Build variables
 VERSION ?= 0.1.0
 IMG ?= ghcr.io/tight-line/ballast:$(VERSION)
+IMG_LOCAL ?= ghcr.io/tight-line/ballast:local
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -74,6 +75,12 @@ run: manifests generate fmt vet ## Run ballastd from your host (uses current kub
 docker: ## Build the Docker image.
 	$(CONTAINER_TOOL) build -t $(IMG) --build-arg VERSION=$(VERSION) .
 
+HOST_ARCH := $(shell uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+
+docker-kind: ## Build image for the host arch tagged :local and load into the kind cluster (for local helm testing).
+	$(CONTAINER_TOOL) build --platform linux/$(HOST_ARCH) -t $(IMG_LOCAL) .
+	kind load docker-image $(IMG_LOCAL) --name $(KIND_CLUSTER)
+
 ##@ Testing
 
 test: manifests generate fmt vet setup-envtest ## Run all tests (unit + envtest).
@@ -124,6 +131,14 @@ helm-template: helm-build ## Render Helm templates to stdout for inspection.
 helm-package: helm-build ## Package the chart into a self-contained .tgz release artifact under dist/.
 	mkdir -p dist
 	$(HELM) package $(CHART_DIR) --destination dist/
+
+helm-install-local: helm-build ## Install chart into the kind cluster using the locally loaded image (no GHCR pull).
+	$(HELM) upgrade --install ballast $(CHART_DIR) \
+		--namespace ballast-system --create-namespace \
+		--set image.tag=local \
+		--set image.pullPolicy=Never
+
+helm-update-local: docker-kind helm-install-local ## Build, load into kind, and install the chart in one step.
 
 ##@ Cluster Deployment
 

@@ -1,0 +1,28 @@
+{{- if .Values.defaultClusterResourcePolicy.enabled }}
+apiVersion: ballast.tightlinesoftware.com/v1
+kind: ClusterResourcePolicy
+metadata:
+  name: {{ .Values.defaultClusterResourcePolicy.name | quote }}
+  labels:
+    {{- include "ballast.labels" . | nindent 4 }}
+spec:
+  priority: {{ .Values.defaultClusterResourcePolicy.priority }}
+  metrics:
+  {{- range .Values.defaultClusterResourcePolicy.metrics }}
+  - resource: {{ .resource | quote }}
+    field: {{ .field | quote }}
+    source: {{ $.Values.defaultClusterResourcePolicy.metricsSource | quote }}
+    aggregation: {{ .aggregation | quote }}
+    headroom: {{ .headroom | quote }}
+  {{- end }}
+  readiness:
+    minDataPoints: {{ .Values.defaultClusterResourcePolicy.readiness.minDataPoints }}
+    minTimeSpan: {{ .Values.defaultClusterResourcePolicy.readiness.minTimeSpan | quote }}
+    maxCV: {{ .Values.defaultClusterResourcePolicy.readiness.maxCV | quote }}
+  behaviors:
+    thresholds:
+      default: {{ .Values.defaultClusterResourcePolicy.behaviors.thresholds.default | quote }}
+    resize:
+      maxChangePerCycle: {{ .Values.defaultClusterResourcePolicy.behaviors.resize.maxChangePerCycle | quote }}
+      interval: {{ .Values.defaultClusterResourcePolicy.behaviors.resize.interval | quote }}
+{{- end }}

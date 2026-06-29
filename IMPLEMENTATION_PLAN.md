@@ -458,7 +458,7 @@ _Deploy to test cluster with a pod carrying `resize` annotation and a ready prof
   - `store.endpoint` (used when `valkey.enabled: false`)
   - `certManager.enabled: true` (see TLS note below)
 - `templates/deployment.yaml` — mounts cert Secret; passes all flags from values
-- `templates/serviceaccount.yaml`, `templates/clusterrole.yaml`, `templates/clusterrolebinding.yaml` — exact permissions: CRD read/write for all Ballast types, Pod get/list/watch/patch (for resize), ConfigMap get/watch (kill switch), Event create
+- `templates/serviceaccount.yaml`, `templates/clusterrole.yaml`, `templates/clusterrolebinding.yaml` — exact permissions: CRD read/write for all Ballast types, Pod get/list/watch/update/patch + pods/resize subresource patch (for finalizer management and in-place resize), ConfigMap get/watch (kill switch), Event create
 - `templates/mutatingwebhookconfiguration.yaml` — `failurePolicy: Fail`; cert-manager `caBundle` injection annotation (`cert-manager.io/inject-ca-from`)
 - `templates/certificate.yaml`, `templates/issuer.yaml` — self-signed `Issuer` + `Certificate`; rendered when `certManager.enabled: true`
 - `templates/ballastconfig.yaml` — creates the `BallastConfig` singleton from values
@@ -480,6 +480,8 @@ _Deploy to test cluster with a pod carrying `resize` annotation and a ready prof
 - `charts/ballast/templates/clusterrole.yaml` — exact RBAC: all Ballast CRDs, pod patch, ConfigMap watch, Event create
 - `charts/ballast/templates/mutatingwebhookconfiguration.yaml` — `failurePolicy: Fail`; cert-manager `caBundle` injection annotation
 - `charts/ballast/templates/ballastconfig.yaml` — creates the `BallastConfig` singleton from values
+- `charts/ballast/templates/metricssource.yaml` — creates the default `kubernetes-metrics` MetricsSource (opt-out via `defaultMetricsSource.enabled: false`)
+- `charts/ballast/templates/clusterresourcepolicy.yaml` — creates the default `default` ClusterResourcePolicy (opt-out via `defaultClusterResourcePolicy.enabled: false`)
 - `charts/ballast/crds/` — bundled CRD manifests (copied from `config/crd/bases/` at release)
 
 ### User testing instructions
