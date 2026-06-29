@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Prometheus and OpenTelemetry metrics.** All five Ballast components (MetricsCollector, WorkloadWatcher, ResourceAdjuster, Admission Webhook, KillSwitch) now publish operational counters via OpenTelemetry. A `MeterProvider` can expose metrics on the existing `/metrics` endpoint as a Prometheus scrape target, push to an OTLP collector, or both. Prometheus is enabled automatically when `--metrics-bind-address` is not `"0"`; OTLP push requires `--otel-metrics-endpoint`.
+
+  New flags: `--otel-metrics-endpoint`, `--otel-metrics-protocol` (`grpc`/`http`), `--otel-metrics-interval`, `--otel-metrics-insecure`.
+
+  The Helm chart gains a `telemetry:` section for toggling Prometheus (with an optional `ServiceMonitor` for Prometheus Operator) and OTLP independently. OTel service resource attributes (`service.name`, `service.version`, `service.namespace`) are injected via `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` environment variables derived from `telemetry.serviceName`, `telemetry.serviceNamespace`, and `Chart.AppVersion`; defaults can be overridden at runtime without a chart change.
+
+### Fixed
+
+- `main()` refactored into `run() int` so the deferred `shutdownMetrics` call runs correctly before process exit (`os.Exit` is now only called from `main`, which carries no defers).
+
 ## [0.1.5] - 2026-06-29
 
 ### Fixed

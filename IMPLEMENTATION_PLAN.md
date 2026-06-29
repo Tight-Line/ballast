@@ -521,6 +521,37 @@ _Follow the README quickstart against a real cluster from scratch. Confirm every
 
 ---
 
+## Phase 13 — Prometheus and OpenTelemetry Metrics
+
+**Status:** `[x]`
+**Depends on:** Phase 12
+
+### What to build
+
+- `internal/metrics/` package: `MeterProvider` that can drive a Prometheus exporter on the existing `/metrics` endpoint, push to an OTLP collector, or both
+- Instrument all five components (MetricsCollector, WorkloadWatcher, ResourceAdjuster, Admission Webhook, KillSwitch) with OTel counters and a kill-switch gauge
+- New `ballastd` flags: `--otel-metrics-endpoint`, `--otel-metrics-protocol`, `--otel-metrics-interval`, `--otel-metrics-insecure`
+- Prometheus enabled automatically when `--metrics-bind-address` is not `"0"`
+- OTel service resource attributes (`service.name`, `service.version`, `service.namespace`) with hardcoded defaults overridable via `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ATTRIBUTES`
+- Helm chart `telemetry:` section: toggle Prometheus (with optional `ServiceMonitor`), OTLP endpoint, `serviceName`, `serviceNamespace`
+- Refactor `main()` into `run() int` so deferred `shutdownMetrics` executes before `os.Exit`
+
+### Key files
+
+- `internal/metrics/provider.go` — `MeterProvider` setup: Prometheus exporter, OTLP exporter, OTel Resource attributes
+- `internal/metrics/recorder.go` — per-component OTel counter and gauge definitions
+- `internal/metrics/metrics_test.go` — full coverage of provider and recorder
+- `cmd/ballastd/main.go` — new flags wired to `SetupProvider`; `run()` refactor
+- `charts/ballast/templates/metrics-service.yaml` — `Service` exposing `/metrics` for scraping
+- `charts/ballast/templates/servicemonitor.yaml` — optional `ServiceMonitor` for Prometheus Operator
+- `charts/ballast/values.yaml` — `telemetry:` stanza
+
+### User testing instructions
+
+_Deploy with `--metrics-bind-address=:8080` and `kubectl port-forward`; confirm `/metrics` returns ballast counters. Configure a `ServiceMonitor` and verify Prometheus picks up the target._
+
+---
+
 ## Dependency Graph
 
 ```
