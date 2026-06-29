@@ -22,7 +22,9 @@ func newWithWriter(component, level, format string, w io.Writer) logr.Logger {
 	if format == "text" {
 		encoder = zapcore.NewConsoleEncoder(zap.NewDevelopmentEncoderConfig())
 	} else {
-		encoder = zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
+		cfg := zap.NewProductionEncoderConfig()
+		cfg.EncodeTime = zapcore.ISO8601TimeEncoder
+		encoder = zapcore.NewJSONEncoder(cfg)
 	}
 	core := zapcore.NewCore(encoder, zapcore.AddSync(w), parseLevel(level))
 	z := zap.New(core)
