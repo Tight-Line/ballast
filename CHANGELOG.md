@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-06-29
+
 ### Added
 
 - Helm chart now installs a default `MetricsSource` (`kubernetes-metrics`) wired to the built-in Kubernetes Metrics API and a default `ClusterResourcePolicy` (`default`) with conservative CPU/memory request sizing on first install. Both can be disabled with `defaultMetricsSource.enabled: false` / `defaultClusterResourcePolicy.enabled: false` in values.
