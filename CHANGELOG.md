@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-28
+
 ### Added
 
 **Operator core**
@@ -100,4 +102,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `snyk.yml`: dependency vulnerability scan (high+ severity) on PRs, main, and weekly
 - `sonar.yml`: SonarCloud static analysis on PRs and main
 - Pre-commit hook (`scripts/pre-commit`): `goimports` format check + golangci-lint
-- 100% test coverage gate via `scripts/check-coverage.sh`; `// coverage:ignore - <reason>` required for genuinely untestable lines
