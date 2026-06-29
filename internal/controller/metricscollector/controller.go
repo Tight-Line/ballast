@@ -102,6 +102,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err // coverage:ignore - transient API error
 	}
 
+	// SelectorLabels is written by the workloadwatcher in a separate Status().Update()
+	// after the profile is created. If the metrics collector fires before that write
+	// completes, selectorLabels would be nil and filterPods would return every pod in
+	// the cluster. Requeue briefly to let the workloadwatcher finish.
+	if profile.Status.SelectorLabels == nil {
+		log.Info("selectorLabels not yet set, requeueing", "profile", profile.Name)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
 	var cfg ballastv1.BallastConfig
 	if err := r.client.Get(ctx, types.NamespacedName{Name: killswitch.BallastConfigName}, &cfg); err != nil {
 		if apierrors.IsNotFound(err) {
