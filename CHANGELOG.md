@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-28
+
 ### Changed
 
 - Release workflow: build and push amd64 image first for fast availability, then follow with multi-arch (amd64 + arm64) manifest
