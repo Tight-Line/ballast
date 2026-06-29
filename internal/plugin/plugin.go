@@ -19,6 +19,13 @@ type MetricsPlugin interface {
 	FetchStats(ctx context.Context, id WorkloadIdentity, window TimeWindow) ([]ContainerStats, error)
 }
 
+// LabelAbsent is a sentinel value stored in SelectorLabels for identity-label keys
+// that were absent from the pod. Plugins translate this to a Kubernetes "!key"
+// (does-not-exist) requirement so the selector matches only pods that truly lack
+// that label — preventing a pod with app.kubernetes.io/component=server from
+// incorrectly matching a profile whose pod had no component label.
+const LabelAbsent = "--missing--"
+
 // WorkloadIdentity holds the label tuple that identifies a WorkloadProfile.
 type WorkloadIdentity struct {
 	Labels map[string]string

@@ -22,6 +22,7 @@ import (
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/plugin"
 	"github.com/tight-line/ballast/internal/store"
 )
 
@@ -132,9 +133,10 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 	}
 
 	tupleLabels := ExtractTupleLabels(pod.Labels, cfg.Spec.IdentityLabels)
+	selectorLabels := ExtractSelectorLabels(pod.Labels, cfg.Spec.IdentityLabels)
 	profName := ProfileName(tupleLabels)
 
-	if err := r.ensureProfile(ctx, profName, tupleLabels); err != nil { // coverage:ignore - transient API error
+	if err := r.ensureProfile(ctx, profName, tupleLabels, selectorLabels); err != nil { // coverage:ignore - transient API error
 		return ctrl.Result{}, err
 	}
 
@@ -170,7 +172,7 @@ func (r *PodReconciler) handleDelete(ctx context.Context, pod *corev1.Pod) (ctrl
 	return ctrl.Result{}, nil
 }
 
-func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupleLabels map[string]string) error {
+func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupleLabels, selectorLabels map[string]string) error {
 	var existing ballastv1.WorkloadProfile
 	err := r.client.Get(ctx, types.NamespacedName{Name: profName}, &existing)
 	if err == nil {
@@ -192,6 +194,7 @@ func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupl
 
 	// Status is a subresource; must be updated after creation.
 	profile.Status.TupleLabels = tupleLabels
+	profile.Status.SelectorLabels = selectorLabels
 	return r.client.Status().Update(ctx, profile)
 }
 
@@ -334,6 +337,23 @@ func ExtractTupleLabels(podLabels map[string]string, identityLabels []string) ma
 		v, ok := podLabels[k]
 		if !ok {
 			v = missingLabelPlaceholder(k)
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// ExtractSelectorLabels returns a map used to query pods from the metrics API.
+// Keys present in podLabels carry their real value. Keys absent from podLabels
+// carry plugin.LabelAbsent ("--missing--"), which the metrics plugin translates
+// to a Kubernetes "!key" requirement so the selector excludes pods that have a
+// different value for that label (e.g. component=server) rather than matching them.
+func ExtractSelectorLabels(podLabels map[string]string, identityLabels []string) map[string]string {
+	out := make(map[string]string, len(identityLabels))
+	for _, k := range identityLabels {
+		v, ok := podLabels[k]
+		if !ok {
+			v = plugin.LabelAbsent
 		}
 		out[k] = v
 	}

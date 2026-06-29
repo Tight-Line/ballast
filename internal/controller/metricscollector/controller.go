@@ -133,7 +133,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	retentionStart := now.Add(-retentionWindow)
 	tupleHash := store.TupleHash(profile.Status.TupleLabels)
 
-	observed, err := r.collectAllSamples(ctx, tupleHash, profile.Status.TupleLabels, retentionStart, now, sources)
+	observed, err := r.collectAllSamples(ctx, tupleHash, profile.Status.SelectorLabels, retentionStart, now, sources)
 	if err != nil { // coverage:ignore - Redis error
 		return ctrl.Result{}, err
 	}
@@ -174,7 +174,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func (r *Reconciler) collectAllSamples(
 	ctx context.Context,
 	tupleHash string,
-	tupleLabels map[string]string,
+	selectorLabels map[string]string,
 	retentionStart, now time.Time,
 	sources map[string]*ballastv1.MetricsSource,
 ) (map[string]map[string]struct{}, error) {
@@ -189,7 +189,7 @@ func (r *Reconciler) collectAllSamples(
 			continue
 		}
 
-		additional, err := r.collectFromSource(ctx, tupleHash, tupleLabels, retentionStart, now, sourceName, ms, p)
+		additional, err := r.collectFromSource(ctx, tupleHash, selectorLabels, retentionStart, now, sourceName, ms, p)
 		if err != nil { // coverage:ignore - Redis error
 			return nil, err
 		}
@@ -213,7 +213,7 @@ func (r *Reconciler) collectAllSamples(
 func (r *Reconciler) collectFromSource(
 	ctx context.Context,
 	tupleHash string,
-	tupleLabels map[string]string,
+	selectorLabels map[string]string,
 	retentionStart, now time.Time,
 	sourceName string,
 	ms *ballastv1.MetricsSource,
@@ -223,7 +223,7 @@ func (r *Reconciler) collectFromSource(
 	observed := make(map[string]map[string]struct{})
 
 	samples, err := p.FetchStats(ctx,
-		plugin.WorkloadIdentity{Labels: tupleLabels},
+		plugin.WorkloadIdentity{Labels: selectorLabels},
 		plugin.TimeWindow{Start: retentionStart, End: now})
 	if err != nil {
 		log.Error(err, "FetchStats failed", "source", sourceName)

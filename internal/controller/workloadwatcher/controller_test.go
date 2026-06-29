@@ -26,6 +26,7 @@ import (
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
 	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/plugin"
 	"github.com/tight-line/ballast/internal/store"
 )
 
@@ -649,6 +650,52 @@ func TestExtractTupleLabels(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := workloadwatcher.ExtractTupleLabels(tc.podLabels, tc.identityLabels)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for k, wantV := range tc.want {
+				if got[k] != wantV {
+					t.Errorf("key %q: got %q, want %q", k, got[k], wantV)
+				}
+			}
+		})
+	}
+}
+
+// -- ExtractSelectorLabels unit tests --
+
+func TestExtractSelectorLabels(t *testing.T) {
+	cases := []struct {
+		name           string
+		podLabels      map[string]string
+		identityLabels []string
+		want           map[string]string
+	}{
+		{
+			name:           "all labels present",
+			podLabels:      map[string]string{"app": "web", "tier": "frontend"},
+			identityLabels: []string{"app", "tier"},
+			want:           map[string]string{"app": "web", "tier": "frontend"},
+		},
+		{
+			name:           "absent label uses LabelAbsent sentinel",
+			podLabels:      map[string]string{"app.kubernetes.io/name": "nginx"},
+			identityLabels: []string{"app.kubernetes.io/name", "app.kubernetes.io/component"},
+			want: map[string]string{
+				"app.kubernetes.io/name":      "nginx",
+				"app.kubernetes.io/component": plugin.LabelAbsent,
+			},
+		},
+		{
+			name:           "all labels absent",
+			podLabels:      map[string]string{},
+			identityLabels: []string{"app", "tier"},
+			want:           map[string]string{"app": plugin.LabelAbsent, "tier": plugin.LabelAbsent},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := workloadwatcher.ExtractSelectorLabels(tc.podLabels, tc.identityLabels)
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}

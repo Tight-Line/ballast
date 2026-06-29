@@ -3,8 +3,6 @@ package kubernetes
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +29,10 @@ type Options struct {
 	MaxRPS float64
 	// MaxBackoff is the ceiling for exponential backoff on API errors.
 	MaxBackoff time.Duration
+	// CacheTTL is how long the full pod metrics list is cached before the next refresh.
+	// All FetchStats calls within the TTL share one API call; filtering is done client-side.
+	// Zero disables caching (useful in tests).
+	CacheTTL time.Duration
 }
 
 // DefaultOptions returns the production defaults.
@@ -38,6 +40,7 @@ func DefaultOptions() Options {
 	return Options{
 		MaxRPS:     10,
 		MaxBackoff: 5 * time.Minute,
+		CacheTTL:   55 * time.Second,
 	}
 }
 
@@ -48,15 +51,22 @@ type backoffEntry struct {
 
 // Plugin implements plugin.MetricsPlugin for the in-cluster Kubernetes metrics API.
 //
-// Callers (MetricsCollector) are responsible for adding per-profile jitter before
-// the first poll cycle to spread the initial burst across the pollInterval window.
+// The metrics.k8s.io API does not filter by label selector server-side, so this
+// plugin fetches all pod metrics once per CacheTTL and filters client-side.
+// Concurrent FetchStats calls share the cached list; the first caller to find the
+// cache stale refreshes it while others block on cacheMu.
 type Plugin struct {
 	lister     PodMetricsLister
 	limiter    *rate.Limiter
 	maxBackoff time.Duration
+	cacheTTL   time.Duration
 
 	mu       sync.Mutex
 	backoffs map[string]*backoffEntry // keyed by TupleHash of identity labels
+
+	cacheMu    sync.Mutex
+	cacheTime  time.Time
+	cacheItems []metricsv1beta1.PodMetrics
 }
 
 // New constructs a Plugin. Register it with plugin.Register after construction.
@@ -72,6 +82,7 @@ func New(lister PodMetricsLister, opts Options) *Plugin {
 		lister:     lister,
 		limiter:    rate.NewLimiter(rate.Limit(opts.MaxRPS), 1),
 		maxBackoff: opts.MaxBackoff,
+		cacheTTL:   opts.CacheTTL,
 		backoffs:   make(map[string]*backoffEntry),
 	}
 }
@@ -80,8 +91,9 @@ func New(lister PodMetricsLister, opts Options) *Plugin {
 func (p *Plugin) Type() string { return Type }
 
 // FetchStats returns one ContainerStats per pod/container/resource for all pods
-// matching id.Labels. Only containers listed in PodMetrics.Containers are included;
-// the metrics API server omits initContainers and ephemeral containers automatically.
+// matching id.Labels. The full pod metrics list is fetched at most once per
+// CacheTTL; filtering against id.Labels is done client-side because the
+// metrics.k8s.io API ignores label selectors.
 //
 // Returns an error without calling the API if the identity is within its backoff window.
 func (p *Plugin) FetchStats(ctx context.Context, id plugin.WorkloadIdentity, _ plugin.TimeWindow) ([]plugin.ContainerStats, error) {
@@ -92,20 +104,41 @@ func (p *Plugin) FetchStats(ctx context.Context, id plugin.WorkloadIdentity, _ p
 		return nil, err
 	}
 
+	items, err := p.cachedList(ctx, now)
+	if err != nil {
+		p.recordFailure(key, now)
+		return nil, err
+	}
+
+	p.resetBackoff(key)
+	return collect(filterPods(items, id.Labels), now), nil
+}
+
+// cachedList returns the cached pod metrics list, refreshing if stale.
+// The rate limiter applies only to actual API calls, not cache hits.
+// On error, cacheTime is still updated to prevent a thundering herd of retries
+// from concurrent FetchStats callers; per-workload backoff handles retry pacing.
+func (p *Plugin) cachedList(ctx context.Context, now time.Time) ([]metricsv1beta1.PodMetrics, error) {
+	p.cacheMu.Lock()
+	defer p.cacheMu.Unlock()
+
+	if p.cacheTTL > 0 && now.Sub(p.cacheTime) < p.cacheTTL {
+		return p.cacheItems, nil
+	}
+
 	if err := p.limiter.Wait(ctx); err != nil {
 		return nil, fmt.Errorf("rate limiter: %w", err)
 	}
 
-	list, err := p.lister.List(ctx, metav1.ListOptions{
-		LabelSelector: buildLabelSelector(id.Labels),
-	})
+	list, err := p.lister.List(ctx, metav1.ListOptions{})
+	p.cacheTime = now
 	if err != nil {
-		p.recordFailure(key, now)
+		p.cacheItems = nil
 		return nil, fmt.Errorf("listing pod metrics: %w", err)
 	}
 
-	p.resetBackoff(key)
-	return collect(list.Items, now), nil
+	p.cacheItems = list.Items
+	return list.Items, nil
 }
 
 func (p *Plugin) checkBackoff(key string, now time.Time) error {
@@ -151,18 +184,36 @@ func nextDelay(current, maxBackoff time.Duration) time.Duration {
 	return d
 }
 
-// buildLabelSelector converts a label map to a comma-separated key=value selector.
-func buildLabelSelector(lbls map[string]string) string {
-	keys := make([]string, 0, len(lbls))
-	for k := range lbls {
-		keys = append(keys, k)
+// filterPods returns only the entries whose labels satisfy all requirements in
+// selectorLabels. Values equal to plugin.LabelAbsent require the key to be
+// absent from the pod; all other values require an exact match. This client-side
+// filter is necessary because metrics.k8s.io ignores label selectors server-side.
+func filterPods(pods []metricsv1beta1.PodMetrics, selectorLabels map[string]string) []metricsv1beta1.PodMetrics {
+	if len(selectorLabels) == 0 {
+		return pods
 	}
-	sort.Strings(keys)
-	parts := make([]string, len(keys))
-	for i, k := range keys {
-		parts[i] = k + "=" + lbls[k]
+	out := make([]metricsv1beta1.PodMetrics, 0, len(pods))
+	for i := range pods {
+		if podMatchesSelector(pods[i].Labels, selectorLabels) {
+			out = append(out, pods[i])
+		}
 	}
-	return strings.Join(parts, ",")
+	return out
+}
+
+func podMatchesSelector(podLabels, selectorLabels map[string]string) bool {
+	for k, v := range selectorLabels {
+		if v == plugin.LabelAbsent {
+			if _, present := podLabels[k]; present {
+				return false
+			}
+		} else {
+			if podLabels[k] != v {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // collect emits one ContainerStats per pod/container/resource combination.

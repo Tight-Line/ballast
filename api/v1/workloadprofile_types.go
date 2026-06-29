@@ -39,6 +39,14 @@ type WorkloadProfileStatus struct {
 	// +optional
 	TupleLabels map[string]string `json:"tupleLabels,omitempty"`
 
+	// SelectorLabels are used to query pods from the metrics API.
+	// Keys absent from the originating pod carry the sentinel value "--missing--",
+	// which the metrics plugin translates to a Kubernetes "!key" (does-not-exist)
+	// requirement. This prevents a profile for "name=nginx, no-component" from
+	// accidentally collecting metrics from "name=nginx, component=server" pods.
+	// +optional
+	SelectorLabels map[string]string `json:"selectorLabels,omitempty"`
+
 	// Containers holds per-container usage statistics and recommendations.
 	// +optional
 	Containers []ContainerProfile `json:"containers,omitempty"`
