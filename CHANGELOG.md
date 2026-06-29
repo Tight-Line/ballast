@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Pods opted into ballast (via annotation) that are missing one or more identity labels are no longer silently skipped. Absent label keys now contribute a human-readable placeholder to the WorkloadProfile name (e.g. `app.kubernetes.io/component` absent → `nocomponent`), so the profile is still created and measurements proceed.
+
 ## [0.1.2] - 2026-06-28
 
 - Fix app version tagging so that Helm chart defaults match actual git tags and container image tags

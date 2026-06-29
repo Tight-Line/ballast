@@ -129,7 +129,7 @@ func TestPodReconciler_NewPod(t *testing.T) {
 
 	// WorkloadProfile should be created.
 	var profile ballastv1.WorkloadProfile
-	profName := "app--web"
+	profName := "web"
 	if err := fc.Get(ctx, types.NamespacedName{Name: profName}, &profile); err != nil {
 		t.Fatalf("Get WorkloadProfile %q: %v", profName, err)
 	}
@@ -165,7 +165,7 @@ func TestPodReconciler_NewPod(t *testing.T) {
 func TestPodReconciler_AlreadyProcessed(t *testing.T) {
 	ctx := context.Background()
 
-	profName := "app--web"
+	profName := "web"
 	profile := &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: profName},
 	}
@@ -201,15 +201,17 @@ func TestPodReconciler_AlreadyProcessed(t *testing.T) {
 	}
 }
 
-func TestPodReconciler_MissingIdentityLabels(t *testing.T) {
+func TestPodReconciler_AbsentIdentityLabelUsesPlaceholder(t *testing.T) {
 	ctx := context.Background()
 
+	// Pod is opted in but missing the "app" identity label entirely.
+	// The reconciler should create a profile using the "noapp" placeholder.
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "web-abc",
 			Namespace:   "default",
 			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
-			Labels:      map[string]string{"tier": "backend"}, // "app" label missing
+			Labels:      map[string]string{"tier": "backend"},
 		},
 	}
 	fc := newFakeClient(defaultBallastConfig(), pod)
@@ -221,8 +223,11 @@ func TestPodReconciler_MissingIdentityLabels(t *testing.T) {
 	if err := fc.List(ctx, &list); err != nil {
 		t.Fatalf("List WorkloadProfiles: %v", err)
 	}
-	if len(list.Items) != 0 {
-		t.Errorf("expected no WorkloadProfiles, got %d", len(list.Items))
+	if len(list.Items) != 1 {
+		t.Fatalf("expected 1 WorkloadProfile, got %d", len(list.Items))
+	}
+	if got := list.Items[0].Name; got != "noapp" {
+		t.Errorf("profile name = %q, want %q", got, "noapp")
 	}
 }
 
@@ -254,7 +259,7 @@ func TestPodReconciler_KillSwitchSuppresses(t *testing.T) {
 func TestPodReconciler_DeleteDecrement(t *testing.T) {
 	ctx := context.Background()
 
-	profName := "app--web"
+	profName := "web"
 	profile := &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: profName},
 	}
@@ -316,7 +321,7 @@ func TestPodReconciler_DeleteDecrement(t *testing.T) {
 func TestPodReconciler_DeleteOrphanTransition(t *testing.T) {
 	ctx := context.Background()
 
-	profName := "app--web"
+	profName := "web"
 	profile := &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: profName},
 	}
@@ -365,7 +370,7 @@ func TestPodReconciler_DeleteOrphanTransition(t *testing.T) {
 func TestPodReconciler_DeleteKillSwitchAllowsDecrement(t *testing.T) {
 	ctx := context.Background()
 
-	profName := "app--web"
+	profName := "web"
 	profile := &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: profName},
 	}
@@ -408,7 +413,7 @@ func TestPodReconciler_DeleteKillSwitchAllowsDecrement(t *testing.T) {
 func TestPodReconciler_NewPodClearsOrphan(t *testing.T) {
 	ctx := context.Background()
 
-	profName := "app--web"
+	profName := "web"
 	profile := &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: profName},
 	}
@@ -479,7 +484,7 @@ func TestPodReconciler_BallastConfigNotFound(t *testing.T) {
 func TestPodReconciler_RecoveryAddFinalizer(t *testing.T) {
 	ctx := context.Background()
 
-	profName := "app--web"
+	profName := "web"
 	profile := &ballastv1.WorkloadProfile{ObjectMeta: metav1.ObjectMeta{Name: profName}}
 	// Pod already has profile-ref (was previously processed) but our finalizer is missing.
 	pod := &corev1.Pod{
@@ -530,7 +535,7 @@ func TestPodReconciler_RecoveryAddFinalizer(t *testing.T) {
 func TestPodReconciler_DeleteNoFinalizer(t *testing.T) {
 	ctx := context.Background()
 
-	profName := "app--web"
+	profName := "web"
 	profile := &ballastv1.WorkloadProfile{ObjectMeta: metav1.ObjectMeta{Name: profName}}
 	// Pod is being deleted (held by a foreign finalizer) but lacks our finalizer.
 	pod := &corev1.Pod{
@@ -590,11 +595,69 @@ func TestPodReconciler_SpecialLabelChars(t *testing.T) {
 
 	reconcilePod(t, c, "default", "web-abc")
 
-	// "my_app.v2" sanitizes to "my-app-v2" → profile name "app--my-app-v2".
-	expectedName := "app--my-app-v2"
+	// "my_app.v2" sanitizes to "my-app-v2" → profile name "my-app-v2".
+	expectedName := "my-app-v2"
 	var profile ballastv1.WorkloadProfile
 	if err := fc.Get(ctx, types.NamespacedName{Name: expectedName}, &profile); err != nil {
 		t.Fatalf("Get WorkloadProfile %q: %v (sanitization of special chars may be wrong)", expectedName, err)
+	}
+}
+
+// -- ExtractTupleLabels unit tests --
+
+func TestExtractTupleLabels(t *testing.T) {
+	cases := []struct {
+		name           string
+		podLabels      map[string]string
+		identityLabels []string
+		want           map[string]string
+	}{
+		{
+			name:           "all labels present",
+			podLabels:      map[string]string{"app": "web", "tier": "frontend"},
+			identityLabels: []string{"app", "tier"},
+			want:           map[string]string{"app": "web", "tier": "frontend"},
+		},
+		{
+			name:           "absent label uses placeholder - bare key",
+			podLabels:      map[string]string{"tier": "backend"},
+			identityLabels: []string{"app"},
+			want:           map[string]string{"app": "noapp"},
+		},
+		{
+			name:           "absent label uses placeholder - namespaced key",
+			podLabels:      map[string]string{"app.kubernetes.io/name": "nginx"},
+			identityLabels: []string{"app.kubernetes.io/name", "app.kubernetes.io/component"},
+			want: map[string]string{
+				"app.kubernetes.io/name":      "nginx",
+				"app.kubernetes.io/component": "nocomponent",
+			},
+		},
+		{
+			name:           "absent label uses placeholder - dotted key no slash",
+			podLabels:      map[string]string{},
+			identityLabels: []string{"foo.bar.baz"},
+			want:           map[string]string{"foo.bar.baz": "nofoobarbaz"},
+		},
+		{
+			name:           "all labels absent",
+			podLabels:      map[string]string{},
+			identityLabels: []string{"app", "tier"},
+			want:           map[string]string{"app": "noapp", "tier": "notier"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := workloadwatcher.ExtractTupleLabels(tc.podLabels, tc.identityLabels)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for k, wantV := range tc.want {
+				if got[k] != wantV {
+					t.Errorf("key %q: got %q, want %q", k, got[k], wantV)
+				}
+			}
+		})
 	}
 }
 
@@ -603,7 +666,7 @@ func TestPodReconciler_SpecialLabelChars(t *testing.T) {
 func TestProfileReconciler_NotOrphaned(t *testing.T) {
 	ctx := context.Background()
 
-	profName := "app--web"
+	profName := "web"
 	profile := &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: profName},
 	}
@@ -629,7 +692,7 @@ func TestProfileReconciler_NotOrphaned(t *testing.T) {
 
 func TestProfileReconciler_OrphanTTLNotExpired(t *testing.T) {
 	orphanedAt := metav1.Now()
-	profName := "app--web"
+	profName := "web"
 	profile := &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: profName},
 	}
@@ -673,7 +736,7 @@ func TestProfileReconciler_OrphanTTLNotExpired(t *testing.T) {
 }
 
 func TestProfileReconciler_InvalidOrphanTTL(t *testing.T) {
-	profName := "app--web"
+	profName := "web"
 	profile := &ballastv1.WorkloadProfile{ObjectMeta: metav1.ObjectMeta{Name: profName}}
 	cfg := &ballastv1.BallastConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "ballast"},
@@ -707,7 +770,7 @@ func TestProfileReconciler_InvalidOrphanTTL(t *testing.T) {
 func TestProfileReconciler_OrphanTTLExpired(t *testing.T) {
 	ctx := context.Background()
 
-	profName := "app--web"
+	profName := "web"
 	tupleLabels := map[string]string{"app": "web"}
 	profile := &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: profName},
@@ -794,7 +857,7 @@ func TestHasBallastAnnotationOrFinalizer(t *testing.T) {
 func TestProfileName_LongLabel(t *testing.T) {
 	ctx := context.Background()
 
-	// A value long enough that "app--<value>" would exceed 253 chars.
+	// A value long enough to exceed the 253-char profile name limit on its own.
 	longValue := strings.Repeat("a", 260)
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -822,7 +885,7 @@ func TestProfileName_LongLabel(t *testing.T) {
 }
 
 func TestProfileReconciler_RedisFailure(t *testing.T) {
-	profName := "app--web"
+	profName := "web"
 	tupleLabels := map[string]string{"app": "web"}
 	profile := &ballastv1.WorkloadProfile{ObjectMeta: metav1.ObjectMeta{Name: profName}}
 	cfg := &ballastv1.BallastConfig{
@@ -926,11 +989,11 @@ func TestController_SetupWithManager(t *testing.T) {
 	}
 
 	// Wait for WorkloadProfile to appear.
-	waitForProfile(t, ctx, c, "app--web")
+	waitForProfile(t, ctx, c, "web")
 
 	// Verify activeWorkloads=1.
 	var profile ballastv1.WorkloadProfile
-	if err := c.Get(ctx, types.NamespacedName{Name: "app--web"}, &profile); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Name: "web"}, &profile); err != nil {
 		t.Fatalf("Get WorkloadProfile: %v", err)
 	}
 	if profile.Status.ActiveWorkloads != 1 {
@@ -941,7 +1004,7 @@ func TestController_SetupWithManager(t *testing.T) {
 	if err := c.Delete(ctx, pod); err != nil {
 		t.Fatalf("delete pod: %v", err)
 	}
-	waitForOrphaned(t, ctx, c, "app--web")
+	waitForOrphaned(t, ctx, c, "web")
 }
 
 func waitForProfile(t *testing.T, ctx context.Context, c client.Client, name string) {

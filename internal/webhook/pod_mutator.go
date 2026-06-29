@@ -156,10 +156,7 @@ func (m *PodMutator) lookupProfile(ctx context.Context, pod *corev1.Pod) (*balla
 		return nil, fmt.Errorf("getting BallastConfig: %w", err)
 	}
 
-	tupleLabels, err := workloadwatcher.ExtractTupleLabels(pod.Labels, cfg.Spec.IdentityLabels)
-	if err != nil {
-		return nil, fmt.Errorf("extracting tuple labels: %w", err)
-	}
+	tupleLabels := workloadwatcher.ExtractTupleLabels(pod.Labels, cfg.Spec.IdentityLabels)
 
 	var wp ballastv1.WorkloadProfile
 	if err := m.client.Get(ctx, types.NamespacedName{Name: workloadwatcher.ProfileName(tupleLabels)}, &wp); err != nil {
