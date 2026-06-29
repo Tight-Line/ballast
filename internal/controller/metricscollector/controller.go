@@ -31,8 +31,7 @@ import (
 )
 
 const (
-	defaultPollInterval    = 60 * time.Second
-	defaultRetentionWindow = 168 * time.Hour
+	defaultPollInterval = 60 * time.Second
 )
 
 // Reconciler collects metrics for each WorkloadProfile and updates its status.
@@ -111,16 +110,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	var cfg ballastv1.BallastConfig
-	if err := r.client.Get(ctx, types.NamespacedName{Name: killswitch.BallastConfigName}, &cfg); err != nil {
-		if apierrors.IsNotFound(err) {
-			return ctrl.Result{RequeueAfter: defaultPollInterval}, nil
-		}
-		return ctrl.Result{}, err // coverage:ignore - transient API error
-	}
-
-	retentionWindow := parseRetentionWindow(cfg.Spec.RetentionWindow)
-
 	resolved, err := r.resolver.Resolve(ctx, policy.Input{Labels: profile.Status.TupleLabels})
 	if err != nil { // coverage:ignore - transient API error
 		return ctrl.Result{}, err
@@ -139,10 +128,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	now := time.Now()
-	retentionStart := now.Add(-retentionWindow)
 	tupleHash := store.TupleHash(profile.Status.TupleLabels)
 
-	observed, err := r.collectAllSamples(ctx, tupleHash, profile.Status.SelectorLabels, retentionStart, now, sources)
+	observed, err := r.collectAllSamples(ctx, tupleHash, profile.Status.SelectorLabels, now, sources)
 	if err != nil { // coverage:ignore - Redis error
 		return ctrl.Result{}, err
 	}
@@ -150,8 +138,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	resourcesInPolicy := policyResourceMap(resolved.Spec.Metrics)
 	containers := mergeContainerSets(observed, profile.Status.Containers, resourcesInPolicy)
 	containerProfiles, allReady := r.buildContainerProfiles(
-		ctx, tupleHash, containers, resourcesInPolicy, resolved.Spec,
-		retentionStart.UnixMilli(), now.UnixMilli())
+		ctx, tupleHash, containers, resourcesInPolicy, resolved.Spec, now.UnixMilli())
 
 	if r.dryRunMeasure {
 		log.Info("dry-run: would update WorkloadProfile status",
@@ -184,7 +171,7 @@ func (r *Reconciler) collectAllSamples(
 	ctx context.Context,
 	tupleHash string,
 	selectorLabels map[string]string,
-	retentionStart, now time.Time,
+	now time.Time,
 	sources map[string]*ballastv1.MetricsSource,
 ) (map[string]map[string]struct{}, error) {
 	log := ctrl.LoggerFrom(ctx)
@@ -198,7 +185,7 @@ func (r *Reconciler) collectAllSamples(
 			continue
 		}
 
-		additional, err := r.collectFromSource(ctx, tupleHash, selectorLabels, retentionStart, now, sourceName, ms, p)
+		additional, err := r.collectFromSource(ctx, tupleHash, selectorLabels, now, sourceName, ms, p)
 		if err != nil { // coverage:ignore - Redis error
 			return nil, err
 		}
@@ -223,7 +210,7 @@ func (r *Reconciler) collectFromSource(
 	ctx context.Context,
 	tupleHash string,
 	selectorLabels map[string]string,
-	retentionStart, now time.Time,
+	now time.Time,
 	sourceName string,
 	ms *ballastv1.MetricsSource,
 	p plugin.MetricsPlugin,
@@ -233,7 +220,7 @@ func (r *Reconciler) collectFromSource(
 
 	samples, err := p.FetchStats(ctx,
 		plugin.WorkloadIdentity{Labels: selectorLabels},
-		plugin.TimeWindow{Start: retentionStart, End: now})
+		plugin.TimeWindow{End: now})
 	if err != nil {
 		log.Error(err, "FetchStats failed", "source", sourceName)
 		return observed, nil
@@ -249,7 +236,7 @@ func (r *Reconciler) collectFromSource(
 			continue
 		}
 
-		if err := r.writeSample(ctx, tupleHash, retentionStart, ms, s); err != nil { // coverage:ignore - Redis error
+		if err := r.writeSample(ctx, tupleHash, ms, s); err != nil { // coverage:ignore - Redis error
 			return nil, err
 		}
 	}
@@ -258,28 +245,16 @@ func (r *Reconciler) collectFromSource(
 }
 
 // writeSample persists a single ContainerStats entry to Redis.
-// It runs three operations in order: AddSample, ExpireOlderThan, EnforceReservoirCap.
-// Any failure is returned immediately; all three are wrapped with context.
 func (r *Reconciler) writeSample(
 	ctx context.Context,
 	tupleHash string,
-	retentionStart time.Time,
 	ms *ballastv1.MetricsSource,
 	s plugin.ContainerStats,
 ) error {
 	key := store.MetricKey(tupleHash, s.ContainerName, s.Resource)
 	valueStr := quantityToStoreValue(s.Resource, s.Value)
-
-	if err := store.AddSample(ctx, r.storeClient, key, s.Timestamp.UnixMilli(), valueStr); err != nil { // coverage:ignore - Redis error
+	if err := store.AddSample(ctx, r.storeClient, key, s.Timestamp.UnixMilli(), valueStr, ms.Spec.Config.ReservoirSize); err != nil { // coverage:ignore - Redis error
 		return fmt.Errorf("adding sample for %s: %w", key, err)
-	}
-	if err := store.ExpireOlderThan(ctx, r.storeClient, key, retentionStart.UnixMilli()); err != nil { // coverage:ignore - Redis error
-		return fmt.Errorf("expiring samples for %s: %w", key, err)
-	}
-	if ms.Spec.Config.ReservoirSize > 0 {
-		if err := store.EnforceReservoirCap(ctx, r.storeClient, key, ms.Spec.Config.ReservoirSize); err != nil { // coverage:ignore - Redis error
-			return fmt.Errorf("enforcing reservoir cap for %s: %w", key, err)
-		}
 	}
 	return nil
 }
@@ -343,7 +318,7 @@ func (r *Reconciler) buildContainerProfiles(
 	containers map[string][]string,
 	resourcesInPolicy map[string][]ballastv1.MetricConfig,
 	policySpec ballastv1.ClusterResourcePolicySpec,
-	retentionStartMs, nowMs int64,
+	nowMs int64,
 ) ([]ballastv1.ContainerProfile, bool) {
 	if len(containers) == 0 {
 		return nil, false
@@ -354,8 +329,7 @@ func (r *Reconciler) buildContainerProfiles(
 
 	for _, containerName := range sortedKeys(containers) {
 		cp, ready := r.buildContainerProfile(ctx, tupleHash, containerName,
-			containers[containerName], resourcesInPolicy, policySpec,
-			retentionStartMs, nowMs)
+			containers[containerName], resourcesInPolicy, policySpec, nowMs)
 		if !ready {
 			allReady = false
 		}
@@ -382,7 +356,7 @@ func (r *Reconciler) buildContainerProfile(
 	resources []string,
 	resourcesInPolicy map[string][]ballastv1.MetricConfig,
 	policySpec ballastv1.ClusterResourcePolicySpec,
-	retentionStartMs, nowMs int64,
+	nowMs int64,
 ) (ballastv1.ContainerProfile, bool) {
 	log := ctrl.LoggerFrom(ctx)
 	cp := ballastv1.ContainerProfile{Name: containerName}
@@ -398,7 +372,7 @@ func (r *Reconciler) buildContainerProfile(
 		}
 
 		usageStats, recs, ready, err := r.processResourceStats(
-			ctx, tupleHash, containerName, resourceName, metricsForResource, policySpec, retentionStartMs, nowMs)
+			ctx, tupleHash, containerName, resourceName, metricsForResource, policySpec, nowMs)
 		if err != nil { // coverage:ignore - Redis error
 			log.Error(err, "processResourceStats failed",
 				"container", containerName, "resource", resourceName)
@@ -426,12 +400,12 @@ func (r *Reconciler) buildContainerProfile(
 // recommendations for all metric entries referencing this resource.
 //
 // Steps (in order):
-//  1. QueryWindow to retrieve all samples in the retention window.
+//  1. QueryAll to retrieve all stored samples.
 //     Redis errors are returned as fatal.
 //  2. Parse member strings to int64 and sort ascending for percentile computation.
 //  3. ComputeStats (p50/p95/p99/max/mean/stddev/cv).
-//  4. TimeRange to get the oldest and newest sample timestamps.
-//     Redis errors are returned as fatal.
+//  4. FirstSeenMs to get the wall-clock time the first sample was stored.
+//     Redis errors are returned as fatal. lastMs is set to nowMs.
 //  5. EvaluateReadiness against the policy readiness config.
 //  6. Build and return a ContainerUsageStats for the caller to append.
 //  7. If not ready: return (usageStats, nil recommendations, false, nil).
@@ -441,25 +415,25 @@ func (r *Reconciler) processResourceStats(
 	tupleHash, containerName, resourceName string,
 	metricsForResource []ballastv1.MetricConfig,
 	policySpec ballastv1.ClusterResourcePolicySpec,
-	retentionStartMs, nowMs int64,
+	nowMs int64,
 ) (containerStats ballastv1.ContainerUsageStats, resourceRecs map[string]ballastv1.ResourceRecommendation, meetsReadiness bool, err error) {
 	key := store.MetricKey(tupleHash, containerName, resourceName)
 
-	svs, err := store.QueryWindow(ctx, r.storeClient, key, retentionStartMs, nowMs)
+	vals, err := store.QueryAll(ctx, r.storeClient, key)
 	if err != nil { // coverage:ignore - Redis error
-		return ballastv1.ContainerUsageStats{}, nil, false, fmt.Errorf("QueryWindow %s: %w", key, err)
+		return ballastv1.ContainerUsageStats{}, nil, false, fmt.Errorf("QueryAll %s: %w", key, err)
 	}
 
-	s := store.ComputeStats(parseValues(svs))
+	s := store.ComputeStats(parseValues(vals))
 
-	firstMs, lastMs, err := store.TimeRange(ctx, r.storeClient, key)
+	firstMs, err := store.FirstSeenMs(ctx, r.storeClient, key)
 	if err != nil { // coverage:ignore - Redis error
-		return ballastv1.ContainerUsageStats{}, nil, false, fmt.Errorf("TimeRange %s: %w", key, err)
+		return ballastv1.ContainerUsageStats{}, nil, false, fmt.Errorf("FirstSeenMs %s: %w", key, err)
 	}
 
-	ready := stats.EvaluateReadiness(s, firstMs, lastMs, policySpec.Readiness)
+	ready := stats.EvaluateReadiness(s, firstMs, nowMs, policySpec.Readiness)
 	sourceName := metricsForResource[0].Source
-	usageStats := buildUsageStats(resourceName, sourceName, s, firstMs, lastMs)
+	usageStats := buildUsageStats(resourceName, sourceName, s, firstMs, nowMs)
 
 	if !ready {
 		return usageStats, nil, false, nil
@@ -515,26 +489,18 @@ func buildUsageStats(resourceName, sourceName string, s store.Stats, firstMs, la
 	}
 }
 
-// parseValues converts a slice of ScoredValues to a sorted int64 slice for ComputeStats.
-// Unparseable members indicate corrupted Redis data and are discarded; this is a
+// parseValues converts a slice of list values to a sorted int64 slice for ComputeStats.
+// Unparseable entries indicate corrupted Redis data and are discarded; this is a
 // defensive guard and should not occur under normal operation.
-func parseValues(svs []store.ScoredValue) []int64 {
-	values := make([]int64, 0, len(svs))
-	for _, sv := range svs {
-		if v, err := strconv.ParseInt(sv.Value, 10, 64); err == nil {
-			values = append(values, v)
+func parseValues(vals []string) []int64 {
+	values := make([]int64, 0, len(vals))
+	for _, v := range vals {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			values = append(values, n)
 		}
 	}
 	slices.Sort(values)
 	return values
-}
-
-// parseRetentionWindow parses a duration string, returning defaultRetentionWindow on error.
-func parseRetentionWindow(s string) time.Duration {
-	if d, err := time.ParseDuration(s); err == nil && d > 0 {
-		return d
-	}
-	return defaultRetentionWindow
 }
 
 // minPollInterval returns the smaller of current and the MetricsSource's configured pollInterval.
@@ -557,18 +523,31 @@ func quantityToStoreValue(resourceName string, q resource.Quantity) string {
 }
 
 // formatResourceValue converts a raw float64 value to a display string.
-// CPU values are in millicores (rendered as "Xm"); memory/storage values are in bytes.
+// CPU values are in millicores (rendered as "Xm"). Memory/storage values are
+// auto-scaled: >=1Gi → "X.XXGi", >=1Mi → "X.XXMi", otherwise "X.XXKi".
 func formatResourceValue(resourceName string, v float64) string {
 	if resourceName == "cpu" {
 		return resource.NewMilliQuantity(int64(v), resource.DecimalSI).String()
 	}
-	return resource.NewQuantity(int64(v), resource.BinarySI).String()
+	const (
+		ki = 1024.0
+		mi = 1024.0 * 1024.0
+		gi = 1024.0 * 1024.0 * 1024.0
+	)
+	switch {
+	case v >= gi:
+		return fmt.Sprintf("%.2fGi", v/gi)
+	case v >= mi:
+		return fmt.Sprintf("%.2fMi", v/mi)
+	default:
+		return fmt.Sprintf("%.2fKi", v/ki)
+	}
 }
 
 // formatDuration converts a millisecond span to a rounded-to-second duration string.
 // Returns "0s" for non-positive spans.
 func formatDuration(ms int64) string {
-	if ms <= 0 {
+	if ms <= 0 { // coverage:ignore - defensive guard for zero/same-millisecond first+last timestamps
 		return "0s"
 	}
 	return (time.Duration(ms) * time.Millisecond).Round(time.Second).String()

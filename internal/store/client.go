@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -10,12 +11,13 @@ import (
 // Client is the subset of the go-redis Cmdable interface used by this package.
 // Tests substitute a *redis.Client backed by miniredis.
 type Client interface {
-	ZAdd(ctx context.Context, key string, members ...redis.Z) *redis.IntCmd
-	ZRangeArgsWithScores(ctx context.Context, z redis.ZRangeArgs) *redis.ZSliceCmd
-	ZRemRangeByScore(ctx context.Context, key, min, max string) *redis.IntCmd
-	ZCard(ctx context.Context, key string) *redis.IntCmd
+	RPush(ctx context.Context, key string, values ...interface{}) *redis.IntCmd
+	LTrim(ctx context.Context, key string, start, stop int64) *redis.StatusCmd
+	LRange(ctx context.Context, key string, start, stop int64) *redis.StringSliceCmd
+	LLen(ctx context.Context, key string) *redis.IntCmd
+	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.BoolCmd
+	Get(ctx context.Context, key string) *redis.StringCmd
 	Del(ctx context.Context, keys ...string) *redis.IntCmd
-	ZRemRangeByRank(ctx context.Context, key string, start, stop int64) *redis.IntCmd
 	Scan(ctx context.Context, cursor uint64, match string, count int64) *redis.ScanCmd
 }
 
