@@ -403,6 +403,26 @@ func TestReconcile_ResizeSucceeds_LastResizeAnnotationStamped(t *testing.T) {
 	}
 }
 
+func TestReconcile_CooldownActive_ResizeSkipped(t *testing.T) {
+	// Pod was resized 5 minutes ago — within the 15m interval — so resize should be skipped.
+	profile := readyProfile("200m", "400m")
+	pod := resizePod("100m", "200m")
+	pod.Annotations[resourceadjuster.AnnotationLastResize] = time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	fc := newFakeClient(profile, noResizePolicy(), pod)
+	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	resizeCalled := false
+	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
+		resizeCalled = true
+		return nil
+	}
+	if _, err := doReconcile(t, r, profile.Name); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resizeCalled {
+		t.Error("resize should not be called when pod is within cooldown window")
+	}
+}
+
 func TestReconcile_RequeueInterval_FromPolicy(t *testing.T) {
 	policy := noResizePolicy()
 	policy.Spec.Behaviors.Resize.Interval = "5m"

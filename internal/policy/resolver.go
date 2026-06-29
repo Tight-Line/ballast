@@ -86,7 +86,7 @@ func (r *Resolver) Resolve(ctx context.Context, in Input) (*ResolvedPolicy, erro
 	})
 
 	best := matches[0]
-	r.log.Info("resolved policy",
+	r.log.V(1).Info("resolved policy",
 		"namespace", in.Namespace,
 		"ownerKind", in.OwnerKind,
 		"policy", best.name,

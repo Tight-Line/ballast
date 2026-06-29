@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **In-place resize now respects the configured interval.** The resource adjuster reconciles whenever the WorkloadProfile status is updated (every ~1 minute from the metrics collector), not just on its own timer. Without a cooldown check, every status update triggered a fresh resize even though the policy interval was set to 15 minutes. The adjuster now checks `ballast.tightlinesoftware.com/last-resize` on each pod and skips it if a resize was applied within the configured interval.
+
+### Changed
+
+- Demoted two high-frequency log messages from `Info` to `Debug` (`V(1)`): "resolved policy" (emitted by the policy resolver on every reconciliation) and "profile does not meet threshold, skipping resize" (emitted by the resource adjuster). Both are now suppressed unless the controller is started with `--zap-log-level=debug`.
+
 ## [0.1.4] - 2026-06-29
 
 ### Added

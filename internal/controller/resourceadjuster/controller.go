@@ -93,7 +93,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	if !profile.Status.MeetsThreshold {
-		log.Info("profile does not meet threshold, skipping resize", "profile", profile.Name)
+		log.V(1).Info("profile does not meet threshold, skipping resize", "profile", profile.Name)
 		return ctrl.Result{RequeueAfter: defaultResizeInterval}, nil
 	}
 
@@ -114,7 +114,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	for i := range pods {
-		if err := r.reconcilePod(ctx, &pods[i], &profile, resolved.Spec.Behaviors); err != nil { // coverage:ignore - transient API error
+		if err := r.reconcilePod(ctx, &pods[i], &profile, resolved.Spec.Behaviors, interval); err != nil { // coverage:ignore - transient API error
 			return ctrl.Result{}, err
 		}
 	}
@@ -153,8 +153,15 @@ func wantsResize(ann map[string]string) bool {
 }
 
 // reconcilePod evaluates drift for one pod and issues a resize if needed.
-func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile *ballastv1.WorkloadProfile, behaviors ballastv1.BehaviorConfig) error {
+func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile *ballastv1.WorkloadProfile, behaviors ballastv1.BehaviorConfig, interval time.Duration) error {
 	log := ctrl.LoggerFrom(ctx)
+
+	if last, ok := pod.Annotations[AnnotationLastResize]; ok {
+		if t, err := time.Parse(time.RFC3339, last); err == nil && time.Since(t) < interval {
+			log.V(1).Info("resize cooldown active, skipping", "pod", pod.Name, "namespace", pod.Namespace, "next_resize", t.Add(interval))
+			return nil
+		}
+	}
 
 	recsByName := containerRecsByName(profile)
 	adjustments := computeAdjustments(pod, recsByName, behaviors)
