@@ -47,10 +47,10 @@ Pod eviction for cluster rebalancing is handled by [Kubernetes Descheduler](http
 cert-manager must already be installed in the cluster (Ballast does not install it):
 
 ```bash
-helm repo add tight-line https://tight-line.github.io/ballast
+helm repo add ballast https://tight-line.github.io/ballast
 helm repo update
 
-helm install ballast tight-line/ballast \
+helm install ballast ballast/ballast \
   --namespace ballast-system \
   --create-namespace
 ```
