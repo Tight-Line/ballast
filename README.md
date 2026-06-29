@@ -376,6 +376,14 @@ helm install cert-manager jetstack/cert-manager \
 
 # Wait for cert-manager to be ready before deploying Ballast
 kubectl rollout status deployment/cert-manager -n cert-manager
+
+# Install metrics-server (required for the kubernetesMetrics plugin)
+# kind nodes don't have valid kubelet certs, so --kubelet-insecure-tls is required
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl patch deployment metrics-server -n kube-system \
+  --type=json \
+  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+kubectl rollout status deployment/metrics-server -n kube-system
 ```
 
 **Iterate: change code → rebuild → redeploy**
