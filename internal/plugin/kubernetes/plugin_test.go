@@ -368,6 +368,32 @@ func TestFetchStats_ClientSideFiltering(t *testing.T) {
 	}
 }
 
+func TestFetchStats_EmptyLabelsReturnsAll(t *testing.T) {
+	// filterPods early-returns when selectorLabels is empty; all pods are returned.
+	lister := &fakeLister{
+		pods: []metricsv1beta1.PodMetrics{
+			{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "a"}},
+				Containers: []metricsv1beta1.ContainerMetrics{{Name: "a", Usage: makeUsage(10, 64)}},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "b"}},
+				Containers: []metricsv1beta1.ContainerMetrics{{Name: "b", Usage: makeUsage(20, 128)}},
+			},
+		},
+	}
+
+	p := kplugin.New(lister, kplugin.DefaultOptions())
+	stats, err := p.FetchStats(context.Background(), plugin.WorkloadIdentity{Labels: map[string]string{}}, plugin.TimeWindow{})
+	if err != nil {
+		t.Fatalf("FetchStats: %v", err)
+	}
+	// 2 pods × 2 resources each = 4 entries.
+	if len(stats) != 4 {
+		t.Errorf("expected 4 stats entries, got %d", len(stats))
+	}
+}
+
 // countingLister counts how many times List is called.
 type countingLister struct {
 	fakeLister
