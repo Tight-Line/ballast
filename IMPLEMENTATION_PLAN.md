@@ -210,14 +210,12 @@ _`make check` passing with full test coverage is the gate here; no runtime testi
   - `TupleHash(labels map[string]string) string` — deterministic hash of sorted key=value pairs (SHA-256 prefix, hex-encoded)
   - `MetricKey(tupleHash, container, resource string) string` — produces `ballast:metrics:{hash}:{container}:{resource}`
   - `AllKeysForHash(ctx, client, tupleHash) ([]string, error)` — scans for all keys matching a hash prefix (used for profile deletion cleanup)
-- `internal/store/metrics.go`:
-  - `AddSample(ctx, key string, timestampMs int64, valueStr string) error` — `ZADD`
-  - `QueryWindow(ctx, key string, startMs, endMs int64) ([]ScoredValue, error)` — `ZRANGEBYSCORE`
-  - `ExpireOlderThan(ctx, key string, cutoffMs int64) error` — `ZREMRANGEBYSCORE`
-  - `SampleCount(ctx, key string) (int64, error)` — `ZCARD`
-  - `TimeRange(ctx, key string) (firstMs, lastMs int64, err error)` — `ZRANGE ... WITHSCORES` for first and last entries
-  - `DeleteKey(ctx, key string) error` — `DEL`
-  - `EnforceReservoirCap(ctx, key string, maxEntries int64) error` — `ZREMRANGEBYRANK 0 -(maxEntries+1)` trims oldest entries when cap exceeded
+- `internal/store/metrics.go` (list-based; refined in PR #21):
+  - `AddSample(ctx, c, key, timestampMs, valueStr string, cap int64) error` — `RPUSH` + `LTRIM` (reservoir cap) + `SET NX` for `key:first_seen`
+  - `QueryAll(ctx, c, key string) ([]string, error)` — `LRANGE 0 -1`
+  - `FirstSeenMs(ctx, c, key string) (int64, error)` — `GET key:first_seen`; wall-clock time of first sample for readiness evaluation
+  - `SampleCount(ctx, c, key string) (int64, error)` — `LLEN`
+  - `DeleteKey(ctx, c, key string) error` — `DEL`
 - `internal/store/percentiles.go`:
   - `ComputeStats(values []int64) Stats` — computes p50/p95/p99/max/mean/stddev/CV from a sorted int64 slice
   - `Stats` struct with all fields
@@ -295,16 +293,18 @@ _`make check` passing is the gate. If a test cluster with metrics-server is avai
   - Watches pods using a predicate that passes only pods carrying at least one Ballast **behavior** annotation (`ballast.tightlinesoftware.com/measure`, `apply`, `resize`, or `autoresize`). The `profile-ref` annotation (set by Ballast itself) is excluded from the predicate to avoid self-triggering. Identity labels are not part of the predicate — they are read during processing.
   - **On pod CREATE/UPDATE (new pod):**
     1. Reads `BallastConfig` to get `identityLabels`
-    2. Extracts identity tuple from pod labels using `identityLabels` as the key list; logs a warning and skips if any required label is absent. Derives `WorkloadProfile` name (sorted `key--value--...` from the label values).
+    2. Extracts identity tuple from pod labels using `identityLabels` as the key list; logs a warning and skips if any required label is absent. Derives `WorkloadProfile` name (`value--value--...` in `identityLabels` declaration order, not alphabetical sort; refined in PR #21).
     3. Creates `WorkloadProfile` if absent (with `tupleLabels` in status)
     4. Increments `activeWorkloads`; clears `Orphaned` condition if set
     5. Stamps pod with annotation `ballast.tightlinesoftware.com/profile-ref: <profile-name>` (server-side apply patch)
     6. Skip all of the above if kill switch is active; log at `warn`
-  - **On pod DELETE:**
-    1. Reads `profile-ref` annotation from the pod (uses cached pod object; does not recompute tuple)
-    2. Decrements `activeWorkloads` on the referenced `WorkloadProfile`
-    3. If `activeWorkloads` reaches 0: sets `Orphaned` condition with `lastTransitionTime = now`
-    4. Kill switch does NOT suppress decrement — accounting must stay correct regardless
+  - **On pod DELETE (refined in PR #21):**
+    1. Guard: if our finalizer is absent, return immediately — no decrement. The finalizer is added atomically with the increment, so its presence is the definitive "not yet decremented" signal. This prevents double-decrements when removing the finalizer triggers a second MODIFIED→DELETE reconcile.
+    2. Reads `profile-ref` annotation from the pod (uses cached pod object; does not recompute tuple)
+    3. Decrements `activeWorkloads` on the referenced `WorkloadProfile`
+    4. Removes the finalizer via `client.Update`
+    5. If `activeWorkloads` reaches 0: sets `Orphaned` condition with `lastTransitionTime = now`
+    6. Kill switch does NOT suppress decrement — accounting must stay correct regardless
   - **Orphan TTL (triggered on each WorkloadProfile reconcile):**
     1. If `Orphaned` condition is true and `now - lastTransitionTime >= BallastConfig.orphanTTL`
     2. Calls `store.AllKeysForHash` and `store.DeleteKey` to purge Redis data
@@ -332,15 +332,16 @@ _Deploy to a test cluster with a pod carrying the `measure` annotation. Confirm 
 
 - `internal/controller/metricscollector/controller.go`:
   - Reconciles `WorkloadProfile` objects on a timer (interval from matched policy's `MetricsSource.spec.config.pollInterval`; uses `ctrl.Result{RequeueAfter: interval}`)
-  - For each profile:
-    1. Find matching policy (via `policy.Resolver`)
-    2. Resolve `MetricsSource` from policy; look up plugin from registry
-    3. Call `plugin.FetchStats(ctx, identity, window)` where window = `[now - retentionWindow, now]`
-    4. For each `ContainerStats` returned: call `store.AddSample` for each metric value; call `store.ExpireOlderThan` for the retention cutoff; call `store.EnforceReservoirCap`
-    5. Query Redis: `store.QueryWindow` for the full retention window; compute stats via `store.ComputeStats`
-    6. Evaluate readiness: `sampleCount >= minDataPoints`, `timeSpan >= minTimeSpan`, `CV <= maxCV` — all must pass
-    7. If ready: compute recommendations for each (resource, field) pair: `aggregatedValue * headroom`
-    8. Update `WorkloadProfile` status: `usageStats`, `recommendations`, `meetsThreshold`, conditions
+  - For each profile (refined in PR #21 — no longer loads BallastConfig; uses list-based store API):
+    1. Guard: if `status.selectorLabels == nil`, requeue after 5s (workloadwatcher hasn't written them yet)
+    2. Find matching policy (via `policy.Resolver`)
+    3. Resolve `MetricsSource` from policy; look up plugin from registry
+    4. Call `plugin.FetchStats(ctx, identity, TimeWindow{End: now})` — no start boundary; reservoir cap limits history
+    5. For each `ContainerStats` returned: call `store.AddSample` (RPUSH+LTRIM+SET NX first_seen)
+    6. Query Redis: `store.QueryAll` for all stored values; `store.FirstSeenMs` for wall-clock span; compute stats via `store.ComputeStats`
+    7. Evaluate readiness: `sampleCount >= minDataPoints`, `timeSpan >= minTimeSpan`, `CV <= maxCV` — all must pass
+    8. If ready: compute recommendations for each (resource, field) pair: `aggregatedValue * headroom`
+    9. Update `WorkloadProfile` status: `usageStats`, `recommendations`, `meetsThreshold`, conditions
   - **Dry-run (`--dry-run-measure`):** steps 4 and 8 are skipped; log at `info` with `dry_run: true` what would have been written
   - **Kill switch:** steps 4 and 8 are skipped; log at `warn` with `kill_switch: true`
 - `internal/stats/aggregator.go`:
