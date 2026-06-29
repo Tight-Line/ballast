@@ -311,9 +311,9 @@ _`make check` passing is the gate. If a test cluster with metrics-server is avai
     3. Deletes the `WorkloadProfile` object
   - envtest-based tests covering: create, increment, decrement, orphan transition, orphan TTL deletion, Redis key cleanup, kill switch suppression
 
-### Key files (fill in after complete)
+### Key files
 
-- `internal/controller/workloadwatcher/controller.go`
+- `internal/controller/workloadwatcher/controller.go` — `PodReconciler` (pod CREATE/DELETE) and `ProfileReconciler` (orphan TTL cleanup); exported `ExtractTupleLabels` and `ProfileName` used by webhook
 - `internal/controller/workloadwatcher/controller_test.go`
 
 ### User testing instructions
@@ -348,11 +348,11 @@ _Deploy to a test cluster with a pod carrying the `measure` annotation. Confirm 
   - `ComputeRecommendation(stats Stats, metric MetricConfig) resource.Quantity`
 - envtest + miniredis tests
 
-### Key files (fill in after complete)
+### Key files
 
-- `internal/controller/metricscollector/controller.go`
+- `internal/controller/metricscollector/controller.go` — `Reconciler`; `Setup(mgr, ks, sc, dryRunMeasure)` entry point; full poll-write-query-evaluate-update cycle
 - `internal/controller/metricscollector/controller_test.go`
-- `internal/stats/aggregator.go`
+- `internal/stats/aggregator.go` — `EvaluateReadiness(Stats, firstMs, lastMs, ReadinessConfig) bool`; `ComputeRecommendation(Stats, MetricConfig) (resource.Quantity, error)`
 - `internal/stats/aggregator_test.go`
 
 ### User testing instructions
@@ -404,7 +404,7 @@ _Deploy to test cluster with cert-manager. Create a pod with `ballast.tightlines
 
 ## Phase 10 — ResourceAdjuster Controller
 
-**Status:** `[~]`
+**Status:** `[x]`
 **Depends on:** Phases 3, 4, 7, 8, 9
 **PR:** https://github.com/Tight-Line/ballast/pull/13
 
@@ -426,9 +426,9 @@ Pod eviction is out of scope for Ballast — delegated to [Kubernetes Deschedule
   - **Kill switch:** suppresses all action
   - envtest tests: drift detection, resize success, resize blocked, autoresize threshold flip, dry-run, kill switch
 
-### Key files (fill in after complete)
+### Key files
 
-- `internal/controller/resourceadjuster/controller.go`
+- `internal/controller/resourceadjuster/controller.go` — `Reconciler`; `Setup(mgr, ks, dryRunResize)` entry point; exported utilities: `ExceedsDrift`, `CapChange`, `ResolveFieldThreshold`, `ParseResizeInterval`
 - `internal/controller/resourceadjuster/controller_test.go`
 
 ### User testing instructions
@@ -472,15 +472,15 @@ _Deploy to test cluster with a pod carrying `resize` annotation and a ready prof
 
 `helm lint` must pass. Smoke test: `helm template . | kubectl apply --dry-run=client -f -` produces no errors.
 
-### Key files (fill in after complete)
+### Key files
 
-- `charts/ballast/Chart.yaml`
-- `charts/ballast/values.yaml`
-- `charts/ballast/templates/deployment.yaml`
-- `charts/ballast/templates/clusterrole.yaml`
-- `charts/ballast/templates/mutatingwebhookconfiguration.yaml`
-- `charts/ballast/templates/ballastconfig.yaml`
-- `charts/ballast/crds/`
+- `charts/ballast/Chart.yaml` — chart metadata; `bitnami/valkey` dependency with `condition: valkey.enabled`
+- `charts/ballast/values.yaml` — all configurable settings: image, logging levels, dry-run flags, `ballastConfig.*`, `valkey.*`, `store.endpoint`, `certManager.enabled`
+- `charts/ballast/templates/deployment.yaml` — operator deployment; mounts cert Secret; translates all values to CLI flags
+- `charts/ballast/templates/clusterrole.yaml` — exact RBAC: all Ballast CRDs, pod patch, ConfigMap watch, Event create
+- `charts/ballast/templates/mutatingwebhookconfiguration.yaml` — `failurePolicy: Fail`; cert-manager `caBundle` injection annotation
+- `charts/ballast/templates/ballastconfig.yaml` — creates the `BallastConfig` singleton from values
+- `charts/ballast/crds/` — bundled CRD manifests (copied from `config/crd/bases/` at release)
 
 ### User testing instructions
 
@@ -490,18 +490,27 @@ _Install chart into a kind cluster with cert-manager pre-installed. Confirm oper
 
 ## Phase 12 — Polish & Release Readiness
 
-**Status:** `[ ]`
+**Status:** `[x]`
 **Depends on:** all prior phases
-**PR:** —
+**PR:** https://github.com/Tight-Line/ballast/pull/17
 
 ### What to build
 
-- `AGENTS.md` complete: all file locations, key functions, build commands, coding standards, testing workflow, PR image workflow, provider development guide
+- `AGENTS.md` complete: all file locations, key functions, build commands, coding standards, testing workflow, PR image workflow, release workflow, provider development guide
 - `README.md`: prerequisites (cert-manager, Kubernetes 1.35+, metrics-server), Helm quickstart, first annotation walkthrough, verifying a `WorkloadProfile`, kill switch usage
 - `CHANGELOG.md` `[Unreleased]` section fully populated
+- `.github/workflows/release.yml`: triggers on `v*` tag push; builds and pushes `ghcr.io/tight-line/ballast:<tag>` + `:latest` (multi-arch); packages `ballast-<ver>.tgz` via chart-releaser and publishes to `gh-pages` Helm repo
 - Verify `.github/workflows/pr-images.yml` produces correct image tags end-to-end
 - `make check` clean on main branch
 - This plan updated with all key-file entries filled in
+
+### Key files
+
+- `AGENTS.md` — complete agent guide: file index, architecture, CRD types, controller descriptions, plugin interface, Redis data model, testing strategy, build/CI, coding standards, PR image + release workflow, provider development guide
+- `README.md` — project overview, prerequisites, installation, WorkloadProfile identity, annotation contract, verifying a WorkloadProfile, kill switch, webhook TLS, dry-run mode, development workflow
+- `CHANGELOG.md` — `[Unreleased]` section populated with all features from phases 1–11
+- `.github/workflows/release.yml` — tag-triggered release: multi-arch container image + Helm chart tarball via chart-releaser
+- `IMPLEMENTATION_PLAN.md` — this file; all key-file entries filled in; Phase 10 status corrected to `[x]`
 
 ### User testing instructions
 
