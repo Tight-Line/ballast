@@ -79,11 +79,11 @@ func defaultBallastConfig() *ballastv1.BallastConfig {
 	}
 }
 
-// readyProfile returns a WorkloadProfile named "app--web" (matching pod label app=web)
+// readyProfile returns a WorkloadProfile named "web" (matching pod label app=web)
 // with cpu+memory recommendations and meetsThreshold=true.
 func readyProfile() *ballastv1.WorkloadProfile {
 	return &ballastv1.WorkloadProfile{
-		ObjectMeta: metav1.ObjectMeta{Name: "app--web"},
+		ObjectMeta: metav1.ObjectMeta{Name: "web"},
 		Status: ballastv1.WorkloadProfileStatus{
 			MeetsThreshold: true,
 			Containers: []ballastv1.ContainerProfile{
@@ -101,7 +101,7 @@ func readyProfile() *ballastv1.WorkloadProfile {
 
 func notReadyProfile() *ballastv1.WorkloadProfile {
 	return &ballastv1.WorkloadProfile{
-		ObjectMeta: metav1.ObjectMeta{Name: "app--web"},
+		ObjectMeta: metav1.ObjectMeta{Name: "web"},
 		Status:     ballastv1.WorkloadProfileStatus{MeetsThreshold: false},
 	}
 }
@@ -408,7 +408,7 @@ func TestPodMutator_UnmatchedContainer(t *testing.T) {
 
 func TestPodMutator_EmptyRecommendationField(t *testing.T) {
 	profile := &ballastv1.WorkloadProfile{
-		ObjectMeta: metav1.ObjectMeta{Name: "app--web"},
+		ObjectMeta: metav1.ObjectMeta{Name: "web"},
 		Status: ballastv1.WorkloadProfileStatus{
 			MeetsThreshold: true,
 			Containers: []ballastv1.ContainerProfile{
@@ -439,7 +439,7 @@ func TestPodMutator_EmptyRecommendationField(t *testing.T) {
 
 func TestPodMutator_InvalidQuantity(t *testing.T) {
 	profile := &ballastv1.WorkloadProfile{
-		ObjectMeta: metav1.ObjectMeta{Name: "app--web"},
+		ObjectMeta: metav1.ObjectMeta{Name: "web"},
 		Status: ballastv1.WorkloadProfileStatus{
 			MeetsThreshold: true,
 			Containers: []ballastv1.ContainerProfile{

@@ -131,13 +131,7 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 		return ctrl.Result{}, err // coverage:ignore - transient API error
 	}
 
-	tupleLabels, err := ExtractTupleLabels(pod.Labels, cfg.Spec.IdentityLabels)
-	if err != nil {
-		log.Info("pod missing required identity labels, skipping",
-			"pod", pod.Name, "namespace", pod.Namespace, "error", err.Error())
-		return ctrl.Result{}, nil
-	}
-
+	tupleLabels := ExtractTupleLabels(pod.Labels, cfg.Spec.IdentityLabels)
 	profName := ProfileName(tupleLabels)
 
 	if err := r.ensureProfile(ctx, profName, tupleLabels); err != nil { // coverage:ignore - transient API error
@@ -330,27 +324,47 @@ func (r *ProfileReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // ExtractTupleLabels returns a map of identityLabel key -> pod label value.
-// Returns an error listing any keys absent from podLabels.
-func ExtractTupleLabels(podLabels map[string]string, identityLabels []string) (map[string]string, error) {
+// Keys absent from podLabels are assigned a placeholder derived from the key
+// (e.g. "app.kubernetes.io/component" -> "nocomponent") so the WorkloadProfile
+// name remains meaningful without a real value.
+func ExtractTupleLabels(podLabels map[string]string, identityLabels []string) map[string]string {
 	out := make(map[string]string, len(identityLabels))
-	var missing []string
 	for _, k := range identityLabels {
 		v, ok := podLabels[k]
 		if !ok {
-			missing = append(missing, k)
-			continue
+			v = missingLabelPlaceholder(k)
 		}
 		out[k] = v
 	}
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("missing identity labels: %s", strings.Join(missing, ", "))
+	return out
+}
+
+// missingLabelPlaceholder derives a human-readable sentinel for an absent label.
+// It takes the segment after the last '/', strips non-letter characters, lowercases
+// the result, and prepends "no".
+//
+// Examples:
+//
+//	"app.kubernetes.io/component" -> "nocomponent"
+//	"foo.bar.baz"                 -> "nofoobarbaz"
+//	"app"                         -> "noapp"
+func missingLabelPlaceholder(key string) string {
+	seg := key
+	if i := strings.LastIndexByte(key, '/'); i >= 0 {
+		seg = key[i+1:]
 	}
-	return out, nil
+	clean := strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) {
+			return unicode.ToLower(r)
+		}
+		return -1
+	}, seg)
+	return "no" + clean
 }
 
 // ProfileName derives a deterministic Kubernetes-safe name from a label tuple.
-// Keys are sorted alphabetically and joined with values as "key--value" pairs
-// separated by "--". Each segment is sanitized to lowercase alphanumeric-and-dash.
+// Keys are sorted alphabetically; only their values are joined with "--".
+// Each value is sanitized to lowercase alphanumeric-and-dash.
 func ProfileName(tupleLabels map[string]string) string {
 	keys := make([]string, 0, len(tupleLabels))
 	for k := range tupleLabels {
@@ -360,7 +374,7 @@ func ProfileName(tupleLabels map[string]string) string {
 
 	var parts []string
 	for _, k := range keys {
-		parts = append(parts, sanitizeName(k), sanitizeName(tupleLabels[k]))
+		parts = append(parts, sanitizeName(tupleLabels[k]))
 	}
 	name := strings.Join(parts, "--")
 	if len(name) > 253 { // coverage:ignore - triggered only with extremely long label values

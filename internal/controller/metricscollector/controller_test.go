@@ -156,7 +156,7 @@ func defaultPolicy() *ballastv1.ClusterResourcePolicy {
 
 func defaultProfile(tupleLabels map[string]string) *ballastv1.WorkloadProfile {
 	return &ballastv1.WorkloadProfile{
-		ObjectMeta: metav1.ObjectMeta{Name: "app--web"},
+		ObjectMeta: metav1.ObjectMeta{Name: "web"},
 		Status: ballastv1.WorkloadProfileStatus{
 			TupleLabels: tupleLabels,
 		},
@@ -194,7 +194,7 @@ func TestReconcile_NoBallastConfig(t *testing.T) {
 	_, sc := newMiniredisClient(t)
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, nil)
 
-	result, err := reconcileProfile(t, r, "app--web")
+	result, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestReconcile_NoMatchingPolicy(t *testing.T) {
 	_, sc := newMiniredisClient(t)
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, nil)
 
-	result, err := reconcileProfile(t, r, "app--web")
+	result, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestReconcile_KillSwitchActive(t *testing.T) {
 	}}
 	r := newReconcilerWithPlugin(t, fc, sc, activeKS(t), false, p)
 
-	result, err := reconcileProfile(t, r, "app--web")
+	result, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestReconcile_DryRun(t *testing.T) {
 	}}
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), true, p)
 
-	_, err := reconcileProfile(t, r, "app--web")
+	_, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestReconcile_DryRun(t *testing.T) {
 
 	// Status not updated.
 	var got ballastv1.WorkloadProfile
-	if err := fc.Get(ctx, types.NamespacedName{Name: "app--web"}, &got); err != nil {
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
 		t.Fatalf("Get profile: %v", err)
 	}
 	if len(got.Status.Containers) != 0 {
@@ -308,7 +308,7 @@ func TestReconcile_MetricsSourceNotFound(t *testing.T) {
 	_, sc := newMiniredisClient(t)
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, nil)
 
-	result, err := reconcileProfile(t, r, "app--web")
+	result, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestReconcile_CollectAndUpdate(t *testing.T) {
 	}
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
 
-	_, err := reconcileProfile(t, r, "app--web")
+	_, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestReconcile_CollectAndUpdate(t *testing.T) {
 
 	// WorkloadProfile status should be updated.
 	var got ballastv1.WorkloadProfile
-	if err := fc.Get(ctx, types.NamespacedName{Name: "app--web"}, &got); err != nil {
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
 		t.Fatalf("Get profile: %v", err)
 	}
 	if len(got.Status.Containers) == 0 {
@@ -404,13 +404,13 @@ func TestReconcile_ReadinessNotMet(t *testing.T) {
 	}}
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
 
-	_, err := reconcileProfile(t, r, "app--web")
+	_, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
 	var got ballastv1.WorkloadProfile
-	if err := fc.Get(ctx, types.NamespacedName{Name: "app--web"}, &got); err != nil {
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
 		t.Fatalf("Get profile: %v", err)
 	}
 	if got.Status.MeetsThreshold {
@@ -442,13 +442,13 @@ func TestReconcile_ReadinessMet_RecommendationsPopulated(t *testing.T) {
 	}
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
 
-	_, err := reconcileProfile(t, r, "app--web")
+	_, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
 	var got ballastv1.WorkloadProfile
-	if err := fc.Get(ctx, types.NamespacedName{Name: "app--web"}, &got); err != nil {
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
 		t.Fatalf("Get profile: %v", err)
 	}
 
@@ -493,13 +493,13 @@ func TestReconcile_ExistingContainersPreserved(t *testing.T) {
 	p := &mockPlugin{typeName: "kubernetesMetrics", samples: nil} // no new samples
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
 
-	_, err := reconcileProfile(t, r, "app--web")
+	_, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
 	var got ballastv1.WorkloadProfile
-	if err := fc.Get(ctx, types.NamespacedName{Name: "app--web"}, &got); err != nil {
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
 		t.Fatalf("Get profile: %v", err)
 	}
 	// The app container should still appear (merged from existing status).
@@ -532,7 +532,7 @@ func TestReconcile_PluginNotFound(t *testing.T) {
 	p := &mockPlugin{typeName: "kubernetesMetrics"} // type mismatch with source
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
 
-	result, err := reconcileProfile(t, r, "app--web")
+	result, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -552,7 +552,7 @@ func TestReconcile_FetchStatsError(t *testing.T) {
 	p := &mockPlugin{typeName: "kubernetesMetrics", err: errors.New("metrics unavailable")}
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
 
-	result, err := reconcileProfile(t, r, "app--web")
+	result, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -587,12 +587,12 @@ func TestReconcile_BadAggregation(t *testing.T) {
 	}}
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
 
-	_, err := reconcileProfile(t, r, "app--web")
+	_, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	var got ballastv1.WorkloadProfile
-	if err := fc.Get(ctx, types.NamespacedName{Name: "app--web"}, &got); err != nil {
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if len(got.Status.Containers) > 0 {
@@ -621,7 +621,7 @@ func TestReconcile_InvalidRetentionWindow(t *testing.T) {
 	}}
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
 
-	result, err := reconcileProfile(t, r, "app--web")
+	result, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -650,7 +650,7 @@ func TestReconcile_ShortPollInterval(t *testing.T) {
 	}}
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
 
-	result, err := reconcileProfile(t, r, "app--web")
+	result, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -688,12 +688,12 @@ func TestReconcile_MemoryMetric(t *testing.T) {
 	}
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
 
-	_, err := reconcileProfile(t, r, "app--web")
+	_, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	var got ballastv1.WorkloadProfile
-	if err := fc.Get(ctx, types.NamespacedName{Name: "app--web"}, &got); err != nil {
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if !got.Status.MeetsThreshold {
@@ -731,12 +731,12 @@ func TestReconcile_DuplicateContainerMerge(t *testing.T) {
 	}}
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
 
-	_, err := reconcileProfile(t, r, "app--web")
+	_, err := reconcileProfile(t, r, "web")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	var got ballastv1.WorkloadProfile
-	if err := fc.Get(ctx, types.NamespacedName{Name: "app--web"}, &got); err != nil {
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	found := false
@@ -797,7 +797,7 @@ func TestReconciler_SetupWithManager(t *testing.T) {
 
 	// Create a WorkloadProfile — the controller should reconcile it without error.
 	profile := &ballastv1.WorkloadProfile{
-		ObjectMeta: metav1.ObjectMeta{Name: "app--web"},
+		ObjectMeta: metav1.ObjectMeta{Name: "web"},
 	}
 	if err := c.Create(ctx, profile); err != nil {
 		t.Fatalf("create WorkloadProfile: %v", err)
@@ -805,7 +805,7 @@ func TestReconciler_SetupWithManager(t *testing.T) {
 
 	// Verify the profile is reachable — the controller reconciles but returns early
 	// (no BallastConfig) without error.
-	waitForProfileExists(t, ctx, c, "app--web")
+	waitForProfileExists(t, ctx, c, "web")
 }
 
 func waitForProfileExists(t *testing.T, ctx context.Context, c client.Client, name string) {

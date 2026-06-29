@@ -95,7 +95,7 @@ labels:
   ballast.tightlinesoftware.com/profile: prod
 ```
 
-Now `(billing, api, prod)` and `(billing, api, dev)` are measured independently. Pods without the label are simply excluded from measurement — they produce no profile.
+Now `(billing, api, prod)` and `(billing, api, dev)` are measured independently. Pods without the `ballast.tightlinesoftware.com/profile` label get a placeholder value in the profile name (`noprofile`) rather than being skipped, so opted-in pods always produce a profile.
 
 > **Changing `identityLabels` wipes your operational history.** It redefines what constitutes a workload identity, so all existing `WorkloadProfile` objects are renamed and their accumulated Redis history is orphaned. Ballast starts fresh from zero samples. Plan your tuple before enrolling workloads.
 
@@ -141,7 +141,7 @@ Once a pod with the `measure` annotation is running, Ballast creates a `Workload
 
 ```bash
 kubectl get workloadprofiles
-kubectl describe workloadprofile billing--prod
+kubectl describe workloadprofile billing--api--prod
 ```
 
 The profile status shows accumulated usage statistics and recommendations once the readiness threshold is met (default: 500 samples collected over 24 hours):

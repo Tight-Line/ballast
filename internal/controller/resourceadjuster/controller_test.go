@@ -137,7 +137,7 @@ func noResizePolicy() *ballastv1.ClusterResourcePolicy {
 // readyProfile returns a WorkloadProfile with MeetsThreshold=true and one container recommendation.
 func readyProfile(cpuRequest, cpuLimit string) *ballastv1.WorkloadProfile {
 	return &ballastv1.WorkloadProfile{
-		ObjectMeta: metav1.ObjectMeta{Name: "app--prod"},
+		ObjectMeta: metav1.ObjectMeta{Name: "prod"},
 		Status: ballastv1.WorkloadProfileStatus{
 			TupleLabels:    map[string]string{"app": "app", "env": "prod"},
 			MeetsThreshold: true,
@@ -161,7 +161,7 @@ func resizePod(cpuRequest, cpuLimit string) *corev1.Pod {
 			Namespace: "default",
 			Annotations: map[string]string{
 				workloadwatcher.AnnotationResize:     "true",
-				workloadwatcher.AnnotationProfileRef: "app--prod",
+				workloadwatcher.AnnotationProfileRef: "prod",
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -624,7 +624,7 @@ func TestReconcile_NilContainerResources_HandledGracefully(t *testing.T) {
 			Namespace: "default",
 			Annotations: map[string]string{
 				workloadwatcher.AnnotationResize:     "true",
-				workloadwatcher.AnnotationProfileRef: "app--prod",
+				workloadwatcher.AnnotationProfileRef: "prod",
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -687,7 +687,7 @@ func TestReconcile_PodNilAnnotations_BlockedAnnotationStamped(t *testing.T) {
 			Namespace: "default",
 			Annotations: map[string]string{
 				workloadwatcher.AnnotationResize:     "true",
-				workloadwatcher.AnnotationProfileRef: "app--prod",
+				workloadwatcher.AnnotationProfileRef: "prod",
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -796,7 +796,7 @@ func TestReconcile_ApplyResize_NilResources_InitializedCorrectly(t *testing.T) {
 			Namespace: "default",
 			Annotations: map[string]string{
 				workloadwatcher.AnnotationResize:     "true",
-				workloadwatcher.AnnotationProfileRef: "app--prod",
+				workloadwatcher.AnnotationProfileRef: "prod",
 			},
 		},
 		Spec: corev1.PodSpec{
