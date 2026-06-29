@@ -138,15 +138,16 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 		return ctrl.Result{}, err
 	}
 
-	if err := r.incrementActiveWorkloads(ctx, profName); err != nil { // coverage:ignore - transient API error
-		return ctrl.Result{}, err
-	}
-
 	// Add finalizer before stamping the annotation so delete is always handled
-	// even if the annotation stamp fails.
+	// even if the annotation stamp fails. Increment only on the first successful
+	// finalizer write — retries where the finalizer is already present skip it,
+	// preventing double-counting when the update was previously blocked (e.g. RBAC).
 	if !controllerutil.ContainsFinalizer(pod, FinalizerName) {
 		controllerutil.AddFinalizer(pod, FinalizerName)
 		if err := r.client.Update(ctx, pod); err != nil { // coverage:ignore - transient API error
+			return ctrl.Result{}, err
+		}
+		if err := r.incrementActiveWorkloads(ctx, profName); err != nil { // coverage:ignore - transient API error
 			return ctrl.Result{}, err
 		}
 	}

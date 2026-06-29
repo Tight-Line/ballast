@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Helm chart now installs a default `MetricsSource` (`kubernetes-metrics`) wired to the built-in Kubernetes Metrics API and a default `ClusterResourcePolicy` (`default`) with conservative CPU/memory request sizing on first install. Both can be disabled with `defaultMetricsSource.enabled: false` / `defaultClusterResourcePolicy.enabled: false` in values.
+- Local kind cluster development workflow: `make docker-kind KIND_CLUSTER=<name>` (build image for host arch + load into kind), `make helm-install-local` (install chart with local image), `make helm-update-local KIND_CLUSTER=<name>` (combined one-shot rebuild and redeploy). Host CPU architecture is detected automatically via `uname -m`.
+
+### Fixed
+
+- `ClusterRole` was missing the `update` verb on `pods` (required for adding/removing the workloadwatcher finalizer) and had no rule for the `pods/resize` subresource (required for in-place resize). Both omissions caused `403 Forbidden` errors at runtime.
+- `activeWorkloads` on `WorkloadProfile` could be over-counted when a transient error caused the workloadwatcher to retry pod processing. The counter was incremented before writing the pod finalizer; each failed `Update` retry incremented it again. The counter is now incremented only after the finalizer write succeeds, making it idempotent with respect to retries.
+
 ## [0.1.3] - 2026-06-28
 
 ### Fixed
