@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Release workflow: build and push amd64 image first for fast availability, then follow with multi-arch (amd64 + arm64) manifest
+- Release workflow: add `helm repo add` step so chart dependency update succeeds in CI
+- Helm install instructions: use `ballast` as the repo alias (`helm repo add ballast ...`) instead of `tight-line`
+
 ## [0.1.0] - 2026-06-28
 
 ### Added
