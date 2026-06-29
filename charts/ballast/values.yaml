@@ -76,3 +76,64 @@ certManager:
   # injects the caBundle into the MutatingWebhookConfiguration automatically.
   # cert-manager must already be installed in the cluster.
   enabled: true
+
+# defaultMetricsSource installs a MetricsSource for the built-in Kubernetes
+# Metrics API (metrics-server) so measurements work out of the box. Set
+# enabled: false if you want to manage MetricsSource objects yourself.
+#
+# metrics-server must be installed in the cluster; it is not bundled here.
+defaultMetricsSource:
+  enabled: true
+  name: kubernetes-metrics
+  # pollInterval is the minimum time between metric collection cycles.
+  pollInterval: "60s"
+  # reservoirSize is the hard cap on stored samples per container per metric.
+  reservoirSize: 10000
+
+# defaultClusterResourcePolicy installs a catch-all policy that applies to all
+# opted-in pods. It measures CPU and memory requests at p95 with conservative
+# headroom and requires 500 samples over 24 hours before acting.
+#
+# Set enabled: false if you want to manage ClusterResourcePolicy objects yourself.
+# To scope the default policy to specific namespaces or workload kinds, set
+# enabled: false and create your own ClusterResourcePolicy (or ResourcePolicy).
+#
+# Note: this policy has priority 0 (the lowest). Any ClusterResourcePolicy or
+# ResourcePolicy with a higher priority value wins for matched workloads.
+defaultClusterResourcePolicy:
+  enabled: true
+  name: default
+  priority: 0
+  # metricsSource is the MetricsSource name referenced by each metric entry below.
+  # Change this if you disable defaultMetricsSource and create your own.
+  metricsSource: kubernetes-metrics
+  # metrics defines what to measure and which resource fields to set.
+  # Limits are intentionally omitted from the defaults: setting memory limits
+  # without careful profiling can cause OOMKills, and CPU limits cause throttling.
+  # Add limit entries here (or in a higher-priority policy) when you are ready.
+  metrics:
+    - resource: cpu
+      field: request
+      aggregation: p95
+      headroom: "1.2"
+    - resource: memory
+      field: request
+      aggregation: p95
+      headroom: "1.3"
+  readiness:
+    # minDataPoints is the minimum number of samples before Ballast will act.
+    minDataPoints: 500
+    # minTimeSpan is the minimum history window required.
+    minTimeSpan: "24h"
+    # maxCV is the maximum coefficient of variation (stddev/mean) allowed.
+    # High CV means the workload is too spiky to size reliably.
+    maxCV: "1.5"
+  behaviors:
+    thresholds:
+      # default is the minimum drift from the recommendation before a resize fires.
+      default: "20%"
+    resize:
+      # maxChangePerCycle caps how much a single adjustment can change a value.
+      maxChangePerCycle: "50%"
+      # interval is how often the ResourceAdjuster re-evaluates drift.
+      interval: "15m"
