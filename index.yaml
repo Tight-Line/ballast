@@ -2,6 +2,33 @@ apiVersion: v1
 entries:
   ballast:
   - apiVersion: v2
+    appVersion: v0.1.6
+    created: "2026-06-29T21:33:51.900948317Z"
+    dependencies:
+    - condition: valkey.enabled
+      name: valkey
+      repository: https://valkey-io.github.io/valkey-helm/
+      version: '>=0.1.0'
+    description: Kubernetes resource right-sizing operator — measures real usage and
+      adjusts pod requests via in-place resize.
+    digest: 6701535574490eb37d72d27517d6eae2f2fac91abb6d6ee601de80a0594892f6
+    home: https://github.com/tight-line/ballast
+    keywords:
+    - kubernetes
+    - resource-management
+    - right-sizing
+    - operator
+    maintainers:
+    - email: hello@tightlinesoftware.com
+      name: Tight Line LLC
+    name: ballast
+    sources:
+    - https://github.com/tight-line/ballast
+    type: application
+    urls:
+    - https://github.com/Tight-Line/ballast/releases/download/ballast-0.1.6/ballast-0.1.6.tgz
+    version: 0.1.6
+  - apiVersion: v2
     appVersion: v0.1.5
     created: "2026-06-29T18:27:51.721488006Z"
     dependencies:
@@ -163,4 +190,4 @@ entries:
     urls:
     - https://github.com/Tight-Line/ballast/releases/download/ballast-0.1.0/ballast-0.1.0.tgz
     version: 0.1.0
-generated: "2026-06-29T18:27:51.72151736Z"
+generated: "2026-06-29T21:33:51.900982561Z"
