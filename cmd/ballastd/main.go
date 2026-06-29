@@ -225,6 +225,7 @@ func main() {
 	rec, err := appmetrics.NewRecorder(metricProvider)
 	if err != nil {
 		setupLog.Error(err, "Failed to create metrics recorder")
+		_ = shutdownMetrics(context.Background())
 		os.Exit(1)
 	}
 
