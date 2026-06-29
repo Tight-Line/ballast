@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fix app version tagging so that Helm chart defaults match actual git tags and container image tags
+
 ## [0.1.1] - 2026-06-28
 
 ### Changed
