@@ -14,7 +14,7 @@ Workloads opt in with annotations on their pod templates. Ballast observes real 
 2. **Apply** — patch resource requests and limits at admission time when a pod is created.
 3. **Resize** — adjust resources on running pods via the Kubernetes in-place resize API (1.35+).
 
-`autoresize` starts in measure-only mode and automatically activates apply and resize once enough history has been collected.
+`autoresize` is shorthand for all three: it enables measure, apply, and resize with a single annotation. Nothing is applied or resized until the `WorkloadProfile` meets its readiness threshold — that is normal behavior for any resize-enabled workload.
 
 Pod eviction for cluster rebalancing is handled by [Kubernetes Descheduler](https://github.com/kubernetes-sigs/descheduler) — see the Annotation Contract section for details.
 
@@ -33,7 +33,7 @@ Pod eviction for cluster rebalancing is handled by [Kubernetes Descheduler](http
 | 9 | Admission webhook | Complete |
 | 10 | ResourceAdjuster controller | Complete |
 | 11 | Helm chart | Complete |
-| 12 | Polish and release readiness | Not started |
+| 12 | Polish and release readiness | Complete |
 
 ## Prerequisites
 
@@ -108,7 +108,7 @@ Add these annotations to your pod template specs to enroll workloads. Ballast ne
 | `ballast.tightlinesoftware.com/measure: "true"` | Collect metrics; required for any other behavior |
 | `ballast.tightlinesoftware.com/apply: "true"` | Patch requests/limits at admission time; requires `measure` |
 | `ballast.tightlinesoftware.com/resize: "true"` | Adjust resources on running pods via in-place resize; requires `apply` |
-| `ballast.tightlinesoftware.com/autoresize: "true"` | Progressive: measure-only until history threshold met, then `apply` + `resize` |
+| `ballast.tightlinesoftware.com/autoresize: "true"` | Shorthand for `measure` + `apply` + `resize`; mutually exclusive with `apply` and `resize` |
 
 **Pod eviction** is deliberately out of scope for Ballast. Ballast keeps resource requests and limits accurate; cluster rebalancing based on those corrected values is best handled by [Kubernetes Descheduler](https://github.com/kubernetes-sigs/descheduler) (specifically its `LowNodeUtilization` strategy). This is a clean division of labor: Ballast gets the weight right, Descheduler decides where pods should sit.
 
