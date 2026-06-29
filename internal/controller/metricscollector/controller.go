@@ -275,11 +275,11 @@ func (r *Reconciler) writeSample(
 // are logged at Error. In either case the controller continues with any sources that did
 // load. Returns the loaded sources and the minimum poll interval found, falling back to
 // defaultPollInterval if no sources loaded successfully.
-func (r *Reconciler) loadSources(ctx context.Context, metrics []ballastv1.MetricConfig) (map[string]*ballastv1.MetricsSource, time.Duration) {
+func (r *Reconciler) loadSources(ctx context.Context, metricCfgs []ballastv1.MetricConfig) (map[string]*ballastv1.MetricsSource, time.Duration) {
 	sources := make(map[string]*ballastv1.MetricsSource)
 	pollInterval := defaultPollInterval
 
-	for _, m := range metrics {
+	for _, m := range metricCfgs {
 		if _, seen := sources[m.Source]; seen {
 			continue
 		}
@@ -457,12 +457,12 @@ func (r *Reconciler) processResourceStats(
 // ComputeRecommendation and sets the Request or Limit field accordingly.
 // ComputeRecommendation failures (e.g. unknown aggregation in the policy) are logged at
 // Error and skipped — the recommendation for that field is simply left unset.
-func computeAllRecommendations(ctx context.Context, s store.Stats, resourceName string, metrics []ballastv1.MetricConfig) map[string]ballastv1.ResourceRecommendation {
+func computeAllRecommendations(ctx context.Context, s store.Stats, resourceName string, metricCfgs []ballastv1.MetricConfig) map[string]ballastv1.ResourceRecommendation {
 	log := ctrl.LoggerFrom(ctx)
 	recs := make(map[string]ballastv1.ResourceRecommendation)
 	rec := recs[resourceName]
 
-	for _, m := range metrics {
+	for _, m := range metricCfgs {
 		q, err := stats.ComputeRecommendation(s, m)
 		if err != nil {
 			log.Error(err, "ComputeRecommendation failed; check policy metric configuration",
@@ -564,9 +564,9 @@ func formatDuration(ms int64) string {
 
 // policyResourceMap returns a map from resource name to the list of MetricConfigs
 // that reference it. Used to look up which metrics to compute for a given resource.
-func policyResourceMap(metrics []ballastv1.MetricConfig) map[string][]ballastv1.MetricConfig {
+func policyResourceMap(metricCfgs []ballastv1.MetricConfig) map[string][]ballastv1.MetricConfig {
 	result := make(map[string][]ballastv1.MetricConfig)
-	for _, m := range metrics {
+	for _, m := range metricCfgs {
 		result[m.Resource] = append(result[m.Resource], m)
 	}
 	return result

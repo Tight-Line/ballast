@@ -80,6 +80,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        - name: OTEL_SERVICE_NAME
+          value: {{ .Values.telemetry.serviceName | default "ballast" | quote }}
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: {{ printf "service.version=%s,service.namespace=%s" .Chart.AppVersion (.Values.telemetry.serviceNamespace | default "tightlinesoftware.com") | quote }}
         ports:
         - name: health
           containerPort: 8081

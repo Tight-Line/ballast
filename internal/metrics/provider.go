@@ -12,10 +12,12 @@ import (
 	"time"
 
 	promclient "github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	promexporter "go.opentelemetry.io/otel/exporters/prometheus"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 )
 
 // Config carries the configuration for SetupProvider.
@@ -44,7 +46,22 @@ type Config struct {
 // call it before process exit. Returns a no-reader provider when both Prometheus
 // and OTLP are disabled.
 func SetupProvider(ctx context.Context, cfg Config) (*sdkmetric.MeterProvider, func(context.Context) error, error) {
+	// Build resource: hardcoded defaults, then env vars win (OTEL_SERVICE_NAME,
+	// OTEL_RESOURCE_ATTRIBUTES). The Helm chart always sets those env vars.
+	res, err := sdkresource.New(ctx,
+		sdkresource.WithAttributes(
+			attribute.String("service.name", "ballast"),
+			attribute.String("service.version", "dev"),
+			attribute.String("service.namespace", "tightlinesoftware.com"),
+		),
+		sdkresource.WithFromEnv(),
+	)
+	if err != nil { // coverage:ignore - only fails for malformed OTEL_RESOURCE_ATTRIBUTES
+		return nil, nil, fmt.Errorf("creating OTel resource: %w", err)
+	}
+
 	var opts []sdkmetric.Option
+	opts = append(opts, sdkmetric.WithResource(res))
 
 	if cfg.PrometheusRegisterer != nil {
 		exp, err := promexporter.New(promexporter.WithRegisterer(cfg.PrometheusRegisterer))

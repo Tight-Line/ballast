@@ -91,6 +91,11 @@ defaultMetricsSource:
   reservoirSize: 10000
 
 telemetry:
+  # serviceName and serviceNamespace are injected as OTEL_SERVICE_NAME and
+  # OTEL_RESOURCE_ATTRIBUTES so OTel exporters (and Prometheus metric labels)
+  # identify the app correctly. Override in your deployment values as needed.
+  serviceName: "ballast"
+  serviceNamespace: "tightlinesoftware.com"
   prometheus:
     # enabled exposes OTel metrics on the controller-runtime /metrics endpoint.
     # Requires setting a real metrics-bind-address (e.g. :8080) via the port field below.
