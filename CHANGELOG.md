@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Critical:** The `kubernetesMetrics` plugin was never registered in `main.go`, so the metrics collector silently skipped every poll cycle on every install. Metrics collection was completely non-functional out of the box.
 - `ClusterRole` was missing the `update` verb on `pods` (required for adding/removing the workloadwatcher finalizer) and had no rule for the `pods/resize` subresource (required for in-place resize). Both omissions caused `403 Forbidden` errors at runtime.
 - `activeWorkloads` on `WorkloadProfile` could be over-counted when a transient error caused the workloadwatcher to retry pod processing. The counter was incremented before writing the pod finalizer; each failed `Update` retry incremented it again. The counter is now incremented only after the finalizer write succeeds, making it idempotent with respect to retries.
 

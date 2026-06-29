@@ -24,12 +24,16 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
+
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/controller/metricscollector"
 	"github.com/tight-line/ballast/internal/controller/resourceadjuster"
 	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
 	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/logger"
+	"github.com/tight-line/ballast/internal/plugin"
+	k8splugin "github.com/tight-line/ballast/internal/plugin/kubernetes"
 	"github.com/tight-line/ballast/internal/store"
 	ballastwebhook "github.com/tight-line/ballast/internal/webhook"
 	// +kubebuilder:scaffold:imports
@@ -171,6 +175,13 @@ func main() {
 	}
 
 	// +kubebuilder:scaffold:builder
+
+	metricsClient, err := metricsclientset.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "Failed to create metrics clientset")
+		os.Exit(1)
+	}
+	plugin.Register(k8splugin.New(metricsClient.MetricsV1beta1().PodMetricses(""), k8splugin.DefaultOptions()))
 
 	storeClient, err := store.NewClient(redisURL)
 	if err != nil {
