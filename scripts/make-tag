@@ -73,7 +73,7 @@ info "Checks passed"
 info "Updating Helm chart versions to $VERSION..."
 if [ -f "charts/ballast/Chart.yaml" ]; then
     sed -i.bak "s/^version: .*/version: $VERSION/" "charts/ballast/Chart.yaml"
-    sed -i.bak "s/^appVersion: .*/appVersion: \"$VERSION\"/" "charts/ballast/Chart.yaml"
+    sed -i.bak "s/^appVersion: .*/appVersion: \"$TAG\"/" "charts/ballast/Chart.yaml"
     rm -f "charts/ballast/Chart.yaml.bak"
 fi
 
