@@ -72,6 +72,11 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v4
 
+      - name: Add Helm repositories
+        run: |
+          helm repo add valkey https://valkey-io.github.io/valkey-helm/
+          helm repo update
+
       - name: Update Helm dependencies
         run: helm dependency update charts/ballast
 
