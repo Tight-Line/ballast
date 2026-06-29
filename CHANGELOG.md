@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-06-29
+
 ### Added
 
 - **Prometheus and OpenTelemetry metrics.** All five Ballast components (MetricsCollector, WorkloadWatcher, ResourceAdjuster, Admission Webhook, KillSwitch) now publish operational counters via OpenTelemetry. A `MeterProvider` can expose metrics on the existing `/metrics` endpoint as a Prometheus scrape target, push to an OTLP collector, or both. Prometheus is enabled automatically when `--metrics-bind-address` is not `"0"`; OTLP push requires `--otel-metrics-endpoint`.
