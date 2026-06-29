@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
+	"github.com/tight-line/ballast/internal/metrics"
 )
 
 const (
@@ -27,6 +28,7 @@ const (
 type KillSwitch struct {
 	client    client.Client
 	namespace string
+	rec       *metrics.Recorder
 
 	mu     sync.RWMutex
 	active bool
@@ -34,8 +36,8 @@ type KillSwitch struct {
 }
 
 // New creates a KillSwitch that watches resources in namespace.
-func New(c client.Client, namespace string) *KillSwitch {
-	return &KillSwitch{client: c, namespace: namespace}
+func New(c client.Client, namespace string, rec *metrics.Recorder) *KillSwitch {
+	return &KillSwitch{client: c, namespace: namespace, rec: rec}
 }
 
 // IsActive reports whether the kill switch is currently active.
@@ -99,10 +101,13 @@ func (k *KillSwitch) Reconcile(ctx context.Context, _ reconcile.Request) (ctrl.R
 	if changed {
 		if active {
 			log.Info("Kill switch activated", "reason", reason)
+			k.rec.KillSwitchTransition(ctx, "activated")
 		} else {
 			log.Info("Kill switch deactivated")
+			k.rec.KillSwitchTransition(ctx, "deactivated")
 		}
 	}
+	k.rec.SetKillSwitchActive(active, reason)
 
 	return ctrl.Result{}, nil
 }

@@ -42,7 +42,7 @@ func reconcileOnce(t *testing.T, ks *killswitch.KillSwitch) {
 
 func TestKillSwitch_Inactive(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).Build()
-	ks := killswitch.New(fc, testNamespace)
+	ks := killswitch.New(fc, testNamespace, nil)
 	reconcileOnce(t, ks)
 	if ks.IsActive() {
 		t.Error("expected kill switch inactive when neither trigger is set")
@@ -57,7 +57,7 @@ func TestKillSwitch_ConfigMapPresent(t *testing.T) {
 		Name: killswitch.ConfigMapName, Namespace: testNamespace,
 	}}
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(cm).Build()
-	ks := killswitch.New(fc, testNamespace)
+	ks := killswitch.New(fc, testNamespace, nil)
 	reconcileOnce(t, ks)
 	if !ks.IsActive() {
 		t.Error("expected kill switch active when ConfigMap present")
@@ -70,7 +70,7 @@ func TestKillSwitch_ConfigMapPresent(t *testing.T) {
 
 func TestKillSwitch_ConfigMapAbsent(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).Build()
-	ks := killswitch.New(fc, testNamespace)
+	ks := killswitch.New(fc, testNamespace, nil)
 	reconcileOnce(t, ks)
 	if ks.IsActive() {
 		t.Error("expected kill switch inactive when ConfigMap absent")
@@ -83,7 +83,7 @@ func TestKillSwitch_BallastConfigSuspendedTrue(t *testing.T) {
 		Spec:       ballastv1.BallastConfigSpec{IdentityLabels: []string{"app"}, Suspended: true},
 	}
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(cfg).Build()
-	ks := killswitch.New(fc, testNamespace)
+	ks := killswitch.New(fc, testNamespace, nil)
 	reconcileOnce(t, ks)
 	if !ks.IsActive() {
 		t.Error("expected kill switch active when BallastConfig.spec.suspended=true")
@@ -99,7 +99,7 @@ func TestKillSwitch_BallastConfigSuspendedFalse(t *testing.T) {
 		Spec:       ballastv1.BallastConfigSpec{IdentityLabels: []string{"app"}, Suspended: false},
 	}
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(cfg).Build()
-	ks := killswitch.New(fc, testNamespace)
+	ks := killswitch.New(fc, testNamespace, nil)
 	reconcileOnce(t, ks)
 	if ks.IsActive() {
 		t.Error("expected kill switch inactive when BallastConfig.spec.suspended=false")
@@ -115,7 +115,7 @@ func TestKillSwitch_BothActive(t *testing.T) {
 		Spec:       ballastv1.BallastConfigSpec{IdentityLabels: []string{"app"}, Suspended: true},
 	}
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(cm, cfg).Build()
-	ks := killswitch.New(fc, testNamespace)
+	ks := killswitch.New(fc, testNamespace, nil)
 	reconcileOnce(t, ks)
 	if !ks.IsActive() {
 		t.Error("expected kill switch active when both triggers set")
@@ -132,7 +132,7 @@ func TestKillSwitch_Deactivation(t *testing.T) {
 		Name: killswitch.ConfigMapName, Namespace: testNamespace,
 	}}
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(cm).Build()
-	ks := killswitch.New(fc, testNamespace)
+	ks := killswitch.New(fc, testNamespace, nil)
 
 	reconcileOnce(t, ks)
 	if !ks.IsActive() {
@@ -150,7 +150,7 @@ func TestKillSwitch_Deactivation(t *testing.T) {
 
 func TestKillSwitch_NoChangeOnRepeatReconcile(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).Build()
-	ks := killswitch.New(fc, testNamespace)
+	ks := killswitch.New(fc, testNamespace, nil)
 	reconcileOnce(t, ks)
 	reconcileOnce(t, ks) // second reconcile with same state — exercises changed=false path
 	if ks.IsActive() {
@@ -180,7 +180,7 @@ func TestKillSwitch_SetupWithManager(t *testing.T) {
 		t.Fatalf("new manager: %v", err)
 	}
 
-	ks := killswitch.New(mgr.GetClient(), testNamespace)
+	ks := killswitch.New(mgr.GetClient(), testNamespace, nil)
 	if err := ks.SetupWithManager(mgr); err != nil {
 		t.Fatalf("SetupWithManager: %v", err)
 	}

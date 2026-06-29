@@ -1,0 +1,17 @@
+{{- if .Values.telemetry.prometheus.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ballast.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ballast.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "ballast.selectorLabels" . | nindent 4 }}
+  ports:
+  - name: metrics
+    port: {{ .Values.telemetry.prometheus.port }}
+    targetPort: metrics
+    protocol: TCP
+{{- end }}

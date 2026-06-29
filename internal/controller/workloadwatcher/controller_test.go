@@ -51,7 +51,7 @@ func newFakeClient(objs ...client.Object) client.Client {
 func inactiveKS(t *testing.T) *killswitch.KillSwitch {
 	t.Helper()
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).Build()
-	ks := killswitch.New(fc, "ballast-system")
+	ks := killswitch.New(fc, "ballast-system", nil)
 	if _, err := ks.Reconcile(context.Background(), reconcile.Request{}); err != nil {
 		t.Fatalf("ks.Reconcile: %v", err)
 	}
@@ -66,7 +66,7 @@ func activeKS(t *testing.T) *killswitch.KillSwitch {
 		Namespace: "ballast-system",
 	}}
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(cm).Build()
-	ks := killswitch.New(fc, "ballast-system")
+	ks := killswitch.New(fc, "ballast-system", nil)
 	if _, err := ks.Reconcile(context.Background(), reconcile.Request{}); err != nil {
 		t.Fatalf("ks.Reconcile: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestPodReconciler_NewPod(t *testing.T) {
 		},
 	}
 	fc := newFakeClient(defaultBallastConfig(), pod)
-	c := workloadwatcher.New(fc, inactiveKS(t), nil)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
 
 	reconcilePod(t, c, "default", "web-abc")
 
@@ -189,7 +189,7 @@ func TestPodReconciler_AlreadyProcessed(t *testing.T) {
 		t.Fatalf("status update: %v", err)
 	}
 
-	c := workloadwatcher.New(fc, inactiveKS(t), nil)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
 	reconcilePod(t, c, "default", "web-abc")
 	reconcilePod(t, c, "default", "web-abc") // second reconcile must be a no-op
 
@@ -216,7 +216,7 @@ func TestPodReconciler_AbsentIdentityLabelUsesPlaceholder(t *testing.T) {
 		},
 	}
 	fc := newFakeClient(defaultBallastConfig(), pod)
-	c := workloadwatcher.New(fc, inactiveKS(t), nil)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
 
 	reconcilePod(t, c, "default", "web-abc")
 
@@ -244,7 +244,7 @@ func TestPodReconciler_KillSwitchSuppresses(t *testing.T) {
 		},
 	}
 	fc := newFakeClient(defaultBallastConfig(), pod)
-	c := workloadwatcher.New(fc, activeKS(t), nil)
+	c := workloadwatcher.New(fc, activeKS(t), nil, nil)
 
 	reconcilePod(t, c, "default", "web-abc")
 
@@ -282,7 +282,7 @@ func TestPodReconciler_DeleteDecrement(t *testing.T) {
 		t.Fatalf("status update: %v", err)
 	}
 
-	c := workloadwatcher.New(fc, inactiveKS(t), nil)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
 
 	// Trigger deletion — fake client sets DeletionTimestamp because finalizer is present.
 	if err := fc.Delete(ctx, pod); err != nil {
@@ -344,7 +344,7 @@ func TestPodReconciler_DeleteOrphanTransition(t *testing.T) {
 		t.Fatalf("status update: %v", err)
 	}
 
-	c := workloadwatcher.New(fc, inactiveKS(t), nil)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
 
 	if err := fc.Delete(ctx, pod); err != nil {
 		t.Fatalf("Delete pod: %v", err)
@@ -394,7 +394,7 @@ func TestPodReconciler_DeleteKillSwitchAllowsDecrement(t *testing.T) {
 	}
 
 	// Kill switch is active, but decrement must still happen.
-	c := workloadwatcher.New(fc, activeKS(t), nil)
+	c := workloadwatcher.New(fc, activeKS(t), nil, nil)
 
 	if err := fc.Delete(ctx, pod); err != nil {
 		t.Fatalf("Delete pod: %v", err)
@@ -441,7 +441,7 @@ func TestPodReconciler_NewPodClearsOrphan(t *testing.T) {
 		t.Fatalf("status update: %v", err)
 	}
 
-	c := workloadwatcher.New(fc, inactiveKS(t), nil)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
 	reconcilePod(t, c, "default", "web-xyz")
 
 	var got ballastv1.WorkloadProfile
@@ -469,7 +469,7 @@ func TestPodReconciler_BallastConfigNotFound(t *testing.T) {
 	}
 	// No BallastConfig in the fake store.
 	fc := newFakeClient(pod)
-	c := workloadwatcher.New(fc, inactiveKS(t), nil)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
 
 	reconcilePod(t, c, "default", "web-abc")
 
@@ -506,7 +506,7 @@ func TestPodReconciler_RecoveryAddFinalizer(t *testing.T) {
 		t.Fatalf("status update: %v", err)
 	}
 
-	c := workloadwatcher.New(fc, inactiveKS(t), nil)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
 	reconcilePod(t, c, "default", "web-abc")
 
 	var gotPod corev1.Pod
@@ -562,7 +562,7 @@ func TestPodReconciler_DeleteNoFinalizer(t *testing.T) {
 		t.Fatalf("status update: %v", err)
 	}
 
-	c := workloadwatcher.New(fc, inactiveKS(t), nil)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
 
 	if err := fc.Delete(ctx, pod); err != nil {
 		t.Fatalf("Delete pod: %v", err)
@@ -598,7 +598,7 @@ func TestPodReconciler_SpecialLabelChars(t *testing.T) {
 		Spec:       ballastv1.BallastConfigSpec{IdentityLabels: []string{"app"}, OrphanTTL: "168h"},
 	}
 	fc := newFakeClient(cfg, pod)
-	c := workloadwatcher.New(fc, inactiveKS(t), nil)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
 
 	reconcilePod(t, c, "default", "web-abc")
 
@@ -726,7 +726,7 @@ func TestProfileReconciler_NotOrphaned(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), profile)
 
 	_, mr := newMiniredisClient(t)
-	c := workloadwatcher.New(fc, inactiveKS(t), mr)
+	c := workloadwatcher.New(fc, inactiveKS(t), mr, nil)
 
 	result, err := reconcileProfile(t, c, profName)
 	if err != nil {
@@ -770,7 +770,7 @@ func TestProfileReconciler_OrphanTTLNotExpired(t *testing.T) {
 	}
 
 	_, mr := newMiniredisClient(t)
-	c := workloadwatcher.New(fc, inactiveKS(t), mr)
+	c := workloadwatcher.New(fc, inactiveKS(t), mr, nil)
 
 	result, err := reconcileProfile(t, c, profName)
 	if err != nil {
@@ -812,7 +812,7 @@ func TestProfileReconciler_InvalidOrphanTTL(t *testing.T) {
 	}
 
 	_, mr := newMiniredisClient(t)
-	c := workloadwatcher.New(fc, inactiveKS(t), mr)
+	c := workloadwatcher.New(fc, inactiveKS(t), mr, nil)
 
 	_, err := reconcileProfile(t, c, profName)
 	if err == nil {
@@ -863,7 +863,7 @@ func TestProfileReconciler_OrphanTTLExpired(t *testing.T) {
 		t.Fatalf("AddSample key2: %v", err)
 	}
 
-	c := workloadwatcher.New(fc, inactiveKS(t), rc)
+	c := workloadwatcher.New(fc, inactiveKS(t), rc, nil)
 	_, err := reconcileProfile(t, c, profName)
 	if err != nil {
 		t.Fatalf("Profile.Reconcile: %v", err)
@@ -921,7 +921,7 @@ func TestProfileName_LongLabel(t *testing.T) {
 		},
 	}
 	fc := newFakeClient(defaultBallastConfig(), pod)
-	c := workloadwatcher.New(fc, inactiveKS(t), nil)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
 
 	reconcilePod(t, c, "default", "web-abc")
 
@@ -962,7 +962,7 @@ func TestProfileReconciler_RedisFailure(t *testing.T) {
 	mr, rc := newMiniredisClient(t)
 	mr.Close() // shut down the server so Redis commands fail
 
-	c := workloadwatcher.New(fc, inactiveKS(t), rc)
+	c := workloadwatcher.New(fc, inactiveKS(t), rc, nil)
 	_, err := reconcileProfile(t, c, profName)
 	if err == nil {
 		t.Fatal("expected error when Redis is unavailable, got nil")

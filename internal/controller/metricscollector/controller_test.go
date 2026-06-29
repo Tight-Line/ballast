@@ -50,7 +50,7 @@ func newFakeClient(objs ...client.Object) client.Client {
 func inactiveKS(t *testing.T) *killswitch.KillSwitch {
 	t.Helper()
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).Build()
-	ks := killswitch.New(fc, "ballast-system")
+	ks := killswitch.New(fc, "ballast-system", nil)
 	if _, err := ks.Reconcile(context.Background(), reconcile.Request{}); err != nil {
 		t.Fatalf("ks.Reconcile: %v", err)
 	}
@@ -64,7 +64,7 @@ func activeKS(t *testing.T) *killswitch.KillSwitch {
 		Namespace: "ballast-system",
 	}}
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(cm).Build()
-	ks := killswitch.New(fc, "ballast-system")
+	ks := killswitch.New(fc, "ballast-system", nil)
 	if _, err := ks.Reconcile(context.Background(), reconcile.Request{}); err != nil {
 		t.Fatalf("ks.Reconcile: %v", err)
 	}
@@ -94,7 +94,7 @@ func (m *mockPlugin) FetchStats(_ context.Context, _ plugin.WorkloadIdentity, _ 
 // newReconcilerWithPlugin wires a Reconciler with a fake client, miniredis, and a mock plugin.
 func newReconcilerWithPlugin(t *testing.T, fc client.Client, sc store.Client, ks *killswitch.KillSwitch, dryRun bool, p *mockPlugin) *metricscollector.Reconciler {
 	t.Helper()
-	r := metricscollector.New(fc, sc, ks, dryRun)
+	r := metricscollector.New(fc, sc, ks, dryRun, nil)
 	r.PluginGet = func(typeName string) (plugin.MetricsPlugin, bool) {
 		if p != nil && typeName == p.typeName {
 			return p, true
@@ -857,11 +857,11 @@ func TestReconciler_SetupWithManager(t *testing.T) {
 	sc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = sc.Close() })
 
-	ks := killswitch.New(mgr.GetClient(), "default")
+	ks := killswitch.New(mgr.GetClient(), "default", nil)
 	if err := ks.SetupWithManager(mgr); err != nil {
 		t.Fatalf("ks.SetupWithManager: %v", err)
 	}
-	if err := metricscollector.Setup(mgr, ks, sc, false); err != nil {
+	if err := metricscollector.Setup(mgr, ks, sc, false, nil); err != nil {
 		t.Fatalf("metricscollector.Setup: %v", err)
 	}
 

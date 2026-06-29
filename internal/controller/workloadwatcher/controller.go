@@ -21,6 +21,7 @@ import (
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/metrics"
 	"github.com/tight-line/ballast/internal/plugin"
 	"github.com/tight-line/ballast/internal/store"
 )
@@ -51,10 +52,10 @@ type Controller struct {
 }
 
 // New creates a Controller.
-func New(c client.Client, ks *killswitch.KillSwitch, storeClient store.Client) *Controller {
+func New(c client.Client, ks *killswitch.KillSwitch, storeClient store.Client, rec *metrics.Recorder) *Controller {
 	return &Controller{
-		Pod:     &PodReconciler{client: c, ks: ks},
-		Profile: &ProfileReconciler{client: c, storeClient: storeClient},
+		Pod:     &PodReconciler{client: c, ks: ks, rec: rec},
+		Profile: &ProfileReconciler{client: c, storeClient: storeClient, rec: rec},
 	}
 }
 
@@ -66,11 +67,11 @@ func Setup(mgr ctrl.Manager, namespace, redisURL string) error {
 	if err != nil { // coverage:ignore - requires a malformed Redis URL
 		return fmt.Errorf("creating Redis client: %w", err)
 	}
-	ks := killswitch.New(mgr.GetClient(), namespace)
+	ks := killswitch.New(mgr.GetClient(), namespace, nil)
 	if err := ks.SetupWithManager(mgr); err != nil { // coverage:ignore - requires a malformed manager
 		return err
 	}
-	return New(mgr.GetClient(), ks, storeClient).SetupWithManager(mgr)
+	return New(mgr.GetClient(), ks, storeClient, nil).SetupWithManager(mgr)
 }
 
 // SetupWithManager registers both sub-reconcilers with the manager.
@@ -86,6 +87,7 @@ func (c *Controller) SetupWithManager(mgr ctrl.Manager) error {
 type PodReconciler struct {
 	client client.Client
 	ks     *killswitch.KillSwitch
+	rec    *metrics.Recorder
 }
 
 // Reconcile handles pod CREATE/UPDATE (stamp and increment) and DELETE (decrement).
@@ -151,6 +153,7 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 		if err := r.incrementActiveWorkloads(ctx, profName); err != nil { // coverage:ignore - transient API error
 			return ctrl.Result{}, err
 		}
+		r.rec.PodProcessed(ctx, "created", pod.Namespace, profName)
 	}
 
 	return ctrl.Result{}, r.stampProfileRef(ctx, pod, profName)
@@ -171,6 +174,7 @@ func (r *PodReconciler) handleDelete(ctx context.Context, pod *corev1.Pod) (ctrl
 		if err := r.decrementActiveWorkloads(ctx, profName); err != nil { // coverage:ignore - transient API error
 			return ctrl.Result{}, err
 		}
+		r.rec.PodProcessed(ctx, "deleted", pod.Namespace, profName)
 	}
 
 	controllerutil.RemoveFinalizer(pod, FinalizerName)
@@ -196,6 +200,7 @@ func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupl
 		}
 		return err // coverage:ignore - transient non-AlreadyExists error
 	}
+	r.rec.WorkloadProfileCreated(ctx, profName)
 
 	// Status is a subresource; must be updated after creation.
 	profile.Status.TupleLabels = tupleLabels
@@ -274,6 +279,7 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 type ProfileReconciler struct {
 	client      client.Client
 	storeClient store.Client
+	rec         *metrics.Recorder
 }
 
 // Reconcile checks whether an orphaned profile has exceeded its TTL and, if so,
@@ -321,7 +327,11 @@ func (r *ProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	return ctrl.Result{}, r.client.Delete(ctx, &profile)
+	if err := r.client.Delete(ctx, &profile); err != nil { // coverage:ignore - transient API error
+		return ctrl.Result{}, err
+	}
+	r.rec.WorkloadProfilePurged(ctx, profile.Name)
+	return ctrl.Result{}, nil
 }
 
 // SetupWithManager registers the ProfileReconciler with the manager.

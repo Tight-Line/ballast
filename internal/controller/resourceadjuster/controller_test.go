@@ -91,7 +91,7 @@ func (r *resizeSubClient) Apply(ctx context.Context, obj runtime.ApplyConfigurat
 func inactiveKS(t *testing.T) *killswitch.KillSwitch {
 	t.Helper()
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).Build()
-	ks := killswitch.New(fc, "ballast-system")
+	ks := killswitch.New(fc, "ballast-system", nil)
 	if _, err := ks.Reconcile(context.Background(), reconcile.Request{}); err != nil {
 		t.Fatalf("ks.Reconcile: %v", err)
 	}
@@ -105,7 +105,7 @@ func activeKS(t *testing.T) *killswitch.KillSwitch {
 		Namespace: "ballast-system",
 	}}
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(cm).Build()
-	ks := killswitch.New(fc, "ballast-system")
+	ks := killswitch.New(fc, "ballast-system", nil)
 	if _, err := ks.Reconcile(context.Background(), reconcile.Request{}); err != nil {
 		t.Fatalf("ks.Reconcile: %v", err)
 	}
@@ -193,7 +193,7 @@ func doReconcile(t *testing.T, r *resourceadjuster.Reconciler, profileName strin
 
 func TestReconcile_ProfileNotFound(t *testing.T) {
 	fc := newFakeClient()
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	result, err := doReconcile(t, r, "missing")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -208,7 +208,7 @@ func TestReconcile_KillSwitchActive(t *testing.T) {
 	// Pod has enough drift to trigger a resize if the kill switch were inactive.
 	pod := resizePod("100m", "200m")
 	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, activeKS(t), false)
+	r := resourceadjuster.New(fc, activeKS(t), false, nil)
 	resizeCalled := false
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		resizeCalled = true
@@ -230,7 +230,7 @@ func TestReconcile_ThresholdNotMet(t *testing.T) {
 	profile := readyProfile("200m", "400m")
 	profile.Status.MeetsThreshold = false
 	fc := newFakeClient(profile, noResizePolicy())
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	resizeCalled := false
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		resizeCalled = true
@@ -248,7 +248,7 @@ func TestReconcile_NoMatchingPolicy(t *testing.T) {
 	profile := readyProfile("200m", "400m")
 	// No policy objects in fake client — resolver returns nil.
 	fc := newFakeClient(profile)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	resizeCalled := false
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		resizeCalled = true
@@ -267,7 +267,7 @@ func TestReconcile_NoDrift_NoResize(t *testing.T) {
 	profile := readyProfile("200m", "400m")
 	pod := resizePod("200m", "400m")
 	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	resizeCalled := false
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		resizeCalled = true
@@ -286,7 +286,7 @@ func TestReconcile_DriftExceedsThreshold_ResizeCalled(t *testing.T) {
 	profile := readyProfile("200m", "400m")
 	pod := resizePod("100m", "200m")
 	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	resizeCalled := false
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, adjs []resourceadjuster.ContainerAdjustment) error {
 		resizeCalled = true
@@ -310,7 +310,7 @@ func TestReconcile_AutoresizeAnnotation_ResizeCalled(t *testing.T) {
 	pod.Annotations[workloadwatcher.AnnotationResize] = ""
 	pod.Annotations[workloadwatcher.AnnotationAutoresize] = "true"
 	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	resizeCalled := false
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		resizeCalled = true
@@ -331,7 +331,7 @@ func TestReconcile_NoResizeAnnotation_NoResize(t *testing.T) {
 	delete(pod.Annotations, workloadwatcher.AnnotationResize)
 	pod.Annotations[workloadwatcher.AnnotationMeasure] = "true"
 	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	resizeCalled := false
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		resizeCalled = true
@@ -349,7 +349,7 @@ func TestReconcile_DryRun_NoResize(t *testing.T) {
 	profile := readyProfile("200m", "400m")
 	pod := resizePod("100m", "200m")
 	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), true /* dryRunResize */)
+	r := resourceadjuster.New(fc, inactiveKS(t), true /* dryRunResize */, nil)
 	resizeCalled := false
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		resizeCalled = true
@@ -367,7 +367,7 @@ func TestReconcile_ResizeFails_BlockedAnnotationStamped(t *testing.T) {
 	profile := readyProfile("200m", "400m")
 	pod := resizePod("100m", "200m")
 	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		return errors.New("node pressure: infeasible")
 	}
@@ -387,7 +387,7 @@ func TestReconcile_ResizeSucceeds_LastResizeAnnotationStamped(t *testing.T) {
 	profile := readyProfile("200m", "400m")
 	pod := resizePod("100m", "200m")
 	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		return nil
 	}
@@ -409,7 +409,7 @@ func TestReconcile_CooldownActive_ResizeSkipped(t *testing.T) {
 	pod := resizePod("100m", "200m")
 	pod.Annotations[resourceadjuster.AnnotationLastResize] = time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
 	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	resizeCalled := false
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		resizeCalled = true
@@ -430,7 +430,7 @@ func TestReconcile_RequeueInterval_FromPolicy(t *testing.T) {
 	// Pod resources match recommendations so no resize is triggered, but we still check requeue.
 	pod := resizePod("200m", "400m")
 	fc := newFakeClient(profile, policy, pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		return nil
 	}
@@ -568,7 +568,7 @@ func TestReconcile_PodWrongProfileRef_Excluded(t *testing.T) {
 	pod := resizePod("100m", "200m")
 	pod.Annotations[workloadwatcher.AnnotationProfileRef] = "other--profile"
 	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	resizeCalled := false
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		resizeCalled = true
@@ -591,7 +591,7 @@ func TestReconcile_DeletingPod_Excluded(t *testing.T) {
 	// fake client requires a finalizer to allow objects with DeletionTimestamp.
 	pod.Finalizers = []string{"test/fake"}
 	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	resizeCalled := false
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		resizeCalled = true
@@ -616,7 +616,7 @@ func TestReconcile_ContainerNotInRecommendations_Skipped(t *testing.T) {
 		},
 	})
 	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	adjustedContainers := []string{}
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, adjs []resourceadjuster.ContainerAdjustment) error {
 		for _, a := range adjs {
@@ -655,7 +655,7 @@ func TestReconcile_NilContainerResources_HandledGracefully(t *testing.T) {
 		},
 	}
 	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	resizeCalled := false
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		resizeCalled = true
@@ -677,7 +677,7 @@ func TestReconcile_ApplyResizeDefault_FakeClientSucceeds(t *testing.T) {
 	profile := readyProfile("200m", "400m")
 	pod := resizePod("100m", "200m")
 	fc := newResizeFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	if _, err := doReconcile(t, r, profile.Name); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -721,7 +721,7 @@ func TestReconcile_PodNilAnnotations_BlockedAnnotationStamped(t *testing.T) {
 		},
 	}
 	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	r.ResizePod = func(_ context.Context, p *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		// Simulate resize failure after clearing annotations to exercise nil-annotation guard.
 		p.Annotations = nil
@@ -746,7 +746,7 @@ func TestReconcile_EmptyMaxChangePerCycle_UsesDefault(t *testing.T) {
 	profile := readyProfile("200m", "400m")
 	pod := resizePod("100m", "200m")
 	fc := newFakeClient(profile, policy, pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	resizeCalled := false
 	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
 		resizeCalled = true
@@ -782,7 +782,7 @@ func TestReconcile_ApplyResize_MultiContainer_SkipsNonMatching(t *testing.T) {
 		},
 	})
 	fc := newResizeFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	if _, err := doReconcile(t, r, profile.Name); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -827,7 +827,7 @@ func TestReconcile_ApplyResize_NilResources_InitializedCorrectly(t *testing.T) {
 		},
 	}
 	fc := newResizeFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	if _, err := doReconcile(t, r, profile.Name); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -915,11 +915,11 @@ func TestReconciler_SetupWithManager(t *testing.T) {
 		t.Fatalf("new manager: %v", err)
 	}
 
-	ks := killswitch.New(mgr.GetClient(), "default")
+	ks := killswitch.New(mgr.GetClient(), "default", nil)
 	if err := ks.SetupWithManager(mgr); err != nil {
 		t.Fatalf("ks.SetupWithManager: %v", err)
 	}
-	if err := resourceadjuster.Setup(mgr, ks, false); err != nil {
+	if err := resourceadjuster.Setup(mgr, ks, false, nil); err != nil {
 		t.Fatalf("resourceadjuster.Setup: %v", err)
 	}
 

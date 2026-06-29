@@ -1,0 +1,22 @@
+{{- if and .Values.telemetry.prometheus.enabled .Values.telemetry.prometheus.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "ballast.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ballast.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "ballast.selectorLabels" . | nindent 6 }}
+  endpoints:
+  - port: metrics
+    interval: {{ .Values.telemetry.prometheus.serviceMonitor.interval }}
+    scrapeTimeout: {{ .Values.telemetry.prometheus.serviceMonitor.scrapeTimeout }}
+    {{- if .Values.telemetry.prometheus.secure }}
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+    {{- end }}
+{{- end }}
