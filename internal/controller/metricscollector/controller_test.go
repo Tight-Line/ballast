@@ -158,7 +158,8 @@ func defaultProfile(tupleLabels map[string]string) *ballastv1.WorkloadProfile {
 	return &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: "web"},
 		Status: ballastv1.WorkloadProfileStatus{
-			TupleLabels: tupleLabels,
+			TupleLabels:    tupleLabels,
+			SelectorLabels: tupleLabels,
 		},
 	}
 }
