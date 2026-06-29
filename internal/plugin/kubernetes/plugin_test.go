@@ -65,9 +65,12 @@ func TestFetchStats_Empty(t *testing.T) {
 func TestFetchStats_OneContainerStats(t *testing.T) {
 	lister := &fakeLister{
 		pods: []metricsv1beta1.PodMetrics{
-			{Containers: []metricsv1beta1.ContainerMetrics{
-				{Name: "app", Usage: makeUsage(250, 512*1024*1024)},
-			}},
+			{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "billing"}},
+				Containers: []metricsv1beta1.ContainerMetrics{
+					{Name: "app", Usage: makeUsage(250, 512*1024*1024)},
+				},
+			},
 		},
 	}
 	p := kplugin.New(lister, kplugin.DefaultOptions())
@@ -115,14 +118,20 @@ func TestFetchStats_OneContainerStats(t *testing.T) {
 func TestFetchStats_MultiplePodsAndContainers(t *testing.T) {
 	lister := &fakeLister{
 		pods: []metricsv1beta1.PodMetrics{
-			{Containers: []metricsv1beta1.ContainerMetrics{
-				{Name: "app", Usage: makeUsage(100, 128*1024*1024)},
-				{Name: "sidecar", Usage: makeUsage(20, 32*1024*1024)},
-			}},
-			{Containers: []metricsv1beta1.ContainerMetrics{
-				{Name: "app", Usage: makeUsage(200, 256*1024*1024)},
-				{Name: "sidecar", Usage: makeUsage(30, 48*1024*1024)},
-			}},
+			{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "test"}},
+				Containers: []metricsv1beta1.ContainerMetrics{
+					{Name: "app", Usage: makeUsage(100, 128*1024*1024)},
+					{Name: "sidecar", Usage: makeUsage(20, 32*1024*1024)},
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "test"}},
+				Containers: []metricsv1beta1.ContainerMetrics{
+					{Name: "app", Usage: makeUsage(200, 256*1024*1024)},
+					{Name: "sidecar", Usage: makeUsage(30, 48*1024*1024)},
+				},
+			},
 		},
 	}
 	p := kplugin.New(lister, kplugin.DefaultOptions())
@@ -139,13 +148,16 @@ func TestFetchStats_MultiplePodsAndContainers(t *testing.T) {
 func TestFetchStats_EphemeralStorage(t *testing.T) {
 	lister := &fakeLister{
 		pods: []metricsv1beta1.PodMetrics{
-			{Containers: []metricsv1beta1.ContainerMetrics{
-				{Name: "app", Usage: corev1.ResourceList{
-					corev1.ResourceCPU:              *resource.NewMilliQuantity(100, resource.DecimalSI),
-					corev1.ResourceMemory:           *resource.NewQuantity(128*1024*1024, resource.BinarySI),
-					corev1.ResourceEphemeralStorage: *resource.NewQuantity(1*1024*1024*1024, resource.BinarySI),
-				}},
-			}},
+			{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "test"}},
+				Containers: []metricsv1beta1.ContainerMetrics{
+					{Name: "app", Usage: corev1.ResourceList{
+						corev1.ResourceCPU:              *resource.NewMilliQuantity(100, resource.DecimalSI),
+						corev1.ResourceMemory:           *resource.NewQuantity(128*1024*1024, resource.BinarySI),
+						corev1.ResourceEphemeralStorage: *resource.NewQuantity(1*1024*1024*1024, resource.BinarySI),
+					}},
+				},
+			},
 		},
 	}
 	p := kplugin.New(lister, kplugin.DefaultOptions())
@@ -206,7 +218,8 @@ func TestFetchStats_BackoffExponential(t *testing.T) {
 	_, _ = p.FetchStats(context.Background(), id, plugin.TimeWindow{})
 	// Second failure (after backoff expires): backoff = 2s.
 	// We can't wait 1s in a unit test, so verify the pattern via a very short maxBackoff.
-	p2 := kplugin.New(lister, kplugin.Options{MaxRPS: 100, MaxBackoff: 3 * time.Millisecond})
+	// CacheTTL=1ms ensures each post-backoff retry hits the API instead of returning a cached error.
+	p2 := kplugin.New(lister, kplugin.Options{MaxRPS: 100, MaxBackoff: 3 * time.Millisecond, CacheTTL: time.Millisecond})
 	_, _ = p2.FetchStats(context.Background(), id, plugin.TimeWindow{}) // delay=1ms (capped)
 	time.Sleep(5 * time.Millisecond)
 	_, _ = p2.FetchStats(context.Background(), id, plugin.TimeWindow{}) // delay=2ms (capped)
@@ -218,9 +231,12 @@ func TestFetchStats_BackoffExponential(t *testing.T) {
 	// Now flip to success and wait for backoff to clear.
 	lister.err = nil
 	lister.pods = []metricsv1beta1.PodMetrics{
-		{Containers: []metricsv1beta1.ContainerMetrics{
-			{Name: "app", Usage: makeUsage(100, 128*1024*1024)},
-		}},
+		{
+			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "test"}},
+			Containers: []metricsv1beta1.ContainerMetrics{
+				{Name: "app", Usage: makeUsage(100, 128*1024*1024)},
+			},
+		},
 	}
 	time.Sleep(10 * time.Millisecond)
 	stats, err := p2.FetchStats(context.Background(), id, plugin.TimeWindow{})
@@ -234,7 +250,9 @@ func TestFetchStats_BackoffExponential(t *testing.T) {
 
 func TestFetchStats_BackoffResetOnSuccess(t *testing.T) {
 	lister := &fakeLister{err: errors.New("fail")}
-	p := kplugin.New(lister, kplugin.Options{MaxRPS: 100, MaxBackoff: time.Millisecond})
+	// CacheTTL=1ms ensures the cache expires before the backoff does, so the
+	// retry after sleep sees fresh lister data rather than the cached error.
+	p := kplugin.New(lister, kplugin.Options{MaxRPS: 100, MaxBackoff: time.Millisecond, CacheTTL: time.Millisecond})
 	id := plugin.WorkloadIdentity{Labels: map[string]string{"app": "test"}}
 
 	// Trigger backoff.
@@ -244,9 +262,12 @@ func TestFetchStats_BackoffResetOnSuccess(t *testing.T) {
 	// Recover: backoff expired and call succeeds; backoff state should be cleared.
 	lister.err = nil
 	lister.pods = []metricsv1beta1.PodMetrics{
-		{Containers: []metricsv1beta1.ContainerMetrics{
-			{Name: "app", Usage: makeUsage(100, 128*1024*1024)},
-		}},
+		{
+			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "test"}},
+			Containers: []metricsv1beta1.ContainerMetrics{
+				{Name: "app", Usage: makeUsage(100, 128*1024*1024)},
+			},
+		},
 	}
 	stats, err := p.FetchStats(context.Background(), id, plugin.TimeWindow{})
 	if err != nil {
@@ -268,8 +289,9 @@ func TestFetchStats_BackoffResetOnSuccess(t *testing.T) {
 
 func TestFetchStats_RateLimit(t *testing.T) {
 	lister := &fakeLister{}
+	// CacheTTL=0 disables caching so each call hits the rate limiter.
 	// MaxRPS=0.001 means ~1000s between tokens; burst=1 so first call drains it.
-	p := kplugin.New(lister, kplugin.Options{MaxRPS: 0.001, MaxBackoff: time.Minute})
+	p := kplugin.New(lister, kplugin.Options{MaxRPS: 0.001, MaxBackoff: time.Minute, CacheTTL: 0})
 	id := plugin.WorkloadIdentity{Labels: map[string]string{"app": "test"}}
 
 	// First call consumes the burst token immediately.
@@ -284,5 +306,98 @@ func TestFetchStats_RateLimit(t *testing.T) {
 	_, err = p.FetchStats(ctx, id, plugin.TimeWindow{})
 	if err == nil {
 		t.Fatal("expected rate-limit timeout on second call")
+	}
+}
+
+func TestFetchStats_ClientSideFiltering(t *testing.T) {
+	// The metrics API returns all pods; the plugin must filter client-side.
+	lister := &fakeLister{
+		pods: []metricsv1beta1.PodMetrics{
+			// Matches: name=nginx, no component label.
+			{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app.kubernetes.io/name": "nginx"}},
+				Containers: []metricsv1beta1.ContainerMetrics{
+					{Name: "nginx", Usage: makeUsage(10, 64*1024*1024)},
+				},
+			},
+			// Non-match: name=nginx but component=server present (LabelAbsent requires absence).
+			{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
+					"app.kubernetes.io/name":      "nginx",
+					"app.kubernetes.io/component": "server",
+				}},
+				Containers: []metricsv1beta1.ContainerMetrics{
+					{Name: "server", Usage: makeUsage(20, 128*1024*1024)},
+				},
+			},
+			// Non-match: wrong name.
+			{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app.kubernetes.io/name": "redis"}},
+				Containers: []metricsv1beta1.ContainerMetrics{
+					{Name: "redis", Usage: makeUsage(5, 32*1024*1024)},
+				},
+			},
+			// Non-match: system pod with no labels at all.
+			{
+				Containers: []metricsv1beta1.ContainerMetrics{
+					{Name: "etcd", Usage: makeUsage(100, 256*1024*1024)},
+				},
+			},
+		},
+	}
+
+	p := kplugin.New(lister, kplugin.DefaultOptions())
+	id := plugin.WorkloadIdentity{Labels: map[string]string{
+		"app.kubernetes.io/name":      "nginx",
+		"app.kubernetes.io/component": plugin.LabelAbsent,
+	}}
+
+	stats, err := p.FetchStats(context.Background(), id, plugin.TimeWindow{})
+	if err != nil {
+		t.Fatalf("FetchStats: %v", err)
+	}
+
+	// Only the first pod matches: name=nginx, no component. 2 resources (cpu+memory).
+	if len(stats) != 2 {
+		t.Errorf("expected 2 stats entries (nginx pod only), got %d", len(stats))
+	}
+	for _, s := range stats {
+		if s.ContainerName != "nginx" {
+			t.Errorf("unexpected container %q in stats", s.ContainerName)
+		}
+	}
+}
+
+// countingLister counts how many times List is called.
+type countingLister struct {
+	fakeLister
+	calls int
+}
+
+func (c *countingLister) List(ctx context.Context, opts metav1.ListOptions) (*metricsv1beta1.PodMetricsList, error) {
+	c.calls++
+	return c.fakeLister.List(ctx, opts)
+}
+
+func TestFetchStats_CacheSharedAcrossCalls(t *testing.T) {
+	pod := metricsv1beta1.PodMetrics{
+		ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "web"}},
+		Containers: []metricsv1beta1.ContainerMetrics{
+			{Name: "app", Usage: makeUsage(50, 64*1024*1024)},
+		},
+	}
+	lister := &countingLister{fakeLister: fakeLister{pods: []metricsv1beta1.PodMetrics{pod}}}
+	p := kplugin.New(lister, kplugin.Options{MaxRPS: 100, MaxBackoff: time.Minute, CacheTTL: time.Hour})
+	id := plugin.WorkloadIdentity{Labels: map[string]string{"app": "web"}}
+
+	for i := range 5 {
+		_, err := p.FetchStats(context.Background(), id, plugin.TimeWindow{})
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+
+	if lister.calls != 1 {
+		t.Errorf("expected 1 API call for 5 FetchStats within TTL, got %d", lister.calls)
 	}
 }

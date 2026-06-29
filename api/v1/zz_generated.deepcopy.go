@@ -689,6 +689,13 @@ func (in *WorkloadProfileStatus) DeepCopyInto(out *WorkloadProfileStatus) {
 			(*out)[key] = val
 		}
 	}
+	if in.SelectorLabels != nil {
+		in, out := &in.SelectorLabels, &out.SelectorLabels
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	if in.Containers != nil {
 		in, out := &in.Containers, &out.Containers
 		*out = make([]ContainerProfile, len(*in))
