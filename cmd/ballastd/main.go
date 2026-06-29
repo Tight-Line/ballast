@@ -63,6 +63,10 @@ func init() {
 }
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
@@ -187,7 +191,7 @@ func main() {
 	})
 	if err != nil {
 		setupLog.Error(err, "Failed to start manager")
-		os.Exit(1)
+		return 1
 	}
 
 	// +kubebuilder:scaffold:builder
@@ -195,14 +199,14 @@ func main() {
 	metricsClient, err := metricsclientset.NewForConfig(mgr.GetConfig())
 	if err != nil {
 		setupLog.Error(err, "Failed to create metrics clientset")
-		os.Exit(1)
+		return 1
 	}
 	plugin.Register(k8splugin.New(metricsClient.MetricsV1beta1().PodMetricses(""), k8splugin.DefaultOptions()))
 
 	storeClient, err := store.NewClient(redisURL)
 	if err != nil {
 		setupLog.Error(err, "Failed to create Redis client")
-		os.Exit(1)
+		return 1
 	}
 
 	var promRegisterer promclient.Registerer
@@ -218,52 +222,52 @@ func main() {
 	})
 	if err != nil {
 		setupLog.Error(err, "Failed to set up metrics provider")
-		os.Exit(1)
+		return 1
 	}
 	defer func() { _ = shutdownMetrics(context.Background()) }()
 
 	rec, err := appmetrics.NewRecorder(metricProvider)
 	if err != nil {
 		setupLog.Error(err, "Failed to create metrics recorder")
-		_ = shutdownMetrics(context.Background())
-		os.Exit(1)
+		return 1
 	}
 
 	ks := killswitch.New(mgr.GetClient(), operatorNamespace, rec)
 	if err := ks.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up kill switch")
-		os.Exit(1)
+		return 1
 	}
 
 	if err := workloadwatcher.New(mgr.GetClient(), ks, storeClient, rec).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up workloadwatcher controller")
-		os.Exit(1)
+		return 1
 	}
 
 	if err := metricscollector.Setup(mgr, ks, storeClient, dryRunMeasure, rec); err != nil {
 		setupLog.Error(err, "Failed to set up metricscollector controller")
-		os.Exit(1)
+		return 1
 	}
 
 	ballastwebhook.NewPodMutator(mgr.GetClient(), ks, dryRunApply, rec).SetupWithManager(mgr)
 
 	if err := resourceadjuster.Setup(mgr, ks, dryRunResize, rec); err != nil {
 		setupLog.Error(err, "Failed to set up resourceadjuster controller")
-		os.Exit(1)
+		return 1
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")
-		os.Exit(1)
+		return 1
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up ready check")
-		os.Exit(1)
+		return 1
 	}
 
 	setupLog.Info("Starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "Failed to run manager")
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
