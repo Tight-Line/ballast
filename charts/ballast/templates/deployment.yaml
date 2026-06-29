@@ -29,7 +29,24 @@ spec:
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         args:
         - --health-probe-bind-address=:8081
+        {{- if .Values.telemetry.prometheus.enabled }}
+        - --metrics-bind-address=:{{ .Values.telemetry.prometheus.port }}
+        {{- if .Values.telemetry.prometheus.secure }}
+        - --metrics-secure=true
+        {{- else }}
+        - --metrics-secure=false
+        {{- end }}
+        {{- else }}
         - --metrics-bind-address=0
+        {{- end }}
+        {{- if .Values.telemetry.otel.enabled }}
+        - --otel-metrics-endpoint={{ .Values.telemetry.otel.endpoint }}
+        - --otel-metrics-protocol={{ .Values.telemetry.otel.protocol }}
+        - --otel-metrics-interval={{ .Values.telemetry.otel.interval }}
+        {{- if .Values.telemetry.otel.insecure }}
+        - --otel-metrics-insecure
+        {{- end }}
+        {{- end }}
         - --webhook-cert-path=/certs/webhook
         - --redis-url={{ include "ballast.redisURL" . }}
         - --log-level={{ .Values.logging.level }}
@@ -70,6 +87,11 @@ spec:
         - name: webhook
           containerPort: 9443
           protocol: TCP
+        {{- if .Values.telemetry.prometheus.enabled }}
+        - name: metrics
+          containerPort: {{ .Values.telemetry.prometheus.port }}
+          protocol: TCP
+        {{- end }}
         livenessProbe:
           httpGet:
             path: /healthz

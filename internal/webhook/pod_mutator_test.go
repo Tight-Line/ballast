@@ -52,7 +52,7 @@ func newFakeClient(objs ...client.Object) client.Client {
 func inactiveKS(t *testing.T) *killswitch.KillSwitch {
 	t.Helper()
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).Build()
-	ks := killswitch.New(fc, "ballast-system")
+	ks := killswitch.New(fc, "ballast-system", nil)
 	if _, err := ks.Reconcile(context.Background(), reconcile.Request{}); err != nil {
 		t.Fatalf("ks.Reconcile: %v", err)
 	}
@@ -65,7 +65,7 @@ func activeKS(t *testing.T) *killswitch.KillSwitch {
 		Name: killswitch.ConfigMapName, Namespace: "ballast-system",
 	}}
 	fc := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(cm).Build()
-	ks := killswitch.New(fc, "ballast-system")
+	ks := killswitch.New(fc, "ballast-system", nil)
 	if _, err := ks.Reconcile(context.Background(), reconcile.Request{}); err != nil {
 		t.Fatalf("ks.Reconcile: %v", err)
 	}
@@ -149,7 +149,7 @@ func hasResourcePatch(resp admission.Response) bool {
 
 func TestPodMutator_KillSwitch(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), readyProfile())
-	m := webhook.NewPodMutator(fc, activeKS(t), false)
+	m := webhook.NewPodMutator(fc, activeKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
 		validation.AnnotationMeasure: "true",
@@ -166,7 +166,7 @@ func TestPodMutator_KillSwitch(t *testing.T) {
 
 func TestPodMutator_InvalidAnnotations(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig())
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
 		validation.AnnotationApply: "true", // missing measure
@@ -179,7 +179,7 @@ func TestPodMutator_InvalidAnnotations(t *testing.T) {
 
 func TestPodMutator_NoApplyAnnotation(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig())
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
 		validation.AnnotationMeasure: "true",
@@ -195,7 +195,7 @@ func TestPodMutator_NoApplyAnnotation(t *testing.T) {
 
 func TestPodMutator_DryRunApply(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), readyProfile())
-	m := webhook.NewPodMutator(fc, inactiveKS(t), true /* dryRunApply */)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), true /* dryRunApply */, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
 		validation.AnnotationMeasure: "true",
@@ -212,7 +212,7 @@ func TestPodMutator_DryRunApply(t *testing.T) {
 
 func TestPodMutator_SuccessfulPatch(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), readyProfile())
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
 		validation.AnnotationMeasure: "true",
@@ -229,7 +229,7 @@ func TestPodMutator_SuccessfulPatch(t *testing.T) {
 
 func TestPodMutator_ProfileNotReady(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), notReadyProfile())
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
 		validation.AnnotationMeasure: "true",
@@ -246,7 +246,7 @@ func TestPodMutator_ProfileNotReady(t *testing.T) {
 
 func TestPodMutator_ProfileNotFound(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig()) // no profile object
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
 		validation.AnnotationMeasure: "true",
@@ -263,7 +263,7 @@ func TestPodMutator_ProfileNotFound(t *testing.T) {
 
 func TestPodMutator_Autoresize_BelowThreshold(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), notReadyProfile())
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
 		validation.AnnotationAutoresize: "true",
@@ -279,7 +279,7 @@ func TestPodMutator_Autoresize_BelowThreshold(t *testing.T) {
 
 func TestPodMutator_Autoresize_AboveThreshold(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), readyProfile())
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
 		validation.AnnotationAutoresize: "true",
@@ -295,7 +295,7 @@ func TestPodMutator_Autoresize_AboveThreshold(t *testing.T) {
 
 func TestPodMutator_MalformedRequest(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig())
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
@@ -312,7 +312,7 @@ func TestPodMutator_MalformedRequest(t *testing.T) {
 
 func TestPodMutator_BallastConfigMissing(t *testing.T) {
 	fc := newFakeClient() // no BallastConfig
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
 		validation.AnnotationMeasure: "true",
@@ -333,7 +333,7 @@ func TestPodMutator_MissingIdentityLabel(t *testing.T) {
 		Spec:       ballastv1.BallastConfigSpec{IdentityLabels: []string{"app", "env"}},
 	}
 	fc := newFakeClient(cfg)
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	// pod only has "app", missing "env"
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
@@ -355,7 +355,7 @@ func TestPodMutator_PolicyRefStamped(t *testing.T) {
 		Spec:       ballastv1.ClusterResourcePolicySpec{},
 	}
 	fc := newFakeClient(defaultBallastConfig(), readyProfile(), policy)
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
 		validation.AnnotationMeasure: "true",
@@ -379,7 +379,7 @@ func TestPodMutator_PolicyRefStamped(t *testing.T) {
 
 func TestPodMutator_UnmatchedContainer(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), readyProfile())
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	// pod has an extra "sidecar" container not in the profile
 	pod := &corev1.Pod{
@@ -422,7 +422,7 @@ func TestPodMutator_EmptyRecommendationField(t *testing.T) {
 		},
 	}
 	fc := newFakeClient(defaultBallastConfig(), profile)
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
 		validation.AnnotationMeasure: "true",
@@ -453,7 +453,7 @@ func TestPodMutator_InvalidQuantity(t *testing.T) {
 		},
 	}
 	fc := newFakeClient(defaultBallastConfig(), profile)
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
 		validation.AnnotationMeasure: "true",
@@ -468,7 +468,7 @@ func TestPodMutator_InvalidQuantity(t *testing.T) {
 
 func TestPodMutator_OwnerReference(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), readyProfile())
-	m := webhook.NewPodMutator(fc, inactiveKS(t), false)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	isController := true
 	pod := &corev1.Pod{
@@ -519,6 +519,6 @@ func TestPodMutator_SetupWithManager(t *testing.T) {
 		t.Fatalf("new manager: %v", err)
 	}
 
-	ks := killswitch.New(mgr.GetClient(), "ballast-system")
-	webhook.NewPodMutator(mgr.GetClient(), ks, false).SetupWithManager(mgr)
+	ks := killswitch.New(mgr.GetClient(), "ballast-system", nil)
+	webhook.NewPodMutator(mgr.GetClient(), ks, false, nil).SetupWithManager(mgr)
 }

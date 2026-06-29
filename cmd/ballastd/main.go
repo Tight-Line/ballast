@@ -7,14 +7,17 @@ Licensed under the MIT License. See LICENSE for the full text.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	promclient "github.com/prometheus/client_golang/prometheus"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -32,6 +35,7 @@ import (
 	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
 	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/logger"
+	appmetrics "github.com/tight-line/ballast/internal/metrics"
 	"github.com/tight-line/ballast/internal/plugin"
 	k8splugin "github.com/tight-line/ballast/internal/plugin/kubernetes"
 	"github.com/tight-line/ballast/internal/store"
@@ -84,6 +88,18 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+
+	var otelEndpoint, otelProtocol string
+	var otelInterval time.Duration
+	var otelInsecure bool
+	flag.StringVar(&otelEndpoint, "otel-metrics-endpoint", "",
+		"OTLP collector endpoint (e.g. localhost:4317). Leave empty to disable OTel push export.")
+	flag.StringVar(&otelProtocol, "otel-metrics-protocol", "grpc",
+		"OTLP transport protocol: grpc or http/protobuf.")
+	flag.DurationVar(&otelInterval, "otel-metrics-interval", 30*time.Second,
+		"Push interval for the OTLP metrics exporter.")
+	flag.BoolVar(&otelInsecure, "otel-metrics-insecure", false,
+		"Disable TLS for the OTLP metrics connection.")
 
 	var dryRunMeasure bool
 	flag.BoolVar(&dryRunMeasure, "dry-run-measure", false,
@@ -189,25 +205,48 @@ func main() {
 		os.Exit(1)
 	}
 
-	ks := killswitch.New(mgr.GetClient(), operatorNamespace)
+	var promRegisterer promclient.Registerer
+	if metricsAddr != "0" {
+		promRegisterer = promclient.DefaultRegisterer
+	}
+	metricProvider, shutdownMetrics, err := appmetrics.SetupProvider(context.Background(), appmetrics.Config{
+		PrometheusRegisterer: promRegisterer,
+		OTLPEndpoint:         otelEndpoint,
+		OTLPProtocol:         otelProtocol,
+		OTLPInterval:         otelInterval,
+		OTLPInsecure:         otelInsecure,
+	})
+	if err != nil {
+		setupLog.Error(err, "Failed to set up metrics provider")
+		os.Exit(1)
+	}
+	defer func() { _ = shutdownMetrics(context.Background()) }()
+
+	rec, err := appmetrics.NewRecorder(metricProvider)
+	if err != nil {
+		setupLog.Error(err, "Failed to create metrics recorder")
+		os.Exit(1)
+	}
+
+	ks := killswitch.New(mgr.GetClient(), operatorNamespace, rec)
 	if err := ks.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up kill switch")
 		os.Exit(1)
 	}
 
-	if err := workloadwatcher.New(mgr.GetClient(), ks, storeClient).SetupWithManager(mgr); err != nil {
+	if err := workloadwatcher.New(mgr.GetClient(), ks, storeClient, rec).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up workloadwatcher controller")
 		os.Exit(1)
 	}
 
-	if err := metricscollector.Setup(mgr, ks, storeClient, dryRunMeasure); err != nil {
+	if err := metricscollector.Setup(mgr, ks, storeClient, dryRunMeasure, rec); err != nil {
 		setupLog.Error(err, "Failed to set up metricscollector controller")
 		os.Exit(1)
 	}
 
-	ballastwebhook.NewPodMutator(mgr.GetClient(), ks, dryRunApply).SetupWithManager(mgr)
+	ballastwebhook.NewPodMutator(mgr.GetClient(), ks, dryRunApply, rec).SetupWithManager(mgr)
 
-	if err := resourceadjuster.Setup(mgr, ks, dryRunResize); err != nil {
+	if err := resourceadjuster.Setup(mgr, ks, dryRunResize, rec); err != nil {
 		setupLog.Error(err, "Failed to set up resourceadjuster controller")
 		os.Exit(1)
 	}

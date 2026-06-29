@@ -23,6 +23,7 @@ import (
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
 	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/metrics"
 	"github.com/tight-line/ballast/internal/policy"
 	"github.com/tight-line/ballast/internal/validation"
 )
@@ -35,16 +36,18 @@ type PodMutator struct {
 	ks          *killswitch.KillSwitch
 	resolver    *policy.Resolver
 	dryRunApply bool
+	rec         *metrics.Recorder
 }
 
 // NewPodMutator creates a PodMutator backed by the given client and kill switch.
-func NewPodMutator(c client.Client, ks *killswitch.KillSwitch, dryRunApply bool) *PodMutator {
+func NewPodMutator(c client.Client, ks *killswitch.KillSwitch, dryRunApply bool, rec *metrics.Recorder) *PodMutator {
 	log := ctrl.Log.WithName("webhook")
 	return &PodMutator{
 		client:      c,
 		ks:          ks,
 		resolver:    policy.NewResolver(c, log),
 		dryRunApply: dryRunApply,
+		rec:         rec,
 	}
 }
 
@@ -59,6 +62,7 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 
 	if m.ks.IsActive() {
 		log.Info("kill switch active, skipping mutation", "reason", m.ks.Reason())
+		m.rec.WebhookMutation(ctx, "kill_switch", req.Namespace, "")
 		return admission.Allowed("kill switch active")
 	}
 
@@ -74,9 +78,11 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 	profile, ok, err := m.resolveApplyProfile(ctx, &pod)
 	if err != nil {
 		log.V(1).Info("profile resolution error, allowing without mutation", "err", err)
+		m.rec.WebhookMutation(ctx, "not_available", req.Namespace, "")
 		return admission.Allowed("profile not available")
 	}
 	if !ok {
+		m.rec.WebhookMutation(ctx, "skipped", req.Namespace, "")
 		return admission.Allowed("apply not active or profile not ready")
 	}
 
@@ -124,9 +130,11 @@ func (m *PodMutator) mutate(ctx context.Context, pod *corev1.Pod, profile *balla
 	log.Info("applying resource recommendations", "dry_run", m.dryRunApply, "containers", applied)
 
 	if m.dryRunApply {
+		m.rec.WebhookMutation(ctx, "dry_run", pod.Namespace, profile.Name)
 		return admission.Allowed("dry-run: apply suppressed")
 	}
 
+	m.rec.WebhookMutation(ctx, "mutated", pod.Namespace, profile.Name)
 	return patchResponse(pod, modifiedPod)
 }
 

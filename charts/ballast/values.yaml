@@ -90,6 +90,31 @@ defaultMetricsSource:
   # reservoirSize is the hard cap on stored samples per container per metric.
   reservoirSize: 10000
 
+telemetry:
+  prometheus:
+    # enabled exposes OTel metrics on the controller-runtime /metrics endpoint.
+    # Requires setting a real metrics-bind-address (e.g. :8080) via the port field below.
+    enabled: false
+    port: 8080
+    # secure serves /metrics over HTTPS on :8443 (requires cert-manager or custom certs).
+    secure: false
+    serviceMonitor:
+      # enabled creates a Prometheus Operator ServiceMonitor.
+      enabled: false
+      interval: "30s"
+      scrapeTimeout: "10s"
+  otel:
+    # enabled pushes metrics to an OTLP collector.
+    enabled: false
+    # endpoint is the OTLP collector address, e.g. otel-collector:4317.
+    endpoint: ""
+    # protocol is "grpc" (default) or "http/protobuf".
+    protocol: "grpc"
+    # insecure disables TLS for the OTLP connection.
+    insecure: false
+    # interval is the push interval, e.g. "30s".
+    interval: "30s"
+
 # defaultClusterResourcePolicy installs a catch-all policy that applies to all
 # opted-in pods. It measures CPU and memory requests at p95 with conservative
 # headroom and requires 500 samples over 24 hours before acting.

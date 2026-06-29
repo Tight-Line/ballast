@@ -26,6 +26,7 @@ import (
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/metrics"
 	"github.com/tight-line/ballast/internal/plugin"
 	"github.com/tight-line/ballast/internal/policy"
 	"github.com/tight-line/ballast/internal/stats"
@@ -46,10 +47,11 @@ type Reconciler struct {
 	// PluginGet is the registry lookup. Defaults to plugin.Get; overridable in tests
 	// without touching global plugin registry state.
 	PluginGet func(string) (plugin.MetricsPlugin, bool)
+	rec       *metrics.Recorder
 }
 
 // New creates a Reconciler with the given dependencies.
-func New(c client.Client, sc store.Client, ks *killswitch.KillSwitch, dryRunMeasure bool) *Reconciler {
+func New(c client.Client, sc store.Client, ks *killswitch.KillSwitch, dryRunMeasure bool, rec *metrics.Recorder) *Reconciler {
 	return &Reconciler{
 		client:        c,
 		storeClient:   sc,
@@ -57,14 +59,15 @@ func New(c client.Client, sc store.Client, ks *killswitch.KillSwitch, dryRunMeas
 		resolver:      policy.NewResolver(c, ctrl.Log.WithName("metricscollector")),
 		dryRunMeasure: dryRunMeasure,
 		PluginGet:     plugin.Get,
+		rec:           rec,
 	}
 }
 
 // Setup wires a Reconciler into a running manager using a pre-registered KillSwitch.
 // The KillSwitch must already be registered with the same manager (e.g. by workloadwatcher.Setup)
 // so it is not double-registered.
-func Setup(mgr ctrl.Manager, ks *killswitch.KillSwitch, sc store.Client, dryRunMeasure bool) error {
-	return New(mgr.GetClient(), sc, ks, dryRunMeasure).SetupWithManager(mgr)
+func Setup(mgr ctrl.Manager, ks *killswitch.KillSwitch, sc store.Client, dryRunMeasure bool, rec *metrics.Recorder) error {
+	return New(mgr.GetClient(), sc, ks, dryRunMeasure, rec).SetupWithManager(mgr)
 }
 
 // SetupWithManager registers the Reconciler with mgr.
@@ -148,6 +151,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{RequeueAfter: pollInterval}, nil
 	}
 
+	if allReady && !profile.Status.MeetsThreshold {
+		r.rec.ProfileThresholdMet(ctx, profile.Name, resolved.Name)
+	}
 	base := profile.DeepCopy()
 	profile.Status.Containers = containerProfiles
 	profile.Status.MeetsThreshold = allReady
@@ -225,6 +231,7 @@ func (r *Reconciler) collectFromSource(
 		plugin.TimeWindow{End: now})
 	if err != nil {
 		log.Error(err, "FetchStats failed", "source", sourceName)
+		r.rec.FetchError(ctx, sourceName, tupleHash)
 		return observed, nil
 	}
 
