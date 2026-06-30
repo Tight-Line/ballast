@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`policy-ref` annotation is ambiguous when policies share a name across scopes.** A `ClusterResourcePolicy` and a `ResourcePolicy` can share the same name, and `ResourcePolicy` objects in different namespaces can also share a name. The webhook previously stored only the bare policy name in the `ballast.tightlinesoftware.com/policy-ref` annotation, making it impossible to distinguish these cases. Namespace-scoped `ResourcePolicy` refs are now stored as `namespace/name`; `ClusterResourcePolicy` refs keep the bare name.
 
+- **Workload watcher could overwrite webhook-applied resource requests via a stale `Update`.** When adding or removing the Ballast finalizer, the pod reconciler used `client.Update` (a full object write) instead of `client.Patch`. With in-place pod resize enabled, `spec.containers[*].resources` is no longer an immutable field; a full Update carrying a cache-stale pod spec could silently overwrite the admission webhook's resource recommendations. All three finalizer mutation callsites now use `client.Patch` with a `MergeFrom` base, so only the finalizer diff is sent and the pod spec is never touched.
+
 ## [0.1.6] - 2026-06-29
 
 ### Added

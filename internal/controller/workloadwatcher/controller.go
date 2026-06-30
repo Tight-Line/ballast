@@ -119,8 +119,9 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 	if pod.Annotations[AnnotationProfileRef] != "" {
 		profName := pod.Annotations[AnnotationProfileRef]
 		if !controllerutil.ContainsFinalizer(pod, FinalizerName) {
+			base := pod.DeepCopy()
 			controllerutil.AddFinalizer(pod, FinalizerName)
-			if err := r.client.Update(ctx, pod); err != nil { // coverage:ignore - transient API error
+			if err := r.client.Patch(ctx, pod, client.MergeFrom(base)); err != nil { // coverage:ignore - transient API error
 				return ctrl.Result{}, err
 			}
 		}
@@ -147,8 +148,9 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 	// Add finalizer before stamping the annotation so delete is always handled
 	// even if the annotation stamp fails.
 	if !controllerutil.ContainsFinalizer(pod, FinalizerName) {
+		base := pod.DeepCopy()
 		controllerutil.AddFinalizer(pod, FinalizerName)
-		if err := r.client.Update(ctx, pod); err != nil { // coverage:ignore - transient API error
+		if err := r.client.Patch(ctx, pod, client.MergeFrom(base)); err != nil { // coverage:ignore - transient API error
 			return ctrl.Result{}, err
 		}
 		r.rec.PodProcessed(ctx, "created", pod.Namespace, profName)
@@ -178,8 +180,9 @@ func (r *PodReconciler) handleDelete(ctx context.Context, pod *corev1.Pod) (ctrl
 		r.rec.PodProcessed(ctx, "deleted", pod.Namespace, profName)
 	}
 
+	base := pod.DeepCopy()
 	controllerutil.RemoveFinalizer(pod, FinalizerName)
-	return ctrl.Result{}, r.client.Update(ctx, pod)
+	return ctrl.Result{}, r.client.Patch(ctx, pod, client.MergeFrom(base))
 }
 
 func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupleLabels, selectorLabels map[string]string) error {
