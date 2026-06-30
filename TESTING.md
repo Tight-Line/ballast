@@ -8,8 +8,9 @@ so you see results in minutes instead of the 24h the production default requires
 
 - A running kind cluster
 - [metrics-server](https://github.com/kubernetes-sigs/metrics-server) installed in
-  it (Ballast measures CPU/memory through the Metrics API). On kind you typically
-  need `--set args={--kubelet-insecure-tls}`.
+  it (Ballast measures CPU and memory through the Metrics API; ephemeral storage
+  comes from the kubelet Summary API, which needs no extra component). On kind you
+  typically need `--set args={--kubelet-insecure-tls}`.
 - [cert-manager](https://cert-manager.io/) installed (the admission webhook needs a
   CA bundle)
 - Kubernetes 1.35+ for in-place resize; on older versions measure and apply work
