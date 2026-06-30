@@ -37,6 +37,7 @@ import (
 	"github.com/tight-line/ballast/internal/logger"
 	appmetrics "github.com/tight-line/ballast/internal/metrics"
 	"github.com/tight-line/ballast/internal/plugin"
+	kubeletplugin "github.com/tight-line/ballast/internal/plugin/kubelet"
 	k8splugin "github.com/tight-line/ballast/internal/plugin/kubernetes"
 	"github.com/tight-line/ballast/internal/store"
 	ballastwebhook "github.com/tight-line/ballast/internal/webhook"
@@ -202,6 +203,13 @@ func run() int {
 		return 1
 	}
 	plugin.Register(k8splugin.New(metricsClient.MetricsV1beta1().PodMetricses(""), k8splugin.DefaultOptions()))
+
+	kubeletPlugin, err := kubeletplugin.New(mgr.GetConfig(), kubeletplugin.DefaultOptions())
+	if err != nil {
+		setupLog.Error(err, "Failed to create kubelet summary plugin")
+		return 1
+	}
+	plugin.Register(kubeletPlugin)
 
 	storeClient, err := store.NewClient(redisURL)
 	if err != nil {

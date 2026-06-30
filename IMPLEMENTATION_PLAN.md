@@ -554,7 +554,7 @@ _Deploy with `--metrics-bind-address=:8080` and `kubectl port-forward`; confirm 
 
 ## Phase 14 — `kubeletSummary` Plugin (Ephemeral Storage Metrics)
 
-**Status:** `[ ]`
+**Status:** `[x]`
 **Depends on:** Phase 6
 
 ### What to build

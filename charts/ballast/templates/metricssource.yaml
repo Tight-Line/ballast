@@ -1,13 +1,13 @@
-{{- if .Values.defaultMetricsSource.enabled }}
+{{- if .Values.defaultMetricsSources.kubernetesMetrics.enabled }}
 apiVersion: ballast.tightlinesoftware.com/v1
 kind: MetricsSource
 metadata:
-  name: {{ .Values.defaultMetricsSource.name | quote }}
+  name: {{ .Values.defaultMetricsSources.kubernetesMetrics.name | quote }}
   labels:
     {{- include "ballast.labels" . | nindent 4 }}
 spec:
   type: kubernetesMetrics
   config:
-    pollInterval: {{ .Values.defaultMetricsSource.pollInterval | quote }}
-    reservoirSize: {{ .Values.defaultMetricsSource.reservoirSize }}
+    pollInterval: {{ .Values.defaultMetricsSources.kubernetesMetrics.pollInterval | quote }}
+    reservoirSize: {{ .Values.defaultMetricsSources.kubernetesMetrics.reservoirSize }}
 {{- end }}
