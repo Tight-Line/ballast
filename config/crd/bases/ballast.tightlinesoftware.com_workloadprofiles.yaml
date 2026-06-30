@@ -165,6 +165,12 @@ spec:
                           p50:
                             description: P50 is the 50th percentile of observed usage.
                             type: string
+                          p75:
+                            description: P75 is the 75th percentile of observed usage.
+                            type: string
+                          p90:
+                            description: P90 is the 90th percentile of observed usage.
+                            type: string
                           p95:
                             description: P95 is the 95th percentile of observed usage.
                             type: string

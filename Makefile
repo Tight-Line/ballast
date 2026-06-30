@@ -117,6 +117,10 @@ check: lint test-coverage-check build ## Full pre-release gate: lint + coverage 
 
 HELM ?= helm
 CHART_DIR ?= charts/ballast
+# HELM_LOCAL_EXTRA is appended to the local install command. helm-update-local sets
+# it (via a target-specific value that propagates to helm-install-local) to apply
+# the local-testing policy preset; override it to layer your own values.
+HELM_LOCAL_EXTRA ?=
 
 helm-build: manifests ## Sync CRDs from config/crd/bases/ and download chart dependencies.
 	cp config/crd/bases/*.yaml $(CHART_DIR)/crds/
@@ -136,9 +140,11 @@ helm-install-local: helm-build ## Install chart into the kind cluster using the 
 	$(HELM) upgrade --install ballast $(CHART_DIR) \
 		--namespace ballast-system --create-namespace \
 		--set image.tag=local \
-		--set image.pullPolicy=Never
+		--set image.pullPolicy=Never \
+		$(HELM_LOCAL_EXTRA)
 
-helm-update-local: docker-kind helm-install-local ## Build, load into kind, and install the chart in one step.
+helm-update-local: HELM_LOCAL_EXTRA = -f $(CHART_DIR)/presets/local-testing.yaml
+helm-update-local: docker-kind helm-install-local ## Build, load into kind, and install with the local-testing policy preset.
 
 ##@ Cluster Deployment
 

@@ -48,6 +48,10 @@ func ComputeRecommendation(s store.Stats, metric ballastv1.MetricConfig) (resour
 	switch metric.Aggregation {
 	case "p50":
 		base = s.P50
+	case "p75":
+		base = s.P75
+	case "p90":
+		base = s.P90
 	case "p95":
 		base = s.P95
 	case "p99":

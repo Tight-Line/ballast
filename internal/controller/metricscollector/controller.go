@@ -489,6 +489,8 @@ func buildUsageStats(resourceName, sourceName string, s store.Stats, firstMs, la
 		Samples:     int64(s.Count),
 		TimeSpan:    formatDuration(lastMs - firstMs),
 		P50:         formatResourceValue(resourceName, s.P50),
+		P75:         formatResourceValue(resourceName, s.P75),
+		P90:         formatResourceValue(resourceName, s.P90),
 		P95:         formatResourceValue(resourceName, s.P95),
 		P99:         formatResourceValue(resourceName, s.P99),
 		Mean:        formatResourceValue(resourceName, s.Mean),

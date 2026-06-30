@@ -19,7 +19,7 @@ func TestComputeStats_Single(t *testing.T) {
 	if s.Count != 1 {
 		t.Errorf("Count = %d, want 1", s.Count)
 	}
-	if s.P50 != 100 || s.P95 != 100 || s.P99 != 100 || s.Max != 100 || s.Mean != 100 {
+	if s.P50 != 100 || s.P75 != 100 || s.P90 != 100 || s.P95 != 100 || s.P99 != 100 || s.Max != 100 || s.Mean != 100 {
 		t.Errorf("unexpected stats for single value: %+v", s)
 	}
 	if s.StdDev != 0 || s.CV != 0 {
@@ -38,6 +38,14 @@ func TestComputeStats_Percentiles(t *testing.T) {
 	// p50: ceil(50/100 * 20) = rank 10 → value 10
 	if s.P50 != 10 {
 		t.Errorf("P50 = %v, want 10", s.P50)
+	}
+	// p75: ceil(75/100 * 20) = rank 15 → value 15
+	if s.P75 != 15 {
+		t.Errorf("P75 = %v, want 15", s.P75)
+	}
+	// p90: ceil(90/100 * 20) = rank 18 → value 18
+	if s.P90 != 18 {
+		t.Errorf("P90 = %v, want 18", s.P90)
 	}
 	// p95: ceil(95/100 * 20) = rank 19 → value 19
 	if s.P95 != 19 {

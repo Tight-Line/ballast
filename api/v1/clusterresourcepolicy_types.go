@@ -85,8 +85,8 @@ type MetricConfig struct {
 	// +kubebuilder:validation:MinLength=1
 	Source string `json:"source"`
 
-	// Aggregation is the usage percentile to use: p50, p95, p99, max, avg.
-	// +kubebuilder:validation:Enum=p50;p95;p99;max;avg
+	// Aggregation is the usage percentile to use: p50, p75, p90, p95, p99, max, avg.
+	// +kubebuilder:validation:Enum=p50;p75;p90;p95;p99;max;avg
 	Aggregation string `json:"aggregation"`
 
 	// Headroom is the multiplier applied to the aggregated usage value.

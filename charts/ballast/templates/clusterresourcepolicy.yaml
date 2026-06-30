@@ -11,7 +11,7 @@ spec:
   {{- range .Values.defaultClusterResourcePolicy.metrics }}
   - resource: {{ .resource | quote }}
     field: {{ .field | quote }}
-    source: {{ $.Values.defaultClusterResourcePolicy.metricsSource | quote }}
+    source: {{ .source | default $.Values.defaultClusterResourcePolicy.metricsSource | quote }}
     aggregation: {{ .aggregation | quote }}
     headroom: {{ .headroom | quote }}
   {{- end }}
