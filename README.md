@@ -8,7 +8,7 @@ Ballast is a Kubernetes operator that automatically right-sizes workload resourc
 
 ## How it works
 
-Workloads opt in with annotations on their pod templates. Ballast observes real CPU and memory utilization, accumulates a rolling history keyed to a *workload identity tuple* (a set of pod labels you configure), and uses that history to:
+Workloads opt in with annotations on their pod templates. Ballast observes real CPU, memory, and ephemeral-storage utilization, accumulates a rolling history keyed to a *workload identity tuple* (a set of pod labels you configure), and uses that history to right-size all three resources:
 
 1. **Measure** — collect per-container usage samples into a time-series store (Redis/Valkey).
 2. **Apply** — patch resource requests and limits at admission time when a pod is created.
@@ -41,7 +41,7 @@ Pod eviction for cluster rebalancing is handled by [Kubernetes Descheduler](http
 ## Prerequisites
 
 - Kubernetes 1.35+ (required for in-place pod resize; earlier versions support measure and apply but not resize)
-- [metrics-server](https://github.com/kubernetes-sigs/metrics-server) installed in the cluster
+- [metrics-server](https://github.com/kubernetes-sigs/metrics-server) installed in the cluster (source for CPU and memory; ephemeral-storage usage comes from the kubelet Summary API and needs no extra component)
 - TLS certificate for the admission webhook (see [Webhook TLS](#webhook-tls) below)
 - A Redis-compatible store (Ballast ships with a bundled Valkey via Helm; an existing Redis or Valkey instance works too)
 
@@ -147,7 +147,7 @@ kubectl get workloadprofiles
 kubectl describe workloadprofile billing--api--prod
 ```
 
-The profile status shows accumulated usage statistics and recommendations once the readiness threshold is met (default: 500 samples collected over 24 hours):
+The profile status shows accumulated usage statistics and recommendations once the readiness threshold is met (default: 250 samples collected over 24 hours). CPU, memory, and ephemeral storage are all tracked and sized:
 
 ```yaml
 status:
@@ -155,14 +155,31 @@ status:
     - name: app
       usageStats:
         - resource: cpu
-          samples: 1440
+          samples: 288
+          mean: "230m"
           p95: "240m"
           p99: "310m"
           cv: "0.46"
+        - resource: memory
+          samples: 288
+          mean: "180Mi"
+          p95: "210Mi"
+          p99: "240Mi"
+          cv: "0.21"
+        - resource: ephemeral-storage
+          samples: 288
+          p90: "1200Mi"
+          p99: "1800Mi"
+          cv: "0.33"
       recommendations:
         cpu:
-          request: "288m"   # p95 * 1.2 headroom
-          limit: "388m"     # p99 * 1.25 headroom
+          request: "288m"     # avg * 1.25 headroom
+        memory:
+          request: "225Mi"    # avg * 1.25 headroom
+          limit: "240Mi"      # p99
+        ephemeral-storage:
+          request: "1200Mi"   # p90
+          limit: "1800Mi"     # p99
   meetsThreshold: true
   activeWorkloads: 3
 ```
