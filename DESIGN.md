@@ -407,6 +407,8 @@ Plugins are compiled into the binary and registered by type name. Additional plu
 - The `pollInterval` in `MetricsSource.spec.config` is a floor, not a target: the plugin skips a cycle rather than queuing behind a slow or failing API server.
 - The `reservoirSize` cap (default 10,000 samples per container per metric) bounds per-profile memory regardless of poll frequency.
 
+**`kubeletSummary` plugin implementation note:** this plugin fetches the kubelet Summary API via the Kubernetes API server proxy (`GET /api/v1/nodes/{name}/proxy/stats/summary`) for each node in parallel and extracts `ephemeral-storage.usedBytes` per pod. Because the Summary API does not include pod labels, the plugin maintains a cluster-wide pod label cache (same TTL as the node summary cache) to resolve labels for client-side filtering. Ephemeral storage is reported at the pod level; the plugin distributes usage evenly across a pod's containers as an approximation — callers should treat per-container values as estimated shares. Per-node caches absorb transient failures: entries between `CacheTTL` and `2×CacheTTL` old are used as stale data on refresh failure; entries older than `2×CacheTTL` are skipped entirely with a warning log. The `nodes/proxy` `get` verb is required in the `ClusterRole`.
+
 ---
 
 ## Helm Chart

@@ -77,18 +77,27 @@ certManager:
   # cert-manager must already be installed in the cluster.
   enabled: true
 
-# defaultMetricsSource installs a MetricsSource for the built-in Kubernetes
-# Metrics API (metrics-server) so measurements work out of the box. Set
-# enabled: false if you want to manage MetricsSource objects yourself.
-#
-# metrics-server must be installed in the cluster; it is not bundled here.
-defaultMetricsSource:
-  enabled: true
-  name: kubernetes-metrics
-  # pollInterval is the minimum time between metric collection cycles.
-  pollInterval: "60s"
-  # reservoirSize is the hard cap on stored samples per container per metric.
-  reservoirSize: 10000
+# defaultMetricsSources installs MetricsSource objects so measurements work out of
+# the box. Each entry is keyed by plugin type. Set enabled: false on any entry to
+# skip it and manage that MetricsSource yourself.
+defaultMetricsSources:
+  # kubernetesMetrics uses the Kubernetes Metrics API (metrics-server) for CPU and
+  # memory. metrics-server must be installed in the cluster; it is not bundled here.
+  kubernetesMetrics:
+    enabled: true
+    name: kubernetes-metrics
+    # pollInterval is the minimum time between collection cycles.
+    pollInterval: "60s"
+    # reservoirSize is the hard cap on stored samples per container per metric.
+    reservoirSize: 10000
+  # kubeletSummary uses the kubelet Summary API (via the API server proxy) for
+  # ephemeral-storage. No extra credentials are required beyond the ballast
+  # ServiceAccount (nodes/proxy get is added to the ClusterRole).
+  kubeletSummary:
+    enabled: true
+    name: kubelet-summary
+    pollInterval: "60s"
+    reservoirSize: 10000
 
 telemetry:
   # serviceName and serviceNamespace are injected as OTEL_SERVICE_NAME and
