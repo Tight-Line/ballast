@@ -163,6 +163,15 @@ func TestPodReconciler_NewPod(t *testing.T) {
 	}
 }
 
+func TestPodReconciler_NotFound(t *testing.T) {
+	// A reconcile request for a pod that no longer exists (already deleted) must
+	// be a no-op: Get returns NotFound and Reconcile returns nil without error.
+	fc := newFakeClient(defaultBallastConfig())
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
+
+	reconcilePod(t, c, "default", "ghost-pod")
+}
+
 func TestPodReconciler_AlreadyProcessed(t *testing.T) {
 	ctx := context.Background()
 
