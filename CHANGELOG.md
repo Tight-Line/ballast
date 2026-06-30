@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-06-30
+
 ### Added
 
 - **`kubeletSummary` plugin (ephemeral storage metrics).** A new plugin type reads the kubelet Summary API via the Kubernetes API server proxy (`GET /api/v1/nodes/{name}/proxy/stats/summary`) and reports `ephemeral-storage` usage per pod. The API is accessed cluster-wide with no extra credentials — the ballast `ClusterRole` gains a `nodes/proxy` `get` rule. Per-node summaries are cached (default 55 s TTL); entries older than 2×TTL are skipped with a warning rather than returned as stale data. Because the Summary API reports storage at the pod level rather than per container, usage is distributed evenly across a pod's containers (documented limitation). Per-workload exponential backoff applies on node fetch errors.
