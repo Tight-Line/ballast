@@ -115,13 +115,16 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 		return ctrl.Result{}, nil
 	}
 
-	// Already processed: ensure finalizer is present for cleanup, then stop.
+	// Already processed: ensure finalizer is present for cleanup, then recalibrate.
 	if pod.Annotations[AnnotationProfileRef] != "" {
+		profName := pod.Annotations[AnnotationProfileRef]
 		if !controllerutil.ContainsFinalizer(pod, FinalizerName) {
 			controllerutil.AddFinalizer(pod, FinalizerName)
-			return ctrl.Result{}, r.client.Update(ctx, pod)
+			if err := r.client.Update(ctx, pod); err != nil { // coverage:ignore - transient API error
+				return ctrl.Result{}, err
+			}
 		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.setActiveWorkloads(ctx, profName)
 	}
 
 	var cfg ballastv1.BallastConfig
@@ -142,36 +145,34 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 	}
 
 	// Add finalizer before stamping the annotation so delete is always handled
-	// even if the annotation stamp fails. Increment only on the first successful
-	// finalizer write — retries where the finalizer is already present skip it,
-	// preventing double-counting when the update was previously blocked (e.g. RBAC).
+	// even if the annotation stamp fails.
 	if !controllerutil.ContainsFinalizer(pod, FinalizerName) {
 		controllerutil.AddFinalizer(pod, FinalizerName)
 		if err := r.client.Update(ctx, pod); err != nil { // coverage:ignore - transient API error
 			return ctrl.Result{}, err
 		}
-		if err := r.incrementActiveWorkloads(ctx, profName); err != nil { // coverage:ignore - transient API error
-			return ctrl.Result{}, err
-		}
 		r.rec.PodProcessed(ctx, "created", pod.Namespace, profName)
 	}
 
-	return ctrl.Result{}, r.stampProfileRef(ctx, pod, profName)
+	if err := r.stampProfileRef(ctx, pod, profName); err != nil { // coverage:ignore - transient API error
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, r.setActiveWorkloads(ctx, profName)
 }
 
 func (r *PodReconciler) handleDelete(ctx context.Context, pod *corev1.Pod) (ctrl.Result, error) {
-	// Only decrement when our finalizer is present. The finalizer is added atomically
-	// with the increment, so its presence means "not yet decremented." Without this
-	// guard, removing the finalizer triggers a MODIFIED event → second reconcile →
-	// second decrement. If the finalizer was externally stripped, activeWorkloads leaks
-	// by 1; no automatic recovery exists.
+	// Only recount when our finalizer is present. Without this guard, removing the
+	// finalizer triggers a MODIFIED event → second reconcile → second recount while
+	// the pod is still in the cache, which would inflate the count by 1.
 	if !controllerutil.ContainsFinalizer(pod, FinalizerName) {
 		return ctrl.Result{}, nil
 	}
 
-	// Kill switch does NOT suppress decrement — accounting must stay correct.
+	// Kill switch does NOT suppress the recount — accounting must stay correct.
 	if profName := pod.Annotations[AnnotationProfileRef]; profName != "" {
-		if err := r.decrementActiveWorkloads(ctx, profName); err != nil { // coverage:ignore - transient API error
+		// The pod has DeletionTimestamp set, so setActiveWorkloads excludes it from
+		// the live count automatically — no separate decrement needed.
+		if err := r.setActiveWorkloads(ctx, profName); err != nil { // coverage:ignore - transient API error
 			return ctrl.Result{}, err
 		}
 		r.rec.PodProcessed(ctx, "deleted", pod.Namespace, profName)
@@ -208,30 +209,37 @@ func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupl
 	return r.client.Status().Update(ctx, profile)
 }
 
-func (r *PodReconciler) incrementActiveWorkloads(ctx context.Context, profName string) error {
-	var profile ballastv1.WorkloadProfile
-	if err := r.client.Get(ctx, types.NamespacedName{Name: profName}, &profile); err != nil { // coverage:ignore - transient API error
+// setActiveWorkloads counts all pods that hold our finalizer, carry a profileRef
+// matching profName, and have no DeletionTimestamp, then writes that count to the
+// WorkloadProfile status. This is level-triggered: each call derives the count from
+// actual pod state rather than incrementing/decrementing, making every reconcile
+// idempotent and self-healing against any prior miscounting.
+func (r *PodReconciler) setActiveWorkloads(ctx context.Context, profName string) error {
+	var podList corev1.PodList
+	if err := r.client.List(ctx, &podList); err != nil { // coverage:ignore - transient API error
 		return err
 	}
-	base := profile.DeepCopy()
-	profile.Status.ActiveWorkloads++
-	apimeta.RemoveStatusCondition(&profile.Status.Conditions, conditionOrphaned)
-	return r.client.Status().Patch(ctx, &profile, client.MergeFrom(base))
-}
 
-func (r *PodReconciler) decrementActiveWorkloads(ctx context.Context, profName string) error {
+	var count int32
+	for i := range podList.Items {
+		p := &podList.Items[i]
+		if p.Annotations[AnnotationProfileRef] == profName &&
+			controllerutil.ContainsFinalizer(p, FinalizerName) &&
+			p.DeletionTimestamp.IsZero() {
+			count++
+		}
+	}
+
 	var profile ballastv1.WorkloadProfile
 	if err := r.client.Get(ctx, types.NamespacedName{Name: profName}, &profile); err != nil { // coverage:ignore - transient API error
-		if apierrors.IsNotFound(err) { // coverage:ignore - transient API error
+		if apierrors.IsNotFound(err) {
 			return nil
 		}
 		return err // coverage:ignore - transient non-NotFound error
 	}
 	base := profile.DeepCopy()
-	if profile.Status.ActiveWorkloads > 0 {
-		profile.Status.ActiveWorkloads--
-	}
-	if profile.Status.ActiveWorkloads == 0 {
+	profile.Status.ActiveWorkloads = count
+	if count == 0 {
 		apimeta.SetStatusCondition(&profile.Status.Conditions, metav1.Condition{
 			Type:               conditionOrphaned,
 			Status:             metav1.ConditionTrue,
@@ -239,6 +247,8 @@ func (r *PodReconciler) decrementActiveWorkloads(ctx context.Context, profName s
 			Message:            "No active workloads for this profile",
 			LastTransitionTime: metav1.Now(),
 		})
+	} else {
+		apimeta.RemoveStatusCondition(&profile.Status.Conditions, conditionOrphaned)
 	}
 	return r.client.Status().Patch(ctx, &profile, client.MergeFrom(base))
 }

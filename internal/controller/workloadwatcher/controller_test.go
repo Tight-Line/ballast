@@ -264,7 +264,8 @@ func TestPodReconciler_DeleteDecrement(t *testing.T) {
 	profile := &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: profName},
 	}
-	pod := &corev1.Pod{
+	// Two pods: deleting one should leave count=1.
+	pod1 := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "web-abc",
 			Namespace: "default",
@@ -276,7 +277,19 @@ func TestPodReconciler_DeleteDecrement(t *testing.T) {
 			Finalizers: []string{workloadwatcher.FinalizerName},
 		},
 	}
-	fc := newFakeClient(defaultBallastConfig(), profile, pod)
+	pod2 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-def",
+			Namespace: "default",
+			Annotations: map[string]string{
+				workloadwatcher.AnnotationMeasure:    "true",
+				workloadwatcher.AnnotationProfileRef: profName,
+			},
+			Labels:     map[string]string{"app": "web"},
+			Finalizers: []string{workloadwatcher.FinalizerName},
+		},
+	}
+	fc := newFakeClient(defaultBallastConfig(), profile, pod1, pod2)
 	profile.Status.ActiveWorkloads = 2
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
@@ -284,8 +297,8 @@ func TestPodReconciler_DeleteDecrement(t *testing.T) {
 
 	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
 
-	// Trigger deletion — fake client sets DeletionTimestamp because finalizer is present.
-	if err := fc.Delete(ctx, pod); err != nil {
+	// Trigger deletion of pod1 — fake client sets DeletionTimestamp because finalizer is present.
+	if err := fc.Delete(ctx, pod1); err != nil {
 		t.Fatalf("Delete pod: %v", err)
 	}
 
@@ -303,7 +316,7 @@ func TestPodReconciler_DeleteDecrement(t *testing.T) {
 		t.Errorf("expected no Orphaned condition when activeWorkloads=1, got %+v", c)
 	}
 
-	// Finalizer should be removed; the fake client fully deletes the pod once
+	// pod1 finalizer should be removed; the fake client fully deletes the pod once
 	// no finalizers remain, so NotFound is also acceptable here.
 	var gotPod corev1.Pod
 	err := fc.Get(ctx, types.NamespacedName{Namespace: "default", Name: "web-abc"}, &gotPod)
@@ -316,6 +329,100 @@ func TestPodReconciler_DeleteDecrement(t *testing.T) {
 				t.Error("expected workloadwatcher finalizer to be removed after delete")
 			}
 		}
+	}
+}
+
+// TestPodReconciler_RolloutRestart verifies that activeWorkloads stays correct across
+// a rollout restart with replicas=2. The bug under edge-triggered counting: when
+// reconciles race through a stale informer cache, decrements can overwrite increments
+// (both read the same cached value, compute N±1, write absolute values — last writer
+// wins). Level-triggered counting derives the count from actual pod state on every
+// reconcile, so any ordering of events produces the correct final count.
+func TestPodReconciler_RolloutRestart(t *testing.T) {
+	ctx := context.Background()
+
+	profName := "web"
+	profile := &ballastv1.WorkloadProfile{ObjectMeta: metav1.ObjectMeta{Name: profName}}
+
+	// Initial state: 2 old pods fully processed.
+	podA := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-old-a",
+			Namespace: "default",
+			Annotations: map[string]string{
+				workloadwatcher.AnnotationMeasure:    "true",
+				workloadwatcher.AnnotationProfileRef: profName,
+			},
+			Labels:     map[string]string{"app": "web"},
+			Finalizers: []string{workloadwatcher.FinalizerName},
+		},
+	}
+	podB := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-old-b",
+			Namespace: "default",
+			Annotations: map[string]string{
+				workloadwatcher.AnnotationMeasure:    "true",
+				workloadwatcher.AnnotationProfileRef: profName,
+			},
+			Labels:     map[string]string{"app": "web"},
+			Finalizers: []string{workloadwatcher.FinalizerName},
+		},
+	}
+	fc := newFakeClient(defaultBallastConfig(), profile, podA, podB)
+	profile.Status.ActiveWorkloads = 2
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
+
+	// Rollout restart: create 2 new pods.
+	podC := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "web-new-c",
+			Namespace:   "default",
+			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
+			Labels:      map[string]string{"app": "web"},
+		},
+	}
+	podD := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "web-new-d",
+			Namespace:   "default",
+			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
+			Labels:      map[string]string{"app": "web"},
+		},
+	}
+	if err := fc.Create(ctx, podC); err != nil {
+		t.Fatalf("Create podC: %v", err)
+	}
+	if err := fc.Create(ctx, podD); err != nil {
+		t.Fatalf("Create podD: %v", err)
+	}
+	if err := fc.Delete(ctx, podA); err != nil {
+		t.Fatalf("Delete podA: %v", err)
+	}
+	if err := fc.Delete(ctx, podB); err != nil {
+		t.Fatalf("Delete podB: %v", err)
+	}
+
+	// Process deletes before new pods are reconciled — the worst-case ordering
+	// that caused activeWorkloads=0 under edge-triggered counting.
+	reconcilePod(t, c, "default", "web-old-a")
+	reconcilePod(t, c, "default", "web-old-b")
+	reconcilePod(t, c, "default", "web-new-c")
+	reconcilePod(t, c, "default", "web-new-d")
+
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: profName}, &got); err != nil {
+		t.Fatalf("Get profile: %v", err)
+	}
+	if got.Status.ActiveWorkloads != 2 {
+		t.Errorf("activeWorkloads after rollout restart: got %d, want 2", got.Status.ActiveWorkloads)
+	}
+	if cond := apimeta.FindStatusCondition(got.Status.Conditions, "Orphaned"); cond != nil && cond.Status == metav1.ConditionTrue {
+		t.Error("expected no Orphaned condition after rollout restart completes")
 	}
 }
 
