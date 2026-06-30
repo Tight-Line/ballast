@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`activeWorkloads` drifts to zero after a rollout restart.** The old `incrementActiveWorkloads`/`decrementActiveWorkloads` pair used read-modify-write against the informer cache. The cache is eventually consistent: with `replicas=2`, four patches fire in rapid succession during a restart, and at least one stale read overwrites a valid increment, driving `activeWorkloads` to 0 and triggering a false `Orphaned` condition. Replaced both functions with `setActiveWorkloads`, which lists all pods carrying the Ballast finalizer with a matching `profile-ref` annotation and a zero `DeletionTimestamp`, then writes that count directly to the WorkloadProfile status. Every reconcile is now idempotent and self-healing; drift is impossible regardless of reconcile ordering or cache lag.
+
+- **`policy-ref` annotation is ambiguous when policies share a name across scopes.** A `ClusterResourcePolicy` and a `ResourcePolicy` can share the same name, and `ResourcePolicy` objects in different namespaces can also share a name. The webhook previously stored only the bare policy name in the `ballast.tightlinesoftware.com/policy-ref` annotation, making it impossible to distinguish these cases. Namespace-scoped `ResourcePolicy` refs are now stored as `namespace/name`; `ClusterResourcePolicy` refs keep the bare name.
+
 ## [0.1.6] - 2026-06-29
 
 ### Added
