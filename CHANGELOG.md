@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-06-30
+
 ### Fixed
 
 - **`activeWorkloads` drifts to zero after a rollout restart.** The old `incrementActiveWorkloads`/`decrementActiveWorkloads` pair used read-modify-write against the informer cache. The cache is eventually consistent: with `replicas=2`, four patches fire in rapid succession during a restart, and at least one stale read overwrites a valid increment, driving `activeWorkloads` to 0 and triggering a false `Orphaned` condition. Replaced both functions with `setActiveWorkloads`, which lists all pods carrying the Ballast finalizer with a matching `profile-ref` annotation and a zero `DeletionTimestamp`, then writes that count directly to the WorkloadProfile status. Every reconcile is now idempotent and self-healing; drift is impossible regardless of reconcile ordering or cache lag.
