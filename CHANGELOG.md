@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`p75` and `p90` aggregations.** `ClusterResourcePolicy` metric entries now accept `p75` and `p90` alongside the existing `p50`/`p95`/`p99`/`max`/`avg`. The stats engine computes both percentiles, the metrics collector publishes them on `WorkloadProfile` container usage stats, and the recommendation resolver maps them through. This unblocks sizing ephemeral storage at p90.
+
+- **Memory-limit and ephemeral-storage sizing in the default policy.** The default `ClusterResourcePolicy` now sets a memory limit at p99 with no headroom (a pod exceeding its production-observed peak is likely leaking and should be OOMKilled), which yields Burstable QoS. It also sizes ephemeral-storage request and limit at p90 and p99 from the `kubelet-summary` source. CPU limits remain intentionally omitted to avoid throttling.
+
+- **Per-metric `source` in the policy template.** Each metric entry can now name its own `MetricsSource`, falling back to the policy default when absent. This lets CPU/memory entries reference `kubernetes-metrics` and ephemeral-storage entries reference `kubelet-summary` within one policy object.
+
+- **Policy presets.** The chart ships a catalog of policy presets as Helm values overlays under `charts/ballast/presets/`. The built-in default in `values.yaml` is the `homogeneous-large-fleet` preset; `local-testing.yaml` is a fast-cycle overlay for kind clusters that `make helm-update-local` applies automatically. Select one at install time with `-f`; a later `-f` or `--set` deep-merges on top. See `charts/ballast/presets/README.md`.
+
+- **`TESTING.md`.** A local test loop walkthrough: deploy with the local-testing preset, install a workload with the autoresize annotation, then watch the profile become eligible and the pod get resized.
+
+### Changed
+
+- **Default request sizing moved from `p95 * headroom` to `avg * 1.25`** (= mean / 0.80 target utilization). For a large homogeneous fleet the aggregate pressure is predictable, so sizing requests at 80% of mean keeps nodes dense while leaving headroom for normal variation.
+
+- **Default sampling and readiness retuned for production cadence.** The `defaultMetricsSources` poll interval rose from 60s to 5m, and `defaultClusterResourcePolicy.readiness.minDataPoints` dropped from 500 to 250. A single long-running pod accrues ~288 samples over 24h at the 5m cadence, so the 24h `minTimeSpan` rather than the sample count becomes the binding constraint for a lone pod to become eligible.
+
 ## [0.1.8] - 2026-06-30
 
 ### Added
