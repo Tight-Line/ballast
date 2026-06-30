@@ -100,6 +100,14 @@ type ContainerUsageStats struct {
 	// +optional
 	P50 string `json:"p50,omitempty"`
 
+	// P75 is the 75th percentile of observed usage.
+	// +optional
+	P75 string `json:"p75,omitempty"`
+
+	// P90 is the 90th percentile of observed usage.
+	// +optional
+	P90 string `json:"p90,omitempty"`
+
 	// P95 is the 95th percentile of observed usage.
 	// +optional
 	P95 string `json:"p95,omitempty"`

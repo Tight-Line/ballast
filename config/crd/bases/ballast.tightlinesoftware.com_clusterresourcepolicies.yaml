@@ -111,9 +111,11 @@ spec:
                   properties:
                     aggregation:
                       description: 'Aggregation is the usage percentile to use: p50,
-                        p95, p99, max, avg.'
+                        p75, p90, p95, p99, max, avg.'
                       enum:
                       - p50
+                      - p75
+                      - p90
                       - p95
                       - p99
                       - max

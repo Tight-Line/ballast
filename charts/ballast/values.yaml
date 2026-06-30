@@ -86,8 +86,12 @@ defaultMetricsSources:
   kubernetesMetrics:
     enabled: true
     name: kubernetes-metrics
-    # pollInterval is the minimum time between collection cycles.
-    pollInterval: "60s"
+    # pollInterval is the minimum time between collection cycles. At 5m a single
+    # pod accrues ~288 samples over 24h, which clears the default policy's
+    # minDataPoints (250) so a lone long-running pod becomes eligible at the 24h
+    # minTimeSpan mark. Local testing overrides this to a few seconds; see
+    # charts/ballast/presets/local-testing.yaml.
+    pollInterval: "300s"
     # reservoirSize is the hard cap on stored samples per container per metric.
     reservoirSize: 10000
   # kubeletSummary uses the kubelet Summary API (via the API server proxy) for
@@ -96,7 +100,7 @@ defaultMetricsSources:
   kubeletSummary:
     enabled: true
     name: kubelet-summary
-    pollInterval: "60s"
+    pollInterval: "300s"
     reservoirSize: 10000
 
 telemetry:
@@ -130,8 +134,16 @@ telemetry:
     interval: "30s"
 
 # defaultClusterResourcePolicy installs a catch-all policy that applies to all
-# opted-in pods. It measures CPU and memory requests at p95 with conservative
-# headroom and requires 500 samples over 24 hours before acting.
+# opted-in pods. The values below are the "homogeneous-large-fleet" preset: it
+# sizes CPU and memory requests at avg * 1.25 (= mean / 0.80 target utilization),
+# sets a memory limit at p99, and sizes ephemeral storage requests/limits from the
+# kubelet Summary API. It requires 500 samples over 24 hours before acting.
+#
+# This is the built-in default preset. Other presets ship as values overlays under
+# charts/ballast/presets/ (see presets/README.md) and are selected at install time
+# with `-f`, e.g. `helm install ... -f charts/ballast/presets/local-testing.yaml`.
+# A later `-f` file or `--set` deep-merges on top of these values (map fields merge;
+# list fields like `metrics` are replaced wholesale).
 #
 # Set enabled: false if you want to manage ClusterResourcePolicy objects yourself.
 # To scope the default policy to specific namespaces or workload kinds, set
@@ -143,25 +155,51 @@ defaultClusterResourcePolicy:
   enabled: true
   name: default
   priority: 0
-  # metricsSource is the MetricsSource name referenced by each metric entry below.
-  # Change this if you disable defaultMetricsSource and create your own.
+  # metricsSource is the default MetricsSource name; a metric entry without its
+  # own `source` falls back to this. Change it if you disable defaultMetricsSources
+  # and create your own. Ephemeral-storage entries override it with kubelet-summary.
   metricsSource: kubernetes-metrics
   # metrics defines what to measure and which resource fields to set.
-  # Limits are intentionally omitted from the defaults: setting memory limits
-  # without careful profiling can cause OOMKills, and CPU limits cause throttling.
-  # Add limit entries here (or in a higher-priority policy) when you are ready.
+  #
+  # Requests are sized at avg * 1.25: for a large homogeneous fleet the aggregate
+  # pressure is predictable, so sizing at 80% of mean keeps nodes dense while
+  # leaving headroom for normal variation. The memory limit is set at p99 (the
+  # highest usage seen in production) with no headroom — a pod that exceeds p99 is
+  # likely leaking and should be OOMKilled. This yields Burstable QoS (limit >
+  # request), the right class for most production workloads. CPU limits are
+  # intentionally omitted: they cause throttling rather than reclaiming waste.
   metrics:
     - resource: cpu
       field: request
-      aggregation: p95
-      headroom: "1.2"
+      aggregation: avg
+      headroom: "1.25"
     - resource: memory
       field: request
-      aggregation: p95
-      headroom: "1.3"
+      aggregation: avg
+      headroom: "1.25"
+    - resource: memory
+      field: limit
+      aggregation: p99
+      headroom: "1.0"
+    # Ephemeral-storage entries read from the kubelet Summary API. The request is
+    # sized at p90 (the growth-skewed distribution) and the limit at p99 so the
+    # kubelet evicts a runaway pod before the node hits disk pressure.
+    - resource: ephemeral-storage
+      field: request
+      source: kubelet-summary
+      aggregation: p90
+      headroom: "1.0"
+    - resource: ephemeral-storage
+      field: limit
+      source: kubelet-summary
+      aggregation: p99
+      headroom: "1.0"
   readiness:
     # minDataPoints is the minimum number of samples before Ballast will act.
-    minDataPoints: 500
+    # Sized against the 5m poll interval above: a single pod running 24h accrues
+    # ~288 samples, so 250 keeps the 24h minTimeSpan (not the sample count) as the
+    # binding constraint while leaving margin for occasional missed polls.
+    minDataPoints: 250
     # minTimeSpan is the minimum history window required.
     minTimeSpan: "24h"
     # maxCV is the maximum coefficient of variation (stddev/mean) allowed.

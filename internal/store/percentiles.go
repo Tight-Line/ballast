@@ -5,6 +5,8 @@ import "math"
 // Stats holds statistical measures for a set of samples.
 type Stats struct {
 	P50    float64
+	P75    float64
+	P90    float64
 	P95    float64
 	P99    float64
 	Max    float64
@@ -50,6 +52,8 @@ func ComputeStats(values []int64) Stats {
 
 	return Stats{
 		P50:    percentile(50),
+		P75:    percentile(75),
+		P90:    percentile(90),
 		P95:    percentile(95),
 		P99:    percentile(99),
 		Max:    float64(values[n-1]),

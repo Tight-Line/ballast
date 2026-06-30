@@ -1,0 +1,48 @@
+# local-testing preset
+#
+# A values overlay tuned for fast feedback on a local kind cluster. Apply it on top
+# of the base chart values with `-f`:
+#
+#   helm upgrade --install ballast ./charts/ballast \
+#     -f charts/ballast/presets/local-testing.yaml
+#
+# `make helm-update-local` applies this automatically.
+#
+# DO NOT use this on a production cluster. The tiny readiness thresholds and the
+# 30s resize interval will resize workloads off a handful of noisy samples.
+#
+# This overlay only restates the fields that differ from the base values. Map
+# fields deep-merge over the base; the `metrics` list is replaced wholesale, so the
+# full list is repeated here. It intentionally drops the ephemeral-storage entries
+# the production default carries so the local loop stays focused on watching CPU and
+# memory resizes; ephemeral storage is exercised by the default preset.
+
+defaultMetricsSources:
+  # Poll every 15s so ~5 samples accrue in ~1 minute, clearing the readiness gate
+  # below almost immediately.
+  kubernetesMetrics:
+    pollInterval: "15s"
+  kubeletSummary:
+    pollInterval: "15s"
+
+defaultClusterResourcePolicy:
+  metrics:
+    - resource: cpu
+      field: request
+      aggregation: avg
+      headroom: "1.25"
+    - resource: memory
+      field: request
+      aggregation: avg
+      headroom: "1.25"
+    - resource: memory
+      field: limit
+      aggregation: p99
+      headroom: "1.0"
+  readiness:
+    minDataPoints: 5
+    minTimeSpan: "1m"
+    maxCV: "2.0"
+  behaviors:
+    resize:
+      interval: "30s"

@@ -107,6 +107,8 @@ func TestEvaluateReadiness(t *testing.T) {
 func TestComputeRecommendation(t *testing.T) {
 	s := store.Stats{
 		P50:  100,
+		P75:  175,
+		P90:  190,
 		P95:  200,
 		P99:  300,
 		Max:  400,
@@ -138,6 +140,16 @@ func TestComputeRecommendation(t *testing.T) {
 			name:   "p50 aggregation",
 			metric: ballastv1.MetricConfig{Resource: "cpu", Aggregation: "p50", Headroom: "1.0"},
 			want:   resource.MustParse("100m"),
+		},
+		{
+			name:   "p75 aggregation",
+			metric: ballastv1.MetricConfig{Resource: "cpu", Aggregation: "p75", Headroom: "1.0"},
+			want:   resource.MustParse("175m"),
+		},
+		{
+			name:   "p90 aggregation",
+			metric: ballastv1.MetricConfig{Resource: "cpu", Aggregation: "p90", Headroom: "1.0"},
+			want:   resource.MustParse("190m"),
 		},
 		{
 			name:   "max aggregation",

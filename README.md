@@ -36,6 +36,7 @@ Pod eviction for cluster rebalancing is handled by [Kubernetes Descheduler](http
 | 12 | Polish and release readiness | Complete |
 | 13 | Prometheus and OpenTelemetry metrics | Complete |
 | 14 | `kubeletSummary` plugin (ephemeral storage) | Complete |
+| 15 | Updated default policy, memory/ephemeral limits, policy presets | Complete |
 
 ## Prerequisites
 
@@ -212,7 +213,7 @@ Not yet implemented; tracked as a future Helm chart improvement.
 
 ## Default MetricsSource and ClusterResourcePolicy
 
-A fresh `helm install` ships two objects out of the box so measurements work without any extra setup:
+A fresh `helm install` ships three objects out of the box so measurements work without any extra setup: two `MetricsSource` objects (CPU/memory and ephemeral storage) and one catch-all `ClusterResourcePolicy`.
 
 ### MetricsSource: `kubernetes-metrics`
 
@@ -220,21 +221,38 @@ A fresh `helm install` ships two objects out of the box so measurements work wit
 spec:
   type: kubernetesMetrics
   config:
-    pollInterval: "60s"
+    pollInterval: "300s"
     reservoirSize: 10000
 ```
 
-This wires Ballast to the cluster's [metrics-server](https://github.com/kubernetes-sigs/metrics-server) (which must already be installed — it is not bundled). Samples are collected every 60 seconds and up to 10,000 samples per container per metric are retained in Redis.
+This wires Ballast to the cluster's [metrics-server](https://github.com/kubernetes-sigs/metrics-server) (which must already be installed — it is not bundled) for CPU and memory. Samples are collected every 5 minutes and up to 10,000 samples per container per metric are retained in Redis.
 
-To opt out and manage `MetricsSource` objects yourself:
+### MetricsSource: `kubelet-summary`
+
+```yaml
+spec:
+  type: kubeletSummary
+  config:
+    pollInterval: "300s"
+    reservoirSize: 10000
+```
+
+This reads ephemeral-storage usage from the kubelet Summary API (via the API server proxy). No extra credentials are needed beyond the Ballast ServiceAccount.
+
+To opt out of either source and manage `MetricsSource` objects yourself, set `enabled: false` on the relevant entry:
 
 ```yaml
 # values.yaml
-defaultMetricsSource:
-  enabled: false
+defaultMetricsSources:
+  kubernetesMetrics:
+    enabled: false
+  kubeletSummary:
+    enabled: false
 ```
 
 ### ClusterResourcePolicy: `default`
+
+This is the `homogeneous-large-fleet` preset, the chart's built-in default:
 
 ```yaml
 spec:
@@ -243,15 +261,30 @@ spec:
     - resource: cpu
       field: request
       source: kubernetes-metrics
-      aggregation: p95
-      headroom: "1.2"
+      aggregation: avg
+      headroom: "1.25"
     - resource: memory
       field: request
       source: kubernetes-metrics
-      aggregation: p95
-      headroom: "1.3"
+      aggregation: avg
+      headroom: "1.25"
+    - resource: memory
+      field: limit
+      source: kubernetes-metrics
+      aggregation: p99
+      headroom: "1.0"
+    - resource: ephemeral-storage
+      field: request
+      source: kubelet-summary
+      aggregation: p90
+      headroom: "1.0"
+    - resource: ephemeral-storage
+      field: limit
+      source: kubelet-summary
+      aggregation: p99
+      headroom: "1.0"
   readiness:
-    minDataPoints: 500
+    minDataPoints: 250
     minTimeSpan: "24h"
     maxCV: "1.5"
   behaviors:
@@ -264,12 +297,24 @@ spec:
 
 This catch-all policy applies to every opted-in pod in the cluster. Key design decisions:
 
-- **Requests only, no limits.** Setting memory limits without careful profiling causes OOMKills; CPU limits cause throttling. Add limit entries in a higher-priority policy once you have enough history to trust the recommendations.
-- **p95 with headroom.** CPU requests are set to the 95th-percentile usage × 1.2; memory at p95 × 1.3. Memory gets slightly more headroom because usage spikes are harder to absorb than CPU ones.
-- **500 samples over 24 hours before acting.** This prevents premature resizes on workloads that haven't been observed long enough to produce stable recommendations. A high coefficient of variation (CV > 1.5) also blocks action — it means the workload is too spiky to size reliably.
+- **Requests at `avg * 1.25`.** Sizing CPU and memory requests at 80% of mean (= mean / 0.80 target utilization) keeps nodes dense while leaving headroom for normal variation. For a large homogeneous fleet the aggregate pressure is predictable, so the mean is a reliable basis.
+- **Memory limit at p99, no headroom.** p99 is the highest usage the workload has shown in production; a pod exceeding it is likely leaking and should be OOMKilled. This yields Burstable QoS (limit > request), the right class for most production workloads. **CPU limits are intentionally omitted** — they cause throttling rather than reclaiming waste.
+- **Ephemeral storage from the kubelet Summary API.** The request is sized at p90 (the growth-skewed distribution) and the limit at p99 so the kubelet evicts a runaway pod before the node hits disk pressure.
+- **250 samples over 24 hours before acting.** At the 5-minute poll interval a single long-running pod accrues ~288 samples in 24h, so the 24h window — not the sample count — is the binding constraint. A high coefficient of variation (CV > 1.5) also blocks action — it means the workload is too spiky to size reliably.
 - **20% drift threshold.** A resize only fires when the current resource value deviates from the recommendation by more than 20%, avoiding churn from minor fluctuations.
 - **50% max change per cycle.** Caps how aggressively a single resize can move a value, giving workloads time to stabilize between adjustments.
 - **Priority 0.** This is the lowest possible priority. Any `ClusterResourcePolicy` or `ResourcePolicy` with `priority > 0` wins for matched workloads, so you can override specific namespaces or workload kinds without touching this default.
+
+### Policy presets
+
+The default above is one entry in a catalog of presets — Helm values overlays under [`charts/ballast/presets/`](charts/ballast/presets/README.md) that retune the policy for a particular operating profile. `homogeneous-large-fleet` is built into `values.yaml`; `local-testing` is a fast-cycle overlay for kind clusters. Select one at install time with `-f`:
+
+```bash
+helm install ballast ballast/ballast -n ballast-system --create-namespace \
+  -f charts/ballast/presets/local-testing.yaml
+```
+
+A later `-f` file or `--set` deep-merges on top (map fields merge; list fields like `metrics` are replaced wholesale), so you can layer a preset and override a single field.
 
 To opt out and manage policies yourself:
 
@@ -290,13 +335,15 @@ defaultClusterResourcePolicy:
   metrics:
     - resource: cpu
       field: request
-      aggregation: p95
-      headroom: "1.1"
+      aggregation: avg
+      headroom: "1.2"
     - resource: memory
       field: request
-      aggregation: p95
+      aggregation: avg
       headroom: "1.2"
 ```
+
+> **Note:** `metrics` is a list, so overriding it replaces the entire default list (including the memory-limit and ephemeral-storage entries). Repeat every entry you want to keep.
 
 To add a tighter policy for production namespaces alongside the default, create a higher-priority `ClusterResourcePolicy`:
 
@@ -398,7 +445,7 @@ This runs three steps in sequence:
 
 1. **Build** — `docker build --platform linux/<host-arch>` tagged `:local`. The host architecture is detected automatically via `uname -m`, so the same command works on both ARM and x86 machines.
 2. **Load** — `kind load docker-image` injects the image directly into the kind node; no registry push or GHCR credentials needed.
-3. **Install** — `helm upgrade --install` deploys the chart into `ballast-system` with `image.pullPolicy=Never`, pinning it to the locally loaded image.
+3. **Install** — `helm upgrade --install` deploys the chart into `ballast-system` with `image.pullPolicy=Never`, pinning it to the locally loaded image, and applies the `local-testing` policy preset (`-f charts/ballast/presets/local-testing.yaml`) for fast feedback.
 
 **Individual targets** (when you only need part of the cycle):
 
@@ -414,6 +461,8 @@ kubectl get pods -n ballast-system             # operator pod should be Running
 kubectl logs -n ballast-system -l app.kubernetes.io/name=ballast -f
 kubectl get ballastconfig                      # confirm CRD is installed
 ```
+
+For the full measure → apply → resize walkthrough on a local cluster, see [TESTING.md](TESTING.md).
 
 ## Logging
 

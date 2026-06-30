@@ -587,7 +587,7 @@ _After deploying, confirm the `kubelet-summary` MetricsSource appears and that `
 
 ## Phase 15 — Updated Default Policy, Memory Limits, and Testing Policy
 
-**Status:** `[ ]`
+**Status:** `[x]` — Complete (PR pending)
 **Depends on:** Phase 14, Phase 11
 
 ### What to build
@@ -595,6 +595,10 @@ _After deploying, confirm the `kubelet-summary` MetricsSource appears and that `
 **Default policy formula change (CPU and memory requests):**
 
 Replace the current `p95 * headroom` approach with `avg * 1.25` (= mean / 0.80 target utilization). For a large homogeneous fleet the aggregate memory pressure is predictable; sizing at 80% of mean lets nodes run dense while leaving headroom for normal variation. The 20% drift threshold means the adjuster only fires when actual usage has moved by more than 20% relative to the recommendation, avoiding churn.
+
+**Sampling cadence and readiness (implemented):** the default `kubernetesMetrics`/`kubeletSummary` poll interval moved from 60s to 5m (production fleets don't need second-resolution sampling), and `readiness.minDataPoints` dropped from 500 to 250 so a single long-running pod accrues enough samples (~288 over 24h at the 5m cadence) to cross the gate at the 24h `minTimeSpan` mark rather than being blocked on sample count.
+
+**New aggregations (implemented):** the ephemeral-storage request needs `p90`, which the stats engine did not compute and the `MetricConfig.aggregation` enum did not allow. Added `p75` and `p90` end to end: `store.Stats` + `ComputeStats` (`internal/store/percentiles.go`), the `ContainerUsageStats` CRD fields (`api/v1/workloadprofile_types.go`) populated by the collector, the `aggregation` enum (`api/v1/clusterresourcepolicy_types.go`), and the resolver switch (`internal/stats/aggregator.go`).
 
 **Memory limit (new):**
 
@@ -610,21 +614,18 @@ Add two ephemeral storage entries pointing at the `kubelet-summary` MetricsSourc
 
 The current `clusterresourcepolicy.yaml` template uses a single global `metricsSource` for all metric entries. Update it to prefer `.source` from the metric entry if present, falling back to the global default: `{{ .source | default $.Values.defaultClusterResourcePolicy.metricsSource | quote }}`. This lets CPU/memory entries reference `kubernetes-metrics` and ephemeral-storage entries reference `kubelet-summary` within the same policy object.
 
-**Testing policy (new, disabled by default):**
+**Policy presets (implemented; supersedes the original `testClusterResourcePolicy` design):**
 
-Add a `testClusterResourcePolicy` section in `values.yaml` and a corresponding Helm template. When enabled (e.g. via `--set testClusterResourcePolicy.enabled=true` in `make helm-update-local`), it installs a higher-priority policy tuned for fast feedback during local development:
+Rather than embedding a dev-only `testClusterResourcePolicy` (stanza + always-present template gated by `enabled`) inside the production chart, ship a catalog of policy presets as Helm values overlays under `charts/ballast/presets/`. Anything in the chart is published in every release artifact, so a dev-only resource baked in (even gated) is a footgun; an overlay is inert data that only takes effect when selected with `-f`. The base `values.yaml` default IS the `homogeneous-large-fleet` preset, so a plain `helm install` is production-sane with no flags.
 
-- `priority: 100` (beats the default policy's 0)
-- `readiness.minDataPoints: 5`
-- `readiness.minTimeSpan: "1m"`
-- `readiness.maxCV: "2.0"`
-- `behaviors.resize.interval: "30s"`
-- Same metrics as the default policy (avg * 1.25 for CPU and memory requests; p99 for memory limit)
-- A prominent comment in the values file and the template stating this policy is for development clusters only
+- `charts/ballast/presets/local-testing.yaml` — fast-cycle overlay for kind clusters: `readiness.minDataPoints: 5`, `minTimeSpan: "1m"`, `maxCV: "2.0"`, `behaviors.resize.interval: "30s"`, poll intervals overridden to 15s, and a CPU/memory-only metrics list (drops the ephemeral-storage entries to keep the local loop focused). A prominent header comment states it is development-only.
+- `charts/ballast/presets/README.md` — documents the catalog and how to apply/override presets.
+
+Helm's native `-f` merge gives the preset + override behavior for free (map fields deep-merge, list fields replace), so no template logic and no extra `priority` arbitration is needed — only one `ClusterResourcePolicy` is ever rendered.
 
 **`make helm-update-local` change:**
 
-Pass `--set testClusterResourcePolicy.enabled=true` automatically so local kind clusters always get the fast-cycle policy without manual flags.
+`helm-update-local` sets a target-specific `HELM_LOCAL_EXTRA = -f $(CHART_DIR)/presets/local-testing.yaml` (which GNU Make propagates to its `helm-install-local` prerequisite) so local kind clusters always get the fast-cycle preset without manual flags.
 
 **Testing instructions (add to README or a dedicated TESTING.md):**
 
@@ -637,11 +638,12 @@ Document the full local test loop:
 
 ### Key files
 
-- `charts/ballast/values.yaml` — update `defaultClusterResourcePolicy.metrics` (new formulas + limit entry + ephemeral-storage entries); add `testClusterResourcePolicy` stanza
-- `charts/ballast/templates/clusterresourcepolicy.yaml` — fix per-metric source fallback
-- `charts/ballast/templates/testclusterresourcepolicy.yaml` — new template for the test policy
-- `Makefile` — add `testClusterResourcePolicy.enabled=true` to `helm-update-local`
-- `README.md` or `TESTING.md` — local test loop instructions
+- `internal/store/percentiles.go`, `api/v1/workloadprofile_types.go`, `internal/controller/metricscollector/controller.go`, `api/v1/clusterresourcepolicy_types.go`, `internal/stats/aggregator.go` — add `p75`/`p90` aggregations end to end (plus regenerated CRDs synced to `charts/ballast/crds/`)
+- `charts/ballast/values.yaml` — `defaultClusterResourcePolicy.metrics` (avg*1.25 requests + p99 memory limit + p90/p99 ephemeral-storage entries via `kubelet-summary`); 5m poll intervals; `minDataPoints: 250`
+- `charts/ballast/templates/clusterresourcepolicy.yaml` — per-metric `source` fallback (`.source | default $.Values...metricsSource`)
+- `charts/ballast/presets/local-testing.yaml`, `charts/ballast/presets/README.md` — fast-cycle preset overlay and catalog docs
+- `Makefile` — `helm-update-local` applies the local-testing preset via target-specific `HELM_LOCAL_EXTRA`
+- `TESTING.md` — local test loop instructions (linked from `README.md`)
 
 ---
 
