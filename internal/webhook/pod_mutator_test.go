@@ -350,6 +350,7 @@ func TestPodMutator_MissingIdentityLabel(t *testing.T) {
 }
 
 func TestPodMutator_PolicyRefStamped(t *testing.T) {
+	// ClusterResourcePolicy: policy-ref value is just the policy name (no namespace prefix).
 	policy := &ballastv1.ClusterResourcePolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "default-policy"},
 		Spec:       ballastv1.ClusterResourcePolicySpec{},
@@ -365,15 +366,47 @@ func TestPodMutator_PolicyRefStamped(t *testing.T) {
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
 	}
-	found := false
+	var policyRefValue string
 	for _, p := range resp.Patches {
 		if strings.Contains(p.Path, "policy-ref") {
-			found = true
-			break
+			if s, ok := p.Value.(string); ok {
+				policyRefValue = s
+			}
 		}
 	}
-	if !found {
-		t.Errorf("expected policy-ref annotation patch, patches were: %v", resp.Patches)
+	if policyRefValue != "default-policy" {
+		t.Errorf("policy-ref: got %q, want %q", policyRefValue, "default-policy")
+	}
+}
+
+func TestPodMutator_PolicyRefNamespaced(t *testing.T) {
+	// ResourcePolicy: policy-ref value must include "namespace/name" so observers
+	// can distinguish it from a same-named ClusterResourcePolicy.
+	policy := &ballastv1.ResourcePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-policy", Namespace: "default"},
+		Spec:       ballastv1.ResourcePolicySpec{},
+	}
+	fc := newFakeClient(defaultBallastConfig(), readyProfile(), policy)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
+
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
+		validation.AnnotationMeasure: "true",
+		validation.AnnotationApply:   "true",
+	})))
+
+	if !resp.Allowed {
+		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
+	}
+	var policyRefValue string
+	for _, p := range resp.Patches {
+		if strings.Contains(p.Path, "policy-ref") {
+			if s, ok := p.Value.(string); ok {
+				policyRefValue = s
+			}
+		}
+	}
+	if policyRefValue != "default/team-policy" {
+		t.Errorf("policy-ref: got %q, want %q", policyRefValue, "default/team-policy")
 	}
 }
 

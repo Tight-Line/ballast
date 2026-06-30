@@ -152,7 +152,11 @@ func (m *PodMutator) stampPolicyRef(ctx context.Context, pod, modifiedPod *corev
 		return
 	}
 	if resolved != nil {
-		modifiedPod.Annotations[validation.AnnotationPolicyRef] = resolved.Name
+		ref := resolved.Name
+		if resolved.Namespaced {
+			ref = pod.Namespace + "/" + resolved.Name
+		}
+		modifiedPod.Annotations[validation.AnnotationPolicyRef] = ref
 	}
 }
 
