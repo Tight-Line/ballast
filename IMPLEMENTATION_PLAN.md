@@ -552,6 +552,99 @@ _Deploy with `--metrics-bind-address=:8080` and `kubectl port-forward`; confirm 
 
 ---
 
+## Phase 14 — `kubeletSummary` Plugin (Ephemeral Storage Metrics)
+
+**Status:** `[ ]`
+**Depends on:** Phase 6
+
+### What to build
+
+- New plugin package `internal/plugin/kubelet/` implementing `plugin.MetricsPlugin` with type name `kubeletSummary`
+- Data source: kubelet Summary API via the Kubernetes API server proxy (`GET /api/v1/nodes/{nodeName}/proxy/stats/summary`), accessed with the controller-runtime rest.Config so no extra credentials are needed
+- Per-node fan-out: list all nodes, fetch each node's summary in parallel, aggregate pod entries cluster-wide
+- Extract `ephemeral-storage.usedBytes` per pod and map to `ContainerStats` entries keyed by `podRef.name/namespace`; associate with containers by matching pod identity (the summary API reports per-pod, not per-container — model as the first/only container or distribute evenly if multiple containers are present; document the limitation)
+- Client-side label filtering using the same `podMatchesSelector` logic as the `kubernetesMetrics` plugin
+- Per-node TTL cache (default 55 s) with stale-data detection: if a node's cached entry is older than `2 * CacheTTL`, emit a warning log and skip that node's data rather than returning stale values
+- Per-workload exponential backoff on node errors, same pattern as `kubernetesMetrics`
+- Register the plugin in `cmd/ballastd/main.go` using the rest.Config from the controller-runtime manager
+- Add `nodes/proxy` RBAC rule (`get` verb) to the Helm chart ClusterRole
+- Add a `defaultKubeletSummaryMetricsSource` section in `values.yaml` (enabled by default) that installs a `MetricsSource` object named `kubelet-summary` with type `kubeletSummary`
+
+### Key files
+
+- `internal/plugin/kubelet/plugin.go` — plugin implementation: node listing, per-node fetch, cache, backoff, label filter
+- `internal/plugin/kubelet/plugin_test.go` — unit tests with a fake node lister and summary API
+- `cmd/ballastd/main.go` — register `kubelet.New(restConfig, kubelet.DefaultOptions())`
+- `charts/ballast/templates/clusterrole.yaml` — add `nodes/proxy` get rule
+- `charts/ballast/templates/metricsource-kubelet.yaml` — new `MetricsSource` template
+- `charts/ballast/values.yaml` — `defaultKubeletSummaryMetricsSource` stanza
+
+### User testing instructions
+
+_After deploying, confirm the `kubelet-summary` MetricsSource appears and that `WorkloadProfile.status.containers[*]` begins populating `ephemeral-storage` stats after one collection cycle. Check controller logs for per-node fetch success/failure._
+
+---
+
+## Phase 15 — Updated Default Policy, Memory Limits, and Testing Policy
+
+**Status:** `[ ]`
+**Depends on:** Phase 14, Phase 11
+
+### What to build
+
+**Default policy formula change (CPU and memory requests):**
+
+Replace the current `p95 * headroom` approach with `avg * 1.25` (= mean / 0.80 target utilization). For a large homogeneous fleet the aggregate memory pressure is predictable; sizing at 80% of mean lets nodes run dense while leaving headroom for normal variation. The 20% drift threshold means the adjuster only fires when actual usage has moved by more than 20% relative to the recommendation, avoiding churn.
+
+**Memory limit (new):**
+
+Add a memory limit entry: `aggregation: p99, headroom: "1.0"`. p99 is the highest usage this workload has shown in production; pods that exceed it are likely leaking or misbehaving and should be OOMKilled. This gives Burstable QoS (limit > request), which is the correct class for most production workloads. CPU limits are intentionally not added.
+
+**Ephemeral storage (new, requires Phase 14):**
+
+Add two ephemeral storage entries pointing at the `kubelet-summary` MetricsSource:
+- Request: `aggregation: p90, headroom: "1.0"` — sizes for the growth-skewed distribution
+- Limit: `aggregation: p99, headroom: "1.0"` — triggers eviction before disk pressure hits the node
+
+**Template fix (per-metric source):**
+
+The current `clusterresourcepolicy.yaml` template uses a single global `metricsSource` for all metric entries. Update it to prefer `.source` from the metric entry if present, falling back to the global default: `{{ .source | default $.Values.defaultClusterResourcePolicy.metricsSource | quote }}`. This lets CPU/memory entries reference `kubernetes-metrics` and ephemeral-storage entries reference `kubelet-summary` within the same policy object.
+
+**Testing policy (new, disabled by default):**
+
+Add a `testClusterResourcePolicy` section in `values.yaml` and a corresponding Helm template. When enabled (e.g. via `--set testClusterResourcePolicy.enabled=true` in `make helm-update-local`), it installs a higher-priority policy tuned for fast feedback during local development:
+
+- `priority: 100` (beats the default policy's 0)
+- `readiness.minDataPoints: 5`
+- `readiness.minTimeSpan: "1m"`
+- `readiness.maxCV: "2.0"`
+- `behaviors.resize.interval: "30s"`
+- Same metrics as the default policy (avg * 1.25 for CPU and memory requests; p99 for memory limit)
+- A prominent comment in the values file and the template stating this policy is for development clusters only
+
+**`make helm-update-local` change:**
+
+Pass `--set testClusterResourcePolicy.enabled=true` automatically so local kind clusters always get the fast-cycle policy without manual flags.
+
+**Testing instructions (add to README or a dedicated TESTING.md):**
+
+Document the full local test loop:
+1. `make helm-update-local KIND_CLUSTER=<name>` — deploys ballast with the test policy active
+2. Install nginx with autoresize: `helm install nginx bitnami/nginx --set commonAnnotations."ballast\.tightlinesoftware\.com/autoresize"=true`
+3. `kubectl get -w workloadprofile nginx--nocomponent` — watch `meetsThreshold` flip to true after ~5 samples (~1 min)
+4. `kubectl get -w pods -n nginx` — observe admission apply resources on the next pod creation; watch the ResourceAdjuster fire at the 30 s interval if the OOTB requests (50m CPU, generous memory) differ from the profile recommendation by >20%
+5. `kubectl describe pod <name> -n nginx` — confirm `last-resize` annotation is stamped and container resources match profile recommendations
+
+### Key files
+
+- `charts/ballast/values.yaml` — update `defaultClusterResourcePolicy.metrics` (new formulas + limit entry + ephemeral-storage entries); add `testClusterResourcePolicy` stanza
+- `charts/ballast/templates/clusterresourcepolicy.yaml` — fix per-metric source fallback
+- `charts/ballast/templates/testclusterresourcepolicy.yaml` — new template for the test policy
+- `Makefile` — add `testClusterResourcePolicy.enabled=true` to `helm-update-local`
+- `README.md` or `TESTING.md` — local test loop instructions
+
+---
+
 ## Dependency Graph
 
 ```
@@ -561,12 +654,14 @@ Phase 1 (scaffold)
        ├─ Phase 4 (policy resolution)
        └─ Phase 5 (Redis/Valkey layer)
             └─ Phase 6 (plugin interface + kubernetesMetrics)
+                 ├─ Phase 14 (kubeletSummary plugin)
                  └─ Phase 7 (WorkloadWatcher) ← also needs 3, 4, 5
                       └─ Phase 8 (MetricsCollector) ← also needs 3, 4, 5, 6
                            └─ Phase 9 (Admission webhook) ← also needs 3, 4, 7
                                 └─ Phase 10 (ResourceAdjuster) ← also needs 3, 4, 7, 8, 9
                                      └─ Phase 11 (Helm chart)
-                                          └─ Phase 12 (polish)
+                                          ├─ Phase 12 (polish)
+                                          └─ Phase 15 (default/test policy) ← also needs 14
 ```
 
-Phases 3, 4, and 5 can run in parallel after Phase 2 is complete. Phases 6 and 7 can start once their dependencies are done; they are independent of each other.
+Phases 3, 4, and 5 can run in parallel after Phase 2 is complete. Phases 6 and 7 can start once their dependencies are done; they are independent of each other. Phase 14 depends only on Phase 6 and can be implemented independently of Phases 7-13. Phase 15 depends on both Phase 11 (Helm chart structure) and Phase 14 (ephemeral storage data).
