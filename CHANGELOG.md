@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-30
+
 ### Added
 
 - **`p75` and `p90` aggregations.** `ClusterResourcePolicy` metric entries now accept `p75` and `p90` alongside the existing `p50`/`p95`/`p99`/`max`/`avg`. The stats engine computes both percentiles, the metrics collector publishes them on `WorkloadProfile` container usage stats, and the recommendation resolver maps them through. This unblocks sizing ephemeral storage at p90.
