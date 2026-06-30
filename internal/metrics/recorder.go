@@ -41,70 +41,40 @@ func NewRecorder(provider metric.MeterProvider) (*Recorder, error) {
 	r.ksReason.Store("")
 
 	var err error
-
-	if r.samplesCollected, err = m.Int64Counter("ballast.samples.collected",
-		metric.WithDescription("Metric samples collected and written to the store"),
-	); err != nil { // coverage:ignore - OTel SDK never errors for valid instrument registration
-		return nil, err
+	// counter registers an Int64Counter, latching the first error so callers can
+	// register every instrument in a flat list and check err once at the end.
+	counter := func(name, desc string) metric.Int64Counter {
+		if err != nil { // coverage:ignore - short-circuits once a prior registration has failed
+			return nil
+		}
+		var c metric.Int64Counter
+		c, err = m.Int64Counter(name, metric.WithDescription(desc))
+		return c
 	}
 
-	if r.fetchErrors, err = m.Int64Counter("ballast.fetch.errors",
-		metric.WithDescription("Errors returned by FetchStats for a metrics source"),
-	); err != nil { // coverage:ignore - OTel SDK never errors for valid instrument registration
-		return nil, err
-	}
-
-	if r.profileThresholdMet, err = m.Int64Counter("ballast.profiles.threshold_met",
-		metric.WithDescription("WorkloadProfiles that transitioned to meets-threshold"),
-	); err != nil { // coverage:ignore - OTel SDK never errors for valid instrument registration
-		return nil, err
-	}
-
-	if r.podsProcessed, err = m.Int64Counter("ballast.pods.processed",
-		metric.WithDescription("Pods processed by the workload watcher (created or deleted)"),
-	); err != nil { // coverage:ignore - OTel SDK never errors for valid instrument registration
-		return nil, err
-	}
-
-	if r.workloadProfilesCreated, err = m.Int64Counter("ballast.workload_profiles.created",
-		metric.WithDescription("WorkloadProfile objects created"),
-	); err != nil { // coverage:ignore - OTel SDK never errors for valid instrument registration
-		return nil, err
-	}
-
-	if r.workloadProfilesPurged, err = m.Int64Counter("ballast.workload_profiles.purged",
-		metric.WithDescription("WorkloadProfile objects purged after orphan TTL expired"),
-	); err != nil { // coverage:ignore - OTel SDK never errors for valid instrument registration
-		return nil, err
-	}
-
-	if r.resizeApplied, err = m.Int64Counter("ballast.resize.applied",
-		metric.WithDescription("In-place resize operations applied successfully"),
-	); err != nil { // coverage:ignore - OTel SDK never errors for valid instrument registration
-		return nil, err
-	}
-
-	if r.resizeFailed, err = m.Int64Counter("ballast.resize.failed",
-		metric.WithDescription("In-place resize operations that failed"),
-	); err != nil { // coverage:ignore - OTel SDK never errors for valid instrument registration
-		return nil, err
-	}
-
-	if r.resizeSkipped, err = m.Int64Counter("ballast.resize.skipped",
-		metric.WithDescription("Resize evaluations skipped before issuing a patch"),
-	); err != nil { // coverage:ignore - OTel SDK never errors for valid instrument registration
-		return nil, err
-	}
-
-	if r.webhookMutations, err = m.Int64Counter("ballast.webhook.mutations",
-		metric.WithDescription("Pod admission webhook invocations and their outcomes"),
-	); err != nil { // coverage:ignore - OTel SDK never errors for valid instrument registration
-		return nil, err
-	}
-
-	if r.killSwitchTransitions, err = m.Int64Counter("ballast.kill_switch.transitions",
-		metric.WithDescription("Kill switch state transitions (activated or deactivated)"),
-	); err != nil { // coverage:ignore - OTel SDK never errors for valid instrument registration
+	r.samplesCollected = counter("ballast.samples.collected",
+		"Metric samples collected and written to the store")
+	r.fetchErrors = counter("ballast.fetch.errors",
+		"Errors returned by FetchStats for a metrics source")
+	r.profileThresholdMet = counter("ballast.profiles.threshold_met",
+		"WorkloadProfiles that transitioned to meets-threshold")
+	r.podsProcessed = counter("ballast.pods.processed",
+		"Pods processed by the workload watcher (created or deleted)")
+	r.workloadProfilesCreated = counter("ballast.workload_profiles.created",
+		"WorkloadProfile objects created")
+	r.workloadProfilesPurged = counter("ballast.workload_profiles.purged",
+		"WorkloadProfile objects purged after orphan TTL expired")
+	r.resizeApplied = counter("ballast.resize.applied",
+		"In-place resize operations applied successfully")
+	r.resizeFailed = counter("ballast.resize.failed",
+		"In-place resize operations that failed")
+	r.resizeSkipped = counter("ballast.resize.skipped",
+		"Resize evaluations skipped before issuing a patch")
+	r.webhookMutations = counter("ballast.webhook.mutations",
+		"Pod admission webhook invocations and their outcomes")
+	r.killSwitchTransitions = counter("ballast.kill_switch.transitions",
+		"Kill switch state transitions (activated or deactivated)")
+	if err != nil { // coverage:ignore - OTel SDK never errors for valid instrument registration
 		return nil, err
 	}
 

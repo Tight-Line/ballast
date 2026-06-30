@@ -231,52 +231,67 @@ func computeAdjustments(
 		if !ok || len(recs) == 0 {
 			continue
 		}
-
-		adj := ContainerAdjustment{
-			Name:     c.Name,
-			Requests: c.Resources.Requests.DeepCopy(),
-			Limits:   c.Resources.Limits.DeepCopy(),
-		}
-		if adj.Requests == nil {
-			adj.Requests = make(corev1.ResourceList)
-		}
-		if adj.Limits == nil {
-			adj.Limits = make(corev1.ResourceList)
-		}
-
-		drifted := false
-		for res, rec := range recs {
-			resName := corev1.ResourceName(res)
-
-			if rec.Request != "" {
-				threshold := ResolveFieldThreshold(behaviors, res, "request")
-				if recommended, err := resource.ParseQuantity(rec.Request); err == nil {
-					current := currentValue(c.Resources.Requests, resName)
-					if ExceedsDrift(current, recommended, threshold) {
-						drifted = true
-						adj.Requests[resName] = CapChange(current, recommended, maxChange)
-					}
-				}
-			}
-
-			if rec.Limit != "" {
-				threshold := ResolveFieldThreshold(behaviors, res, "limit")
-				if recommended, err := resource.ParseQuantity(rec.Limit); err == nil {
-					current := currentValue(c.Resources.Limits, resName)
-					if ExceedsDrift(current, recommended, threshold) {
-						drifted = true
-						adj.Limits[resName] = CapChange(current, recommended, maxChange)
-					}
-				}
-			}
-		}
-
-		if drifted {
+		if adj, drifted := computeContainerAdjustment(c, recs, behaviors, maxChange); drifted {
 			result = append(result, adj)
 		}
 	}
 
 	return result
+}
+
+// computeContainerAdjustment evaluates every recommended field for one container
+// and returns the capped adjustment plus whether any field drifted beyond threshold.
+func computeContainerAdjustment(
+	c corev1.Container,
+	recs map[string]ballastv1.ResourceRecommendation,
+	behaviors ballastv1.BehaviorConfig,
+	maxChange float64,
+) (ContainerAdjustment, bool) {
+	adj := ContainerAdjustment{
+		Name:     c.Name,
+		Requests: c.Resources.Requests.DeepCopy(),
+		Limits:   c.Resources.Limits.DeepCopy(),
+	}
+	if adj.Requests == nil {
+		adj.Requests = make(corev1.ResourceList)
+	}
+	if adj.Limits == nil {
+		adj.Limits = make(corev1.ResourceList)
+	}
+
+	drifted := false
+	for res, rec := range recs {
+		resName := corev1.ResourceName(res)
+		if evaluateField(adj.Requests, resName, rec.Request,
+			ResolveFieldThreshold(behaviors, res, "request"), maxChange,
+			currentValue(c.Resources.Requests, resName)) {
+			drifted = true
+		}
+		if evaluateField(adj.Limits, resName, rec.Limit,
+			ResolveFieldThreshold(behaviors, res, "limit"), maxChange,
+			currentValue(c.Resources.Limits, resName)) {
+			drifted = true
+		}
+	}
+	return adj, drifted
+}
+
+// evaluateField records the capped target for one field in dst when the recommended
+// value parses and drifts beyond threshold; it returns whether the field drifted.
+// An empty recValue parses to an error and is treated as "no recommendation".
+func evaluateField(
+	dst corev1.ResourceList,
+	resName corev1.ResourceName,
+	recValue string,
+	threshold, maxChange float64,
+	current resource.Quantity,
+) bool {
+	recommended, err := resource.ParseQuantity(recValue)
+	if err != nil || !ExceedsDrift(current, recommended, threshold) {
+		return false
+	}
+	dst[resName] = CapChange(current, recommended, maxChange)
+	return true
 }
 
 // resolveFieldThreshold looks up a per-field threshold using the coalesce order:

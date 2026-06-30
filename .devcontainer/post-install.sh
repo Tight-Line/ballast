@@ -4,6 +4,9 @@ set -euo pipefail
 SEPARATOR="------------------------------------"
 SECTION="===================================="
 
+# Shared curl flags: enforce HTTPS with TLS 1.2+ on every download.
+CURL_TLS=(--proto '=https' --tlsv1.2)
+
 echo "${SECTION}"
 echo "Kubebuilder DevContainer Setup"
 echo "${SECTION}"
@@ -53,7 +56,7 @@ echo "${SEPARATOR}"
 # Install kind
 if ! command -v kind &> /dev/null; then
   echo "Installing kind..."
-  curl --proto '=https' --tlsv1.2 -Lo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/latest/kind-linux-${ARCH}"
+  curl "${CURL_TLS[@]}" -Lo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/latest/kind-linux-${ARCH}"
   chmod +x /usr/local/bin/kind
   echo "kind installed successfully"
 fi
@@ -70,7 +73,7 @@ fi
 # Install kubebuilder
 if ! command -v kubebuilder &> /dev/null; then
   echo "Installing kubebuilder..."
-  curl --proto '=https' --tlsv1.2 -Lo /usr/local/bin/kubebuilder "https://go.kubebuilder.io/dl/latest/linux/${ARCH}"
+  curl "${CURL_TLS[@]}" -Lo /usr/local/bin/kubebuilder "https://go.kubebuilder.io/dl/latest/linux/${ARCH}"
   chmod +x /usr/local/bin/kubebuilder
   echo "kubebuilder installed successfully"
 fi
@@ -87,8 +90,8 @@ fi
 # Install kubectl
 if ! command -v kubectl &> /dev/null; then
   echo "Installing kubectl..."
-  KUBECTL_VERSION=$(curl --proto '=https' --tlsv1.2 -Ls https://dl.k8s.io/release/stable.txt)
-  curl --proto '=https' --tlsv1.2 -Lo /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl"
+  KUBECTL_VERSION=$(curl "${CURL_TLS[@]}" -Ls https://dl.k8s.io/release/stable.txt)
+  curl "${CURL_TLS[@]}" -Lo /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl"
   chmod +x /usr/local/bin/kubectl
   echo "kubectl installed successfully"
 fi

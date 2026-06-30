@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"time"
 
@@ -197,20 +198,6 @@ func run() int {
 
 	// +kubebuilder:scaffold:builder
 
-	metricsClient, err := metricsclientset.NewForConfig(mgr.GetConfig())
-	if err != nil {
-		setupLog.Error(err, "Failed to create metrics clientset")
-		return 1
-	}
-	plugin.Register(k8splugin.New(metricsClient.MetricsV1beta1().PodMetricses(""), k8splugin.DefaultOptions()))
-
-	kubeletPlugin, err := kubeletplugin.New(mgr.GetConfig(), kubeletplugin.DefaultOptions())
-	if err != nil {
-		setupLog.Error(err, "Failed to create kubelet summary plugin")
-		return 1
-	}
-	plugin.Register(kubeletPlugin)
-
 	storeClient, err := store.NewClient(redisURL)
 	if err != nil {
 		setupLog.Error(err, "Failed to create Redis client")
@@ -240,35 +227,9 @@ func run() int {
 		return 1
 	}
 
-	ks := killswitch.New(mgr.GetClient(), operatorNamespace, rec)
-	if err := ks.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to set up kill switch")
-		return 1
-	}
-
-	if err := workloadwatcher.New(mgr.GetClient(), ks, storeClient, rec).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to set up workloadwatcher controller")
-		return 1
-	}
-
-	if err := metricscollector.Setup(mgr, ks, storeClient, dryRunMeasure, rec); err != nil {
-		setupLog.Error(err, "Failed to set up metricscollector controller")
-		return 1
-	}
-
-	ballastwebhook.NewPodMutator(mgr.GetClient(), ks, dryRunApply, rec).SetupWithManager(mgr)
-
-	if err := resourceadjuster.Setup(mgr, ks, dryRunResize, rec); err != nil {
-		setupLog.Error(err, "Failed to set up resourceadjuster controller")
-		return 1
-	}
-
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "Failed to set up health check")
-		return 1
-	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "Failed to set up ready check")
+	if err := registerComponents(mgr, storeClient, rec, operatorNamespace,
+		dryRunMeasure, dryRunApply, dryRunResize); err != nil {
+		setupLog.Error(err, "Failed to register components")
 		return 1
 	}
 
@@ -278,4 +239,54 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// registerComponents wires the metrics plugins, kill switch, controllers, webhook,
+// and health checks into the manager. It returns the first setup error, wrapped
+// with context, so run() can report it from a single call site.
+func registerComponents(
+	mgr ctrl.Manager,
+	storeClient store.Client,
+	rec *appmetrics.Recorder,
+	operatorNamespace string,
+	dryRunMeasure, dryRunApply, dryRunResize bool,
+) error {
+	metricsClient, err := metricsclientset.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		return fmt.Errorf("create metrics clientset: %w", err)
+	}
+	plugin.Register(k8splugin.New(metricsClient.MetricsV1beta1().PodMetricses(""), k8splugin.DefaultOptions()))
+
+	kubeletPlugin, err := kubeletplugin.New(mgr.GetConfig(), kubeletplugin.DefaultOptions())
+	if err != nil {
+		return fmt.Errorf("create kubelet summary plugin: %w", err)
+	}
+	plugin.Register(kubeletPlugin)
+
+	ks := killswitch.New(mgr.GetClient(), operatorNamespace, rec)
+	if err := ks.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("set up kill switch: %w", err)
+	}
+
+	if err := workloadwatcher.New(mgr.GetClient(), ks, storeClient, rec).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("set up workloadwatcher controller: %w", err)
+	}
+
+	if err := metricscollector.Setup(mgr, ks, storeClient, dryRunMeasure, rec); err != nil {
+		return fmt.Errorf("set up metricscollector controller: %w", err)
+	}
+
+	ballastwebhook.NewPodMutator(mgr.GetClient(), ks, dryRunApply, rec).SetupWithManager(mgr)
+
+	if err := resourceadjuster.Setup(mgr, ks, dryRunResize, rec); err != nil {
+		return fmt.Errorf("set up resourceadjuster controller: %w", err)
+	}
+
+	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		return fmt.Errorf("set up health check: %w", err)
+	}
+	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+		return fmt.Errorf("set up ready check: %w", err)
+	}
+	return nil
 }
