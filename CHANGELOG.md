@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Default policy limits now carry 20% headroom instead of sizing at the observed peak.** The `homogeneous-large-fleet` default `ClusterResourcePolicy` set its memory and ephemeral-storage limits at `p99` with no headroom, which OOMKilled (or evicted) any pod that exceeded its observed p99 — including legitimate rare spikes whose true peak was never in the sample window. Both limits are now `p99 * 1.2`: the 20% margin absorbs a normal spike while still catching a genuine leak or runaway. Requests (`avg * 1.25`) and the intentionally-omitted CPU limit are unchanged. The `local-testing` preset's memory limit follows suit.
+
 ### Fixed
 
 - **`kubeletSummary` could permanently lose a healthy node's metrics after a transient kubelet blip.** Each node's `/stats/summary` is cached per-node (`CacheTTL` 55s); once an entry aged past `2*CacheTTL`, the staleness check returned before attempting any refresh, so `fetchTime` never advanced and the node was skipped forever, emitting `skipping node: summary too stale` on every scrape with an ever-growing `age` even after the kubelet recovered. A refresh is now attempted whenever the cache is past `CacheTTL`; the staleness gate only governs whether cached data is served as a fallback when that refresh fails. A node that has recovered heals within one `CacheTTL` of the kubelet coming back.

@@ -20,7 +20,7 @@ helm upgrade --install ballast ./charts/ballast \
 
 | Preset | File | Use case |
 | --- | --- | --- |
-| `homogeneous-large-fleet` | _(built-in default in `values.yaml`)_ | Production fleets of many similar pods. Sizes requests at `avg * 1.25`, memory limit at p99, and ephemeral storage from the kubelet Summary API. Polls every 5m and requires 250 samples over 24h before acting. |
+| `homogeneous-large-fleet` | _(built-in default in `values.yaml`)_ | Production fleets of many similar pods. Sizes requests at `avg * 1.25`, memory limit at `p99 * 1.2`, and ephemeral storage from the kubelet Summary API. Polls every 5m and requires 250 samples over 24h before acting. |
 | `local-testing` | `local-testing.yaml` | Local kind clusters. Polls every 15s and acts after 5 samples over 1m with a 30s resize interval, so you can watch a workload become eligible and get resized within minutes. **Never use in production.** |
 
 The `homogeneous-large-fleet` preset is the chart's built-in default, so a plain
