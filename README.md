@@ -79,7 +79,7 @@ This works well for clusters that run a single environment class. The frontend a
 
 ### Mixed environments in the same cluster
 
-If your cluster runs dev, staging, and production side-by-side and you want separate profiles per environment, add `ballast.tightlinesoftware.com/profile` to the identity tuple and apply it to your pods:
+If your cluster runs dev, staging, and production side-by-side and you want separate profiles per environment, add `ballast.tightlinesoftware.com/resource-profile` to the identity tuple and apply it to your pods:
 
 ```yaml
 # BallastConfig / Helm values
@@ -87,7 +87,7 @@ ballastConfig:
   identityLabels:
     - app.kubernetes.io/name
     - app.kubernetes.io/component
-    - ballast.tightlinesoftware.com/profile
+    - ballast.tightlinesoftware.com/resource-profile
 ```
 
 ```yaml
@@ -95,10 +95,10 @@ ballastConfig:
 labels:
   app.kubernetes.io/name: billing
   app.kubernetes.io/component: api
-  ballast.tightlinesoftware.com/profile: prod
+  ballast.tightlinesoftware.com/resource-profile: prod
 ```
 
-Now `(billing, api, prod)` and `(billing, api, dev)` are measured independently. Pods without the `ballast.tightlinesoftware.com/profile` label get a placeholder value in the profile name (`noprofile`) rather than being skipped, so opted-in pods always produce a profile.
+Now `(billing, api, prod)` and `(billing, api, dev)` are measured independently. Pods without the `ballast.tightlinesoftware.com/resource-profile` label get a placeholder value in the profile name (`noresourceprofile`) rather than being skipped, so opted-in pods always produce a profile.
 
 > **Changing `identityLabels` wipes your operational history.** It redefines what constitutes a workload identity, so all existing `WorkloadProfile` objects are renamed and their accumulated Redis history is orphaned. Ballast starts fresh from zero samples. Plan your tuple before enrolling workloads.
 
@@ -123,7 +123,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: billing
-        ballast.tightlinesoftware.com/profile: prod
+        ballast.tightlinesoftware.com/resource-profile: prod
       annotations:
         ballast.tightlinesoftware.com/autoresize: "true"
 ```

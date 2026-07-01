@@ -172,8 +172,8 @@ Represents the accumulated operational history for a workload identity tuple. No
 The set of labels that constitute an identity tuple is defined in the Ballast global configuration (Helm values or a `BallastConfig` CRD — TBD). The operator chooses which pod labels to include. Common configurations:
 
 - One label: `app.kubernetes.io/name` — groups all instances of an app regardless of environment
-- Two labels: `app.kubernetes.io/name` + `ballast.tightlinesoftware.com/profile` — groups by app and environment type (dev, qa, prod, etc.)
-- Three labels: `app.kubernetes.io/name` + `app.kubernetes.io/instance` + `ballast.tightlinesoftware.com/profile` — groups by app, specific instance, and environment type
+- Two labels: `app.kubernetes.io/name` + `ballast.tightlinesoftware.com/resource-profile` — groups by app and environment type (dev, qa, prod, etc.)
+- Three labels: `app.kubernetes.io/name` + `app.kubernetes.io/instance` + `ballast.tightlinesoftware.com/resource-profile` — groups by app, specific instance, and environment type
 
 The deployment tool is responsible for setting whatever labels the operator has configured on pod templates. The `WorkloadProfile` name is derived deterministically from the sorted label values, e.g. `billing--prod`.
 
@@ -189,7 +189,7 @@ metadata:
 status:
   tupleLabels:
     app.kubernetes.io/name: billing
-    ballast.tightlinesoftware.com/profile: prod
+    ballast.tightlinesoftware.com/resource-profile: prod
   containers:
     - name: app
       # usageStats: measured actual resource consumption, per resource per source.
@@ -253,7 +253,7 @@ spec:
   # invalidates existing WorkloadProfile names and requires a migration.
   identityLabels:
     - app.kubernetes.io/name
-    - ballast.tightlinesoftware.com/profile
+    - ballast.tightlinesoftware.com/resource-profile
 
   # How long to retain an Orphaned WorkloadProfile before deleting it.
   orphanTTL: "168h"         # default: 7 days

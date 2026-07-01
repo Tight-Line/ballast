@@ -52,12 +52,12 @@ ballastConfig:
   # one well-sampled profile, not 40 thin ones.
   #
   # If your cluster runs mixed environments (dev + staging + prod) and you want
-  # separate profiles per environment, add ballast.tightlinesoftware.com/profile
+  # separate profiles per environment, add ballast.tightlinesoftware.com/resource-profile
   # to this list and apply it to your pods:
   #   identityLabels:
   #     - app.kubernetes.io/name
   #     - app.kubernetes.io/component
-  #     - ballast.tightlinesoftware.com/profile
+  #     - ballast.tightlinesoftware.com/resource-profile
   identityLabels:
     - app.kubernetes.io/name
     - app.kubernetes.io/component
