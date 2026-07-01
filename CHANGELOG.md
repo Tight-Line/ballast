@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-01
+
 ### Fixed
 
 - **Init and ephemeral containers were being measured.** The metrics API and kubelet summary return a flat container list that does not mark init or ephemeral containers, so the collector recorded samples for them and produced `WorkloadProfile` container entries that could never be applied (apply and resize only patch `spec.containers`). The collector now excludes all init containers and ephemeral debug containers from measurement, reading their names from the profile's pod specs. This is intentionally broad for now: restartable-init "native sidecar" containers are long-running and would be good right-sizing targets, but supporting them requires extending the apply and resize lanes to `spec.initContainers` — tracked in [#30](https://github.com/Tight-Line/ballast/issues/30). Enrollment stays annotation-driven with no Job/CronJob carve-out; docs now steer users away from annotating Job pod specs and toward caution with CronJob pod specs.
