@@ -18,26 +18,6 @@ Workloads opt in with annotations on their pod templates. Ballast observes real 
 
 Pod eviction for cluster rebalancing is handled by [Kubernetes Descheduler](https://github.com/kubernetes-sigs/descheduler) — see the Annotation Contract section for details.
 
-## Implementation Status
-
-| Phase | What | Status |
-|---|---|---|
-| 1 | Repository scaffold, kubebuilder init, CI/CD | Complete |
-| 2 | CRD type definitions | Complete |
-| 3 | Logger infrastructure and kill switch | Complete |
-| 4 | Policy resolution | Complete |
-| 5 | Redis/Valkey client layer | Complete |
-| 6 | Plugin interface and `kubernetesMetrics` plugin | Complete |
-| 7 | WorkloadWatcher controller | Complete |
-| 8 | MetricsCollector controller | Complete |
-| 9 | Admission webhook | Complete |
-| 10 | ResourceAdjuster controller | Complete |
-| 11 | Helm chart | Complete |
-| 12 | Polish and release readiness | Complete |
-| 13 | Prometheus and OpenTelemetry metrics | Complete |
-| 14 | `kubeletSummary` plugin (ephemeral storage) | Complete |
-| 15 | Updated default policy, memory/ephemeral limits, policy presets | Complete |
-
 ## Prerequisites
 
 - Kubernetes 1.35+ (required for in-place pod resize; earlier versions support measure and apply but not resize)

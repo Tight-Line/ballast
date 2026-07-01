@@ -2,7 +2,8 @@
 
 > This file is the primary entry point for AI agents working on ballast.
 > Read DESIGN.md for full system context before making changes.
-> Read IMPLEMENTATION_PLAN.md to find the current phase and key files.
+> The Key Files table below is the current reference. IMPLEMENTATION_PLAN.md is a
+> historical record of the phased build-out, not a live status tracker.
 
 ## Project Overview
 
