@@ -146,6 +146,8 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 		return ctrl.Result{}, err
 	}
 
+	pid := metrics.ProfileID{Name: profName, Labels: tupleLabels}
+
 	// Add finalizer before stamping the annotation so delete is always handled
 	// even if the annotation stamp fails.
 	if !controllerutil.ContainsFinalizer(pod, FinalizerName) {
@@ -154,7 +156,7 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 		if err := r.client.Patch(ctx, pod, client.MergeFrom(base)); err != nil { // coverage:ignore - transient API error
 			return ctrl.Result{}, err
 		}
-		r.rec.PodProcessed(ctx, "created", pod.Namespace, profName)
+		r.rec.PodProcessed(ctx, "created", pod.Namespace, pid)
 	}
 
 	if err := r.stampProfileRef(ctx, pod, profName); err != nil { // coverage:ignore - transient API error
@@ -178,7 +180,15 @@ func (r *PodReconciler) handleDelete(ctx context.Context, pod *corev1.Pod) (ctrl
 		if err := r.setActiveWorkloads(ctx, profName); err != nil { // coverage:ignore - transient API error
 			return ctrl.Result{}, err
 		}
-		r.rec.PodProcessed(ctx, "deleted", pod.Namespace, profName)
+		// Recover the identity-tuple labels from the profile so the "deleted" event
+		// carries the same attributes as "created"; fall back to name-only if the
+		// profile has already been purged.
+		pid := metrics.ProfileID{Name: profName}
+		var profile ballastv1.WorkloadProfile
+		if err := r.client.Get(ctx, types.NamespacedName{Name: profName}, &profile); err == nil {
+			pid.Labels = profile.Status.TupleLabels
+		}
+		r.rec.PodProcessed(ctx, "deleted", pod.Namespace, pid)
 	}
 
 	base := pod.DeepCopy()
@@ -205,7 +215,7 @@ func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupl
 		}
 		return err // coverage:ignore - transient non-AlreadyExists error
 	}
-	r.rec.WorkloadProfileCreated(ctx, profName)
+	r.rec.WorkloadProfileCreated(ctx, metrics.ProfileID{Name: profName, Labels: tupleLabels})
 
 	// Status is a subresource; must be updated after creation.
 	profile.Status.TupleLabels = tupleLabels
@@ -345,7 +355,7 @@ func (r *ProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.client.Delete(ctx, &profile); err != nil { // coverage:ignore - transient API error
 		return ctrl.Result{}, err
 	}
-	r.rec.WorkloadProfilePurged(ctx, profile.Name)
+	r.rec.WorkloadProfilePurged(ctx, metrics.ProfileID{Name: profile.Name, Labels: profile.Status.TupleLabels})
 	return ctrl.Result{}, nil
 }
 

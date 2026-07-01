@@ -332,6 +332,10 @@ func registerComponents(
 		return fmt.Errorf("set up resourceadjuster controller: %w", err)
 	}
 
+	if err := rec.RegisterProfileGauge(metricscollector.NewProfileLister(mgr.GetClient())); err != nil {
+		return fmt.Errorf("register profiles gauge: %w", err)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		return fmt.Errorf("set up health check: %w", err)
 	}
