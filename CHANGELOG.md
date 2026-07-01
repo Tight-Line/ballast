@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-01
+
 ### Fixed
 
 - **`kubeletSummary` metrics collection failed with a `nodes is forbidden` RBAC error.** The plugin lists nodes before proxying to each kubelet's `/stats/summary` endpoint, but the ballast `ClusterRole` only granted `nodes/proxy` `get`, not `nodes` `list`. Collection of `ephemeral-storage` samples failed on every cycle with `nodes is forbidden ... cannot list resource "nodes"`; CPU and memory (served via `metrics.k8s.io`) were unaffected. The `ClusterRole` now grants `get` and `list` on `nodes`.
