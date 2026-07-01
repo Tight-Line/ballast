@@ -38,7 +38,7 @@ defaultClusterResourcePolicy:
     - resource: memory
       field: limit
       aggregation: p99
-      headroom: "1.0"
+      headroom: "1.2"
   readiness:
     minDataPoints: 5
     minTimeSpan: "1m"

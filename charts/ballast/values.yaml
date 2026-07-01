@@ -138,8 +138,9 @@ telemetry:
 # defaultClusterResourcePolicy installs a catch-all policy that applies to all
 # opted-in pods. The values below are the "homogeneous-large-fleet" preset: it
 # sizes CPU and memory requests at avg * 1.25 (= mean / 0.80 target utilization),
-# sets a memory limit at p99, and sizes ephemeral storage requests/limits from the
-# kubelet Summary API. It requires 500 samples over 24 hours before acting.
+# sets a memory limit at p99 + 20% headroom, and sizes ephemeral storage
+# requests/limits from the kubelet Summary API. It requires 250 samples over 24
+# hours before acting.
 #
 # This is the built-in default preset. Other presets ship as values overlays under
 # charts/ballast/presets/ (see presets/README.md) and are selected at install time
@@ -165,11 +166,12 @@ defaultClusterResourcePolicy:
   #
   # Requests are sized at avg * 1.25: for a large homogeneous fleet the aggregate
   # pressure is predictable, so sizing at 80% of mean keeps nodes dense while
-  # leaving headroom for normal variation. The memory limit is set at p99 (the
-  # highest usage seen in production) with no headroom — a pod that exceeds p99 is
-  # likely leaking and should be OOMKilled. This yields Burstable QoS (limit >
-  # request), the right class for most production workloads. CPU limits are
-  # intentionally omitted: they cause throttling rather than reclaiming waste.
+  # leaving headroom for normal variation. The memory limit is set at p99 * 1.2:
+  # p99 is the highest usage seen in production, and the 20% headroom absorbs a
+  # normal rare spike while still OOMKilling a pod that runs well past its observed
+  # peak (a likely leak). This yields Burstable QoS (limit > request), the right
+  # class for most production workloads. CPU limits are intentionally omitted:
+  # they cause throttling rather than reclaiming waste.
   metrics:
     - resource: cpu
       field: request
@@ -182,10 +184,11 @@ defaultClusterResourcePolicy:
     - resource: memory
       field: limit
       aggregation: p99
-      headroom: "1.0"
+      headroom: "1.2"
     # Ephemeral-storage entries read from the kubelet Summary API. The request is
-    # sized at p90 (the growth-skewed distribution) and the limit at p99 so the
-    # kubelet evicts a runaway pod before the node hits disk pressure.
+    # sized at p90 (the growth-skewed distribution) and the limit at p99 * 1.2 so
+    # the kubelet evicts a genuine runaway pod before the node hits disk pressure
+    # while tolerating a normal spike above the observed peak.
     - resource: ephemeral-storage
       field: request
       source: kubelet-summary
@@ -195,7 +198,7 @@ defaultClusterResourcePolicy:
       field: limit
       source: kubelet-summary
       aggregation: p99
-      headroom: "1.0"
+      headroom: "1.2"
   readiness:
     # minDataPoints is the minimum number of samples before Ballast will act.
     # Sized against the 5m poll interval above: a single pod running 24h accrues
