@@ -91,9 +91,15 @@ type backoffEntry struct {
 // nodeCacheEntry holds the per-node summary with a mutex that serializes concurrent
 // refreshes for the same node without blocking other nodes.
 type nodeCacheEntry struct {
-	mu        sync.Mutex
+	mu sync.Mutex
+	// fetchTime is when pods were last fetched successfully; it drives the staleness
+	// gate (serve fresh, fall back to stale, or skip).
 	fetchTime time.Time
-	pods      []PodSummary
+	// lastAttempt is when a fetch was last attempted (success or failure). It rate-gates
+	// retries so a failing kubelet is probed at most once per CacheTTL per node, no matter
+	// how many workload identities scrape in a cycle.
+	lastAttempt time.Time
+	pods        []PodSummary
 }
 
 type podKey struct {
@@ -247,11 +253,12 @@ func (p *Plugin) FetchStats(ctx context.Context, id plugin.WorkloadIdentity, _ p
 }
 
 // nodeData returns the pod summaries for nodeName, using the cache when fresh.
-// When the cache is fresh (age < CacheTTL) it is served directly. Otherwise a
-// refresh is always attempted; only if that refresh fails does the staleness gate
-// apply: cached pods are served as a fallback while age < 2*CacheTTL, and the node
-// is skipped (nil, nil) once age >= 2*CacheTTL. A refresh is attempted on every
-// call past CacheTTL, so a node that has recovered always heals on the next scrape.
+// When the cache is fresh (age < CacheTTL) it is served directly. Otherwise a refresh
+// is attempted, rate-gated to at most once per CacheTTL per node so a failing kubelet
+// is not re-hit once per workload every scrape. When a refresh is unavailable (it
+// failed or the gate is closed) the staleness gate applies: cached pods are served
+// while age < 2*CacheTTL, and the node is skipped (nil, nil) once age >= 2*CacheTTL.
+// A recovered node heals within one CacheTTL of the kubelet coming back.
 // Returns a non-nil error only when there is no usable data at all.
 func (p *Plugin) nodeData(ctx context.Context, nodeName string, now time.Time) ([]PodSummary, error) {
 	// Get or lazily create the entry; nodeCacheMu only protects the map, not the
@@ -271,25 +278,45 @@ func (p *Plugin) nodeData(ctx context.Context, nodeName string, now time.Time) (
 		return entry.pods, nil
 	}
 
-	// Cache is stale (or absent): always attempt a refresh. The staleness gate only
-	// governs the fallback path below, so it can never block a node from re-fetching.
+	// Rate-gate refresh attempts: probe a node at most once per CacheTTL, whether the
+	// last attempt succeeded or failed. Without this, a failing kubelet would be re-hit
+	// once per enrolled workload every scrape, since the per-node cache is shared across
+	// workload identities but FetchStats runs per identity.
+	if p.opts.CacheTTL > 0 && !entry.lastAttempt.IsZero() && now.Sub(entry.lastAttempt) < p.opts.CacheTTL {
+		return p.cachedOrSkip(entry, nodeName, now), nil
+	}
+
+	// Cache is stale (or absent) and the retry gate is open: attempt a refresh. The
+	// staleness gate only governs the fallback path, so it can never block a re-fetch.
+	entry.lastAttempt = now
 	s, err := p.fetcher.Fetch(ctx, nodeName)
 	if err != nil {
 		if entry.fetchTime.IsZero() {
 			return nil, err
 		}
-		if age := now.Sub(entry.fetchTime); age >= 2*p.opts.CacheTTL {
-			p.log.Info("skipping node: summary too stale; metrics for this node will be missing",
-				"node", nodeName, "age", age.Round(time.Second), "limit", 2*p.opts.CacheTTL)
-			return nil, nil
-		}
 		p.log.Error(err, "node summary fetch failed; using stale data", "node", nodeName)
-		return entry.pods, nil
+		return p.cachedOrSkip(entry, nodeName, now), nil
 	}
 
 	entry.fetchTime = now
 	entry.pods = s.Pods
 	return s.Pods, nil
+}
+
+// cachedOrSkip decides what to serve when a fresh fetch is unavailable (it failed, or was
+// suppressed by the retry gate). It serves the last successful pods while their age is
+// under 2*CacheTTL, and skips the node (nil) once age reaches 2*CacheTTL. With no prior
+// success there is nothing to serve, so it skips silently.
+func (p *Plugin) cachedOrSkip(entry *nodeCacheEntry, nodeName string, now time.Time) []PodSummary {
+	if entry.fetchTime.IsZero() {
+		return nil
+	}
+	if age := now.Sub(entry.fetchTime); age >= 2*p.opts.CacheTTL {
+		p.log.Info("skipping node: summary too stale; metrics for this node will be missing",
+			"node", nodeName, "age", age.Round(time.Second), "limit", 2*p.opts.CacheTTL)
+		return nil
+	}
+	return entry.pods
 }
 
 // refreshPodLabels fetches all pods cluster-wide and rebuilds the label map when the

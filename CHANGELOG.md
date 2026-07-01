@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`kubeletSummary` could permanently lose a healthy node's metrics after a transient kubelet blip.** Each node's `/stats/summary` is cached per-node (`CacheTTL` 55s); once an entry aged past `2*CacheTTL`, the staleness check returned before attempting any refresh, so `fetchTime` never advanced and the node was skipped forever, emitting `skipping node: summary too stale` on every scrape with an ever-growing `age` even after the kubelet recovered. A refresh is now attempted on every call past `CacheTTL`; the staleness gate only governs whether cached data is served as a fallback when that refresh fails. A node that has recovered heals on the next scrape.
+- **`kubeletSummary` could permanently lose a healthy node's metrics after a transient kubelet blip.** Each node's `/stats/summary` is cached per-node (`CacheTTL` 55s); once an entry aged past `2*CacheTTL`, the staleness check returned before attempting any refresh, so `fetchTime` never advanced and the node was skipped forever, emitting `skipping node: summary too stale` on every scrape with an ever-growing `age` even after the kubelet recovered. A refresh is now attempted whenever the cache is past `CacheTTL`; the staleness gate only governs whether cached data is served as a fallback when that refresh fails. A node that has recovered heals within one `CacheTTL` of the kubelet coming back.
+
+- **`kubeletSummary` had no rate limit on retries against a failing node.** Fetch failures on a previously-cached node return stale data rather than a hard error, so the per-workload backoff never engaged for them. Combined with the recovery fix above, a down kubelet would have been re-probed once per enrolled workload every scrape. Each node now carries a `lastAttempt` timestamp that gates refreshes to at most one probe per `CacheTTL` per node, regardless of how many workload identities scrape in a cycle.
 
 ## [0.2.2] - 2026-07-01
 
