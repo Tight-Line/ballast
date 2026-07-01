@@ -373,6 +373,135 @@ func TestReconcile_CollectAndUpdate(t *testing.T) {
 	}
 }
 
+func TestReconcile_ExcludesInitAndEphemeralContainers(t *testing.T) {
+	ctx := context.Background()
+	tupleLabels := map[string]string{"app": "web"}
+	profile := defaultProfile(tupleLabels)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-abc",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "web"},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app"}},
+			// "init-db" is a run-to-completion init container; "sidecar" is a
+			// restartable-init (native sidecar) that reports live metrics.
+			InitContainers: []corev1.Container{{Name: "init-db"}, {Name: "sidecar"}},
+			EphemeralContainers: []corev1.EphemeralContainer{
+				{EphemeralContainerCommon: corev1.EphemeralContainerCommon{Name: "debugger"}},
+			},
+		},
+	}
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile, pod)
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	_, sc := newMiniredisClient(t)
+	now := time.Now()
+	// The plugin reports samples for every container the metrics API sees, including
+	// the init, sidecar, and ephemeral containers — the collector must drop those.
+	p := &mockPlugin{
+		typeName: "kubernetesMetrics",
+		samples: []plugin.ContainerStats{
+			cpuSample("app", 100, now.Add(-2*time.Second)),
+			cpuSample("app", 200, now.Add(-time.Second)),
+			cpuSample("app", 300, now),
+			cpuSample("init-db", 500, now),
+			cpuSample("sidecar", 500, now),
+			cpuSample("debugger", 500, now),
+		},
+	}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+
+	if _, err := reconcileProfile(t, r, "web"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	tupleHash := store.TupleHash(tupleLabels)
+	appKey := store.MetricKey(tupleHash, "app", "cpu")
+	if count, err := store.SampleCount(ctx, sc, appKey); err != nil {
+		t.Fatalf("SampleCount(app): %v", err)
+	} else if count != 3 {
+		t.Errorf("app sample count: got %d, want 3", count)
+	}
+
+	for _, name := range []string{"init-db", "sidecar", "debugger"} {
+		key := store.MetricKey(tupleHash, name, "cpu")
+		count, err := store.SampleCount(ctx, sc, key)
+		if err != nil {
+			t.Fatalf("SampleCount(%s): %v", name, err)
+		}
+		if count != 0 {
+			t.Errorf("%s sample count: got %d, want 0 (should be excluded from measurement)", name, count)
+		}
+	}
+
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
+		t.Fatalf("Get profile: %v", err)
+	}
+	if len(got.Status.Containers) != 1 {
+		t.Fatalf("status containers: got %d, want 1 (only the app container)", len(got.Status.Containers))
+	}
+	if got.Status.Containers[0].Name != "app" {
+		t.Errorf("status container name: got %q, want %q", got.Status.Containers[0].Name, "app")
+	}
+}
+
+func TestReconcile_ExclusionScopedBySelector(t *testing.T) {
+	ctx := context.Background()
+	// The selector requires "role" to be absent. A pod carrying role=batch is
+	// returned by the server-side app=web filter but rejected client-side, so its
+	// init container must not be treated as an exclusion for this profile.
+	profile := &ballastv1.WorkloadProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: "web"},
+		Status: ballastv1.WorkloadProfileStatus{
+			TupleLabels:    map[string]string{"app": "web"},
+			SelectorLabels: map[string]string{"app": "web", "role": plugin.LabelAbsent},
+		},
+	}
+	matchingPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "web-1", Namespace: "default", Labels: map[string]string{"app": "web"}},
+		Spec:       corev1.PodSpec{InitContainers: []corev1.Container{{Name: "web-init"}}},
+	}
+	otherPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "batch-1", Namespace: "default", Labels: map[string]string{"app": "web", "role": "batch"}},
+		Spec:       corev1.PodSpec{InitContainers: []corev1.Container{{Name: "batch-init"}}},
+	}
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile, matchingPod, otherPod)
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	_, sc := newMiniredisClient(t)
+	now := time.Now()
+	p := &mockPlugin{
+		typeName: "kubernetesMetrics",
+		samples: []plugin.ContainerStats{
+			cpuSample("web-init", 100, now),
+			cpuSample("batch-init", 100, now),
+		},
+	}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+	if _, err := reconcileProfile(t, r, "web"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	tupleHash := store.TupleHash(profile.Status.TupleLabels)
+	if count, err := store.SampleCount(ctx, sc, store.MetricKey(tupleHash, "web-init", "cpu")); err != nil {
+		t.Fatalf("SampleCount(web-init): %v", err)
+	} else if count != 0 {
+		t.Errorf("web-init: got %d samples, want 0 (init container of a matching pod is excluded)", count)
+	}
+	if count, err := store.SampleCount(ctx, sc, store.MetricKey(tupleHash, "batch-init", "cpu")); err != nil {
+		t.Fatalf("SampleCount(batch-init): %v", err)
+	} else if count != 1 {
+		t.Errorf("batch-init: got %d samples, want 1 (pod not matched by selector, so not an exclusion)", count)
+	}
+}
+
 func TestReconcile_ReadinessNotMet(t *testing.T) {
 	ctx := context.Background()
 	// Policy requires 100 data points — we'll only send 1.

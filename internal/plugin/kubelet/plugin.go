@@ -331,26 +331,11 @@ func (p *Plugin) filterPodsByLabels(pods []PodSummary, selectorLabels map[string
 	out := make([]PodSummary, 0, len(pods))
 	for _, pod := range pods {
 		podLabels := p.podLabels[podKey{Namespace: pod.PodRef.Namespace, Name: pod.PodRef.Name}]
-		if podMatchesSelector(podLabels, selectorLabels) {
+		if plugin.MatchesSelector(podLabels, selectorLabels) {
 			out = append(out, pod)
 		}
 	}
 	return out
-}
-
-func podMatchesSelector(podLabels, selectorLabels map[string]string) bool {
-	for k, v := range selectorLabels {
-		if v == plugin.LabelAbsent {
-			if _, present := podLabels[k]; present {
-				return false
-			}
-		} else {
-			if podLabels[k] != v {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 // collectStats builds ContainerStats entries from matching pod summaries.
