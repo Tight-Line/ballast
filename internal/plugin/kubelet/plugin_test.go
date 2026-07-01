@@ -450,6 +450,59 @@ func TestFetchStats_VeryStaleCache_SkipsNode(t *testing.T) {
 	}
 }
 
+// TestFetchStats_VeryStaleCache_RecoversWhenFetcherHeals is a regression test for a
+// cache-lockout bug: once a node's cache aged past 2*CacheTTL, the staleness check
+// used to return before attempting any refresh, so fetchTime never advanced and the
+// node was skipped forever even after the kubelet recovered. A refresh must be
+// attempted on every call past CacheTTL, so a healed node heals on the next scrape.
+func TestFetchStats_VeryStaleCache_RecoversWhenFetcherHeals(t *testing.T) {
+	nodes := &fakeNodeLister{nodes: []corev1.Node{node("n1")}}
+	pods := &fakePodLister{pods: []corev1.Pod{
+		pod("default", "web-1", map[string]string{"app": "web"}),
+	}}
+	summary := map[string]*kplugin.NodeSummary{
+		"n1": {Pods: []kplugin.PodSummary{
+			{PodRef: kplugin.PodRef{Namespace: "default", Name: "web-1"},
+				EphemeralStorage: &kplugin.StorageStats{UsedBytes: usedBytes(999)},
+				Containers:       []kplugin.ContainerRef{{Name: "app"}}},
+		}},
+	}
+	fetcher := &fakeSummaryFetcher{summaries: summary}
+	p := kplugin.NewWithDeps(nodes, pods, fetcher,
+		kplugin.Options{MaxBackoff: 10 * time.Second, CacheTTL: time.Millisecond},
+		logr.Discard())
+	id := plugin.WorkloadIdentity{Labels: map[string]string{"app": "web"}}
+
+	// Populate cache.
+	if _, err := p.FetchStats(context.Background(), id, plugin.TimeWindow{}); err != nil {
+		t.Fatalf("initial call: %v", err)
+	}
+
+	// Let the cache age past 2*CacheTTL while the fetcher is failing, so the node is
+	// skipped and (under the old logic) its cache entry would be frozen forever.
+	time.Sleep(10 * time.Millisecond)
+	fetcher.err = errors.New("kubelet unreachable")
+	fetcher.summaries = nil
+	stats, err := p.FetchStats(context.Background(), id, plugin.TimeWindow{})
+	if err != nil {
+		t.Fatalf("expected skipped node (no error) while stale and failing, got: %v", err)
+	}
+	if len(stats) != 0 {
+		t.Fatalf("expected node skipped while very stale and failing, got %d stats", len(stats))
+	}
+
+	// The kubelet recovers. The very next scrape must re-fetch and return fresh data.
+	fetcher.err = nil
+	fetcher.summaries = summary
+	stats, err = p.FetchStats(context.Background(), id, plugin.TimeWindow{})
+	if err != nil {
+		t.Fatalf("expected recovery after fetcher healed, got error: %v", err)
+	}
+	if len(stats) != 1 {
+		t.Errorf("expected node to recover with 1 stat entry once fetcher healed, got %d", len(stats))
+	}
+}
+
 func TestFetchStats_BackoffReset(t *testing.T) {
 	nodes := &fakeNodeLister{err: errors.New("fail")}
 	pods := &fakePodLister{}
