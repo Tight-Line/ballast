@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-07-01
+
 ### Added
 
 - **`ballast.profiles` gauge for profile-count and by-business-unit dashboards.** A new observable gauge emits a value of `1` per `WorkloadProfile`, carrying that profile's identity-tuple label values as attributes plus a `state` attribute (`accruing` until the profile meets its threshold, then `ready`). Totals aggregate by count; grouping by a tuple attribute (e.g. `business_unit`) breaks the fleet down by that dimension. The gauge reads the controller cache at collection time, so it is always a fresh snapshot with no counter drift.
