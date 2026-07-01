@@ -51,6 +51,15 @@ spec:
         - --redis-url={{ include "ballast.redisURL" . }}
         - --log-level={{ .Values.logging.level }}
         - --log-format={{ .Values.logging.format }}
+        {{- if not .Values.logging.stdout.enabled }}
+        - --log-stdout=false
+        {{- end }}
+        {{- with .Values.logging.stdout.additionalKeys }}
+        - {{ printf "--log-stdout-fields=%s" (toJson .) | quote }}
+        {{- end }}
+        {{- if and .Values.telemetry.otel.enabled (not .Values.logging.otel.enabled) }}
+        - --log-otel-enabled=false
+        {{- end }}
         {{- with .Values.logging.webhook }}
         - --log-level-webhook={{ . }}
         {{- end }}

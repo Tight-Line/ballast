@@ -127,6 +127,15 @@ func run() int {
 	flag.StringVar(&logLevelAdjuster, "log-level-adjuster", "", "Log level for the resource adjuster component.")
 	flag.StringVar(&logFormat, "log-format", "json", "Log output format (json|text).")
 
+	var logStdout, logOTLPEnabled bool
+	var logStdoutFields string
+	flag.BoolVar(&logStdout, "log-stdout", true,
+		"Write logs to stderr (the human-facing/stdout path). Set false to ship logs only via OTLP.")
+	flag.StringVar(&logStdoutFields, "log-stdout-fields", "",
+		`JSON object of static fields added to stdout log lines only, e.g. '{"otlp":true}'. Never sent on the OTLP path.`)
+	flag.BoolVar(&logOTLPEnabled, "log-otel-enabled", true,
+		"Ship logs to the OTLP endpoint given by --otel-metrics-endpoint (no effect when that endpoint is empty).")
+
 	var operatorNamespace string
 	flag.StringVar(&operatorNamespace, "operator-namespace", getEnvOrDefault("POD_NAMESPACE", "ballast-system"),
 		"Namespace where the operator is running (used for kill-switch ConfigMap watch).")
@@ -137,7 +146,42 @@ func run() int {
 
 	flag.Parse()
 
-	ctrl.SetLogger(logger.New("setup", logLevel, logFormat))
+	stdoutFields, err := logger.ParseFields(logStdoutFields)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid --log-stdout-fields: %v\n", err)
+		return 1
+	}
+
+	// Logs share the metrics OTLP endpoint. Export only when the endpoint is set
+	// and log export is not explicitly disabled.
+	logOTLPEndpoint := ""
+	if logOTLPEnabled {
+		logOTLPEndpoint = otelEndpoint
+	}
+	logProvider, shutdownLogs, err := logger.SetupLoggerProvider(context.Background(), logger.ProviderConfig{
+		OTLPEndpoint: logOTLPEndpoint,
+		OTLPProtocol: otelProtocol,
+		OTLPInsecure: otelInsecure,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to set up log provider: %v\n", err)
+		return 1
+	}
+	defer func() { _ = shutdownLogs(context.Background()) }()
+
+	logOpts := logger.Options{
+		Component:    "setup",
+		Level:        logLevel,
+		Format:       logFormat,
+		Stdout:       logStdout,
+		StdoutFields: stdoutFields,
+	}
+	// Guard the nil-interface trap: a typed-nil *LoggerProvider stored in the
+	// interface would read as non-nil, so only set it when a provider exists.
+	if logProvider != nil {
+		logOpts.LoggerProvider = logProvider
+	}
+	ctrl.SetLogger(logger.New(logOpts))
 
 	// Disable HTTP/2 by default to avoid stream cancellation and rapid reset CVEs.
 	disableHTTP2 := func(c *tls.Config) {
