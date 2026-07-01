@@ -14,6 +14,7 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // Options configures the logger built by New.
@@ -23,8 +24,15 @@ type Options struct {
 	Component string
 
 	// Level is one of "debug", "info", "warn", "error" (defaults to "info"). It
-	// gates both the stdout and OTLP paths.
+	// gates both the stdout and OTLP paths for any component without an override.
 	Level string
+
+	// LevelOverrides sets per-component log levels keyed by a substring of the
+	// logger name (e.g. "webhook", "watcher", "collector", "adjuster"). A log
+	// entry whose logger name contains a key is gated by that key's level;
+	// entries matching no key use Level. Empty values are ignored. Name each
+	// controller's logger with ControllerLogConstructor so these keys match.
+	LevelOverrides map[string]string
 
 	// Format is "json" or "text" (defaults to "json"). Applies to the stdout path.
 	Format string
@@ -52,6 +60,10 @@ func New(opts Options) logr.Logger {
 }
 
 func newWithWriter(opts Options, w io.Writer) logr.Logger {
+	levels := newComponentLevels(opts.Level, opts.LevelOverrides)
+
+	// Inner cores are enabled at every level; the componentLevelCore below does
+	// the real gating so it can vary the floor per logger name.
 	var cores []zapcore.Core
 
 	if opts.Stdout {
@@ -63,7 +75,7 @@ func newWithWriter(opts Options, w io.Writer) logr.Logger {
 			cfg.EncodeTime = zapcore.ISO8601TimeEncoder
 			encoder = zapcore.NewJSONEncoder(cfg)
 		}
-		core := zapcore.NewCore(encoder, zapcore.AddSync(w), parseLevel(opts.Level))
+		core := zapcore.NewCore(encoder, zapcore.AddSync(w), zapcore.DebugLevel)
 		if fields := zapFields(opts.StdoutFields); len(fields) > 0 {
 			core = core.With(fields)
 		}
@@ -71,20 +83,26 @@ func newWithWriter(opts Options, w io.Writer) logr.Logger {
 	}
 
 	if opts.LoggerProvider != nil {
-		// The bridge core enables every level and delegates filtering to the SDK,
-		// so gate it to the same floor as stdout. NewIncreaseLevelCore only errors
-		// when it would lower a core's level; since the bridge enables all levels,
-		// raising to parseLevel(opts.Level) never errors.
-		otelCore := otelzap.NewCore(opts.Component, otelzap.WithLoggerProvider(opts.LoggerProvider))
-		leveled, err := zapcore.NewIncreaseLevelCore(otelCore, parseLevel(opts.Level))
-		if err != nil { // coverage:ignore - bridge core enables all levels, so raising the floor never errors
-			leveled = otelCore
-		}
-		cores = append(cores, leveled)
+		cores = append(cores, otelzap.NewCore(opts.Component, otelzap.WithLoggerProvider(opts.LoggerProvider)))
 	}
 
-	z := zap.New(zapcore.NewTee(cores...))
+	gated := componentLevelCore{Core: zapcore.NewTee(cores...), levels: levels}
+	z := zap.New(gated)
 	return zapr.NewLogger(z).WithName(opts.Component)
+}
+
+// ControllerLogConstructor returns a controller-runtime LogConstructor that
+// names the reconcile logger after component so per-component level overrides
+// (see Options.LevelOverrides) match. It preserves the request's namespace/name
+// fields that controller-runtime normally adds.
+func ControllerLogConstructor(base logr.Logger, component string) func(*reconcile.Request) logr.Logger {
+	named := base.WithName(component)
+	return func(req *reconcile.Request) logr.Logger {
+		if req == nil {
+			return named
+		}
+		return named.WithValues("namespace", req.Namespace, "name", req.Name)
+	}
 }
 
 // ParseFields decodes a JSON object of static log fields (as passed via
@@ -117,6 +135,76 @@ func zapFields(m map[string]any) []zapcore.Field {
 		fields = append(fields, zap.Any(k, m[k]))
 	}
 	return fields
+}
+
+// componentLevel pairs a logger-name substring with its log level.
+type componentLevel struct {
+	name  string
+	level zapcore.Level
+}
+
+// componentLevels resolves the effective log level for a logger name: the first
+// matching override wins, otherwise the default level applies.
+type componentLevels struct {
+	def       zapcore.Level
+	min       zapcore.Level
+	overrides []componentLevel
+}
+
+func newComponentLevels(def string, overrides map[string]string) componentLevels {
+	d := parseLevel(def)
+	cl := componentLevels{def: d, min: d}
+	keys := make([]string, 0, len(overrides))
+	for k := range overrides {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := overrides[k]
+		if v == "" {
+			continue
+		}
+		lvl := parseLevel(v)
+		cl.overrides = append(cl.overrides, componentLevel{name: k, level: lvl})
+		if lvl < cl.min {
+			cl.min = lvl
+		}
+	}
+	return cl
+}
+
+func (c componentLevels) levelFor(name string) zapcore.Level {
+	for _, o := range c.overrides {
+		if strings.Contains(name, o.name) {
+			return o.level
+		}
+	}
+	return c.def
+}
+
+// componentLevelCore gates entries by a per-logger-name level before delegating
+// to the wrapped core. It lets a single core apply different level floors to
+// different components (keyed on the entry's logger name).
+type componentLevelCore struct {
+	zapcore.Core
+	levels componentLevels
+}
+
+func (c componentLevelCore) Enabled(l zapcore.Level) bool {
+	// Enabled has no logger name, so answer conservatively: enabled if any
+	// component would log at this level. Check does the precise per-name gating.
+	return l >= c.levels.min
+}
+
+func (c componentLevelCore) With(fields []zapcore.Field) zapcore.Core {
+	return componentLevelCore{Core: c.Core.With(fields), levels: c.levels}
+}
+
+func (c componentLevelCore) Check(ent zapcore.Entry, ce *zapcore.CheckedEntry) *zapcore.CheckedEntry {
+	if ent.Level < c.levels.levelFor(ent.LoggerName) {
+		return ce
+	}
+	return c.Core.Check(ent, ce)
 }
 
 func parseLevel(level string) zapcore.Level {

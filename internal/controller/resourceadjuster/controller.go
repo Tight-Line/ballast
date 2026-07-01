@@ -24,6 +24,7 @@ import (
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
 	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/logger"
 	"github.com/tight-line/ballast/internal/metrics"
 	"github.com/tight-line/ballast/internal/policy"
 )
@@ -72,6 +73,7 @@ func Setup(mgr ctrl.Manager, ks *killswitch.KillSwitch, dryRunResize bool, rec *
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("resourceadjuster").
+		WithLogConstructor(logger.ControllerLogConstructor(mgr.GetLogger(), "resourceadjuster")).
 		For(&ballastv1.WorkloadProfile{}).
 		Complete(r)
 }

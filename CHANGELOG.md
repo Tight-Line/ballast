@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Corresponding operator flags: `--log-stdout`, `--log-stdout-fields` (a JSON object), and `--log-otel-enabled`.
 
+### Fixed
+
+- **Per-component log-level overrides had no effect.** The `logging.webhook/watcher/collector/adjuster` values (and their `--log-level-*` flags) were parsed but never applied, so every component logged at the global `logging.level`. The logger now gates each entry by a per-component level keyed on the logger name, and each controller's reconcile logger is named accordingly, so e.g. `logging.collector: debug` lowers only the metrics collector's verbosity. (Naming the controller loggers drops the `controllerGroup`/`controllerKind` fields controller-runtime added by default; `namespace`/`name` are retained.)
+
 ## [0.2.3] - 2026-07-01
 
 ### Changed
