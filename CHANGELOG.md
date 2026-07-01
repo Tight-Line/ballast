@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **OTel log export.** Ballast now ships its logs to an OTLP collector in addition to (or instead of) stdout. Log export reuses the existing `telemetry.otel` endpoint/protocol/insecure settings, so enabling OTel for metrics also ships logs by default; each structured log key is promoted to a top-level OTel log-record attribute. Set `logging.otel.enabled: false` to keep metrics on OTLP but not logs. New knobs under `logging`:
+  - `logging.stdout.enabled` (default `true`) writes logs to stderr; set `false` to ship only via OTLP.
+  - `logging.stdout.additionalKeys` (default `{}`) adds static key/values to stdout JSON lines only, never to the OTLP path. For example `additionalKeys: {otlp: true}` lets a stdout log collector skip lines already exported over OTLP and avoid double-ingesting them. This is intentionally not a Ballast default.
+  - `logging.otel.enabled` (default `true`) ships logs to the configured OTLP collector when `telemetry.otel.enabled` is true.
+
+  Corresponding operator flags: `--log-stdout`, `--log-stdout-fields` (a JSON object), and `--log-otel-enabled`.
+
 ## [0.2.3] - 2026-07-01
 
 ### Changed

@@ -36,6 +36,26 @@ logging:
   collector: ""
   adjuster: ""
   format: json
+  # stdout controls the human-facing log stream written to the container's
+  # stderr (the stream a node/stdout log collector scrapes).
+  stdout:
+    # enabled writes logs to stderr. Set false to ship logs only via OTLP.
+    enabled: true
+    # additionalKeys are static key/value pairs added to every stdout log line
+    # only; they are never sent on the OTLP path. Empty by default. Example:
+    #   additionalKeys:
+    #     otlp: true
+    # so a stdout log collector can skip lines already exported via OTLP and
+    # avoid double-ingesting them. This is deliberately not a Ballast default.
+    additionalKeys: {}
+  # otel ships logs to the OTLP collector configured under telemetry.otel, with
+  # each structured log key promoted to a top-level OTel log-record attribute.
+  # It shares telemetry.otel's endpoint/protocol/insecure settings and has no
+  # effect unless telemetry.otel.enabled is true. Left on by default so enabling
+  # OTel (for metrics) also ships logs; set enabled: false to keep metrics on
+  # OTLP but not logs.
+  otel:
+    enabled: true
 
 dryRun:
   measure: false
