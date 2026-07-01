@@ -91,16 +91,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err // coverage:ignore - transient API error
 	}
 
+	pid := metrics.ProfileID{Name: profile.Name, Labels: profile.Status.TupleLabels}
+
 	if r.ks.IsActive() {
 		log.Info("kill switch active, skipping resize",
 			"kill_switch", true, "kill_switch_reason", r.ks.Reason(), "profile", profile.Name)
-		r.rec.ResizeSkipped(ctx, "kill_switch", profile.Name)
+		r.rec.ResizeSkipped(ctx, "kill_switch", pid)
 		return ctrl.Result{RequeueAfter: defaultResizeInterval}, nil
 	}
 
 	if !profile.Status.MeetsThreshold {
 		log.V(1).Info("profile does not meet threshold, skipping resize", "profile", profile.Name)
-		r.rec.ResizeSkipped(ctx, "not_ready", profile.Name)
+		r.rec.ResizeSkipped(ctx, "not_ready", pid)
 		return ctrl.Result{RequeueAfter: defaultResizeInterval}, nil
 	}
 
@@ -110,7 +112,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if resolved == nil {
 		log.Info("no policy matches profile, skipping resize", "profile", profile.Name)
-		r.rec.ResizeSkipped(ctx, "no_policy", profile.Name)
+		r.rec.ResizeSkipped(ctx, "no_policy", pid)
 		return ctrl.Result{RequeueAfter: defaultResizeInterval}, nil
 	}
 
@@ -164,10 +166,12 @@ func wantsResize(ann map[string]string) bool {
 func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile *ballastv1.WorkloadProfile, behaviors ballastv1.BehaviorConfig, interval time.Duration, policyName string) error {
 	log := ctrl.LoggerFrom(ctx)
 
+	pid := metrics.ProfileID{Name: profile.Name, Labels: profile.Status.TupleLabels}
+
 	if last, ok := pod.Annotations[AnnotationLastResize]; ok {
 		if t, err := time.Parse(time.RFC3339, last); err == nil && time.Since(t) < interval {
 			log.V(1).Info("resize cooldown active, skipping", "pod", pod.Name, "namespace", pod.Namespace, "next_resize", t.Add(interval))
-			r.rec.ResizeSkipped(ctx, "cooldown", profile.Name)
+			r.rec.ResizeSkipped(ctx, "cooldown", pid)
 			return nil
 		}
 	}
@@ -175,7 +179,7 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 	recsByName := containerRecsByName(profile)
 	adjustments := computeAdjustments(pod, recsByName, behaviors)
 	if len(adjustments) == 0 {
-		r.rec.ResizeSkipped(ctx, "no_drift", profile.Name)
+		r.rec.ResizeSkipped(ctx, "no_drift", pid)
 		return nil
 	}
 
@@ -183,20 +187,20 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 
 	if r.dryRunResize {
 		log.Info("dry-run: would resize pod", append(logFields, "dry_run", true)...)
-		r.rec.ResizeSkipped(ctx, "dry_run", profile.Name)
+		r.rec.ResizeSkipped(ctx, "dry_run", pid)
 		return nil
 	}
 
 	if err := r.ResizePod(ctx, pod, adjustments); err != nil {
 		log.Error(err, "resize failed, marking pod blocked", logFields...)
-		r.rec.ResizeFailed(ctx, profile.Name, policyName, pod.Namespace)
+		r.rec.ResizeFailed(ctx, pid, policyName, pod.Namespace)
 		r.emitEvent(ctx, pod, corev1.EventTypeWarning, "ResizeBlocked",
 			fmt.Sprintf("in-place resize failed: %v", err))
 		return r.stampPodAnnotation(ctx, pod, AnnotationResizeBlocked, "true")
 	}
 
 	log.Info("resize applied", logFields...)
-	r.rec.ResizeApplied(ctx, profile.Name, policyName, pod.Namespace)
+	r.rec.ResizeApplied(ctx, pid, policyName, pod.Namespace)
 	r.emitEvent(ctx, pod, corev1.EventTypeNormal, "Resized", "in-place resize applied by Ballast")
 	return r.stampPodAnnotation(ctx, pod, AnnotationLastResize, metav1.Now().UTC().Format(time.RFC3339))
 }

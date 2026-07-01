@@ -62,7 +62,7 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 
 	if m.ks.IsActive() {
 		log.Info("kill switch active, skipping mutation", "reason", m.ks.Reason())
-		m.rec.WebhookMutation(ctx, "kill_switch", req.Namespace, "")
+		m.rec.WebhookMutation(ctx, "kill_switch", req.Namespace, metrics.ProfileID{})
 		return admission.Allowed("kill switch active")
 	}
 
@@ -78,11 +78,11 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 	profile, ok, err := m.resolveApplyProfile(ctx, &pod)
 	if err != nil {
 		log.V(1).Info("profile resolution error, allowing without mutation", "err", err)
-		m.rec.WebhookMutation(ctx, "not_available", req.Namespace, "")
+		m.rec.WebhookMutation(ctx, "not_available", req.Namespace, metrics.ProfileID{})
 		return admission.Allowed("profile not available")
 	}
 	if !ok {
-		m.rec.WebhookMutation(ctx, "skipped", req.Namespace, "")
+		m.rec.WebhookMutation(ctx, "skipped", req.Namespace, metrics.ProfileID{})
 		return admission.Allowed("apply not active or profile not ready")
 	}
 
@@ -129,12 +129,14 @@ func (m *PodMutator) mutate(ctx context.Context, pod *corev1.Pod, profile *balla
 	applied := applyRecommendations(modifiedPod, profile)
 	log.Info("applying resource recommendations", "dry_run", m.dryRunApply, "containers", applied)
 
+	pid := metrics.ProfileID{Name: profile.Name, Labels: profile.Status.TupleLabels}
+
 	if m.dryRunApply {
-		m.rec.WebhookMutation(ctx, "dry_run", pod.Namespace, profile.Name)
+		m.rec.WebhookMutation(ctx, "dry_run", pod.Namespace, pid)
 		return admission.Allowed("dry-run: apply suppressed")
 	}
 
-	m.rec.WebhookMutation(ctx, "mutated", pod.Namespace, profile.Name)
+	m.rec.WebhookMutation(ctx, "mutated", pod.Namespace, pid)
 	return patchResponse(pod, modifiedPod)
 }
 

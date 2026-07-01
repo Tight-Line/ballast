@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ballast.profiles` gauge for profile-count and by-business-unit dashboards.** A new observable gauge emits a value of `1` per `WorkloadProfile`, carrying that profile's identity-tuple label values as attributes plus a `state` attribute (`accruing` until the profile meets its threshold, then `ready`). Totals aggregate by count; grouping by a tuple attribute (e.g. `business_unit`) breaks the fleet down by that dimension. The gauge reads the controller cache at collection time, so it is always a fresh snapshot with no counter drift.
+
+- **Identity-tuple label values are now emitted as metric attributes.** Every profile-scoped metric (`samples.collected`, `fetch.errors`, `profiles.threshold_met`, `pods.processed`, `workload_profiles.created`/`purged`, `resize.applied`/`failed`/`skipped`, `webhook.mutations`) now carries one attribute per identity-tuple label. Each attribute key is the label's suffix (the segment after the last `/`) sanitized to `[a-z0-9_]` — e.g. `example.com/business-unit` becomes `business_unit` and `app.kubernetes.io/name` becomes `name`. If two labels would sanitize to the same suffix, the colliding ones fall back to their sanitized fully-qualified key so no attribute is dropped.
+
+### Fixed
+
+- **`ballast.samples.collected` was dead — it had no production caller and always read zero.** The counter is now incremented once per metric sample successfully written to the store (never on a write failure or in `--dry-run-measure`), carrying `source`, `resource`, `container`, and the profile's identity-tuple attributes.
+
+### Changed
+
+- **The `profile` attribute is now the readable profile name across all metrics.** `samples.collected` and `fetch.errors` previously carried the opaque tuple hash in place of a profile identifier; they now emit the same human-readable `profile` name as every other metric, alongside the identity-tuple attributes.
+
 ## [0.2.4] - 2026-07-01
 
 ### Added

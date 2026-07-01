@@ -137,10 +137,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	now := time.Now()
 	tupleHash := store.TupleHash(profile.Status.TupleLabels)
+	pid := metrics.ProfileID{Name: profile.Name, Labels: profile.Status.TupleLabels}
 
 	excluded := r.excludedContainerNames(ctx, profile.Status.SelectorLabels)
 
-	observed, err := r.collectAllSamples(ctx, tupleHash, profile.Status.SelectorLabels, now, sources, excluded)
+	observed, err := r.collectAllSamples(ctx, tupleHash, pid, profile.Status.SelectorLabels, now, sources, excluded)
 	if err != nil { // coverage:ignore - Redis error
 		return ctrl.Result{}, err
 	}
@@ -157,7 +158,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	if allReady && !profile.Status.MeetsThreshold {
-		r.rec.ProfileThresholdMet(ctx, profile.Name, resolved.Name)
+		r.rec.ProfileThresholdMet(ctx, pid, resolved.Name)
 	}
 	base := profile.DeepCopy()
 	profile.Status.Containers = containerProfiles
@@ -183,6 +184,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func (r *Reconciler) collectAllSamples(
 	ctx context.Context,
 	tupleHash string,
+	pid metrics.ProfileID,
 	selectorLabels map[string]string,
 	now time.Time,
 	sources map[string]*ballastv1.MetricsSource,
@@ -199,7 +201,7 @@ func (r *Reconciler) collectAllSamples(
 			continue
 		}
 
-		additional, err := r.collectFromSource(ctx, tupleHash, selectorLabels, now, sourceName, ms, p, excluded)
+		additional, err := r.collectFromSource(ctx, tupleHash, pid, selectorLabels, now, sourceName, ms, p, excluded)
 		if err != nil { // coverage:ignore - Redis error
 			return nil, err
 		}
@@ -223,6 +225,7 @@ func (r *Reconciler) collectAllSamples(
 func (r *Reconciler) collectFromSource(
 	ctx context.Context,
 	tupleHash string,
+	pid metrics.ProfileID,
 	selectorLabels map[string]string,
 	now time.Time,
 	sourceName string,
@@ -238,7 +241,7 @@ func (r *Reconciler) collectFromSource(
 		plugin.TimeWindow{End: now})
 	if err != nil {
 		log.Error(err, "FetchStats failed", "source", sourceName)
-		r.rec.FetchError(ctx, sourceName, tupleHash)
+		r.rec.FetchError(ctx, sourceName, pid)
 		return observed, nil
 	}
 
@@ -261,6 +264,7 @@ func (r *Reconciler) collectFromSource(
 		if err := r.writeSample(ctx, tupleHash, ms, s); err != nil { // coverage:ignore - Redis error
 			return nil, err
 		}
+		r.rec.SampleCollected(ctx, sourceName, s.Resource, s.ContainerName, pid)
 	}
 
 	return observed, nil
