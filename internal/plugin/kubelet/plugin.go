@@ -247,8 +247,11 @@ func (p *Plugin) FetchStats(ctx context.Context, id plugin.WorkloadIdentity, _ p
 }
 
 // nodeData returns the pod summaries for nodeName, using the cache when fresh.
-// On refresh failure it falls back to stale data if age < 2*CacheTTL, logging a
-// warning. When age >= 2*CacheTTL it logs a warning and skips the node (nil, nil).
+// When the cache is fresh (age < CacheTTL) it is served directly. Otherwise a
+// refresh is always attempted; only if that refresh fails does the staleness gate
+// apply: cached pods are served as a fallback while age < 2*CacheTTL, and the node
+// is skipped (nil, nil) once age >= 2*CacheTTL. A refresh is attempted on every
+// call past CacheTTL, so a node that has recovered always heals on the next scrape.
 // Returns a non-nil error only when there is no usable data at all.
 func (p *Plugin) nodeData(ctx context.Context, nodeName string, now time.Time) ([]PodSummary, error) {
 	// Get or lazily create the entry; nodeCacheMu only protects the map, not the
@@ -264,28 +267,24 @@ func (p *Plugin) nodeData(ctx context.Context, nodeName string, now time.Time) (
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	if p.opts.CacheTTL > 0 && !entry.fetchTime.IsZero() {
-		age := now.Sub(entry.fetchTime)
+	if p.opts.CacheTTL > 0 && !entry.fetchTime.IsZero() && now.Sub(entry.fetchTime) < p.opts.CacheTTL {
+		return entry.pods, nil
+	}
 
-		if age >= 2*p.opts.CacheTTL {
+	// Cache is stale (or absent): always attempt a refresh. The staleness gate only
+	// governs the fallback path below, so it can never block a node from re-fetching.
+	s, err := p.fetcher.Fetch(ctx, nodeName)
+	if err != nil {
+		if entry.fetchTime.IsZero() {
+			return nil, err
+		}
+		if age := now.Sub(entry.fetchTime); age >= 2*p.opts.CacheTTL {
 			p.log.Info("skipping node: summary too stale; metrics for this node will be missing",
 				"node", nodeName, "age", age.Round(time.Second), "limit", 2*p.opts.CacheTTL)
 			return nil, nil
 		}
-
-		if age < p.opts.CacheTTL {
-			return entry.pods, nil
-		}
-		// age in [CacheTTL, 2*CacheTTL): attempt refresh, fall back to stale on error.
-	}
-
-	s, err := p.fetcher.Fetch(ctx, nodeName)
-	if err != nil {
-		if !entry.fetchTime.IsZero() {
-			p.log.Error(err, "node summary fetch failed; using stale data", "node", nodeName)
-			return entry.pods, nil
-		}
-		return nil, err
+		p.log.Error(err, "node summary fetch failed; using stale data", "node", nodeName)
+		return entry.pods, nil
 	}
 
 	entry.fetchTime = now
