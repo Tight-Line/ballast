@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,20 +48,44 @@ func (f *fakePodLister) List(_ context.Context, _ metav1.ListOptions) (*corev1.P
 }
 
 type fakeSummaryFetcher struct {
+	mu sync.Mutex
 	// summaries maps nodeName -> summary to return (nil = not found)
 	summaries map[string]*kplugin.NodeSummary
 	err       error
+	// calls counts Fetch invocations per node (guarded by mu; FetchStats fans out
+	// to nodes concurrently).
+	calls map[string]int
 }
 
 func (f *fakeSummaryFetcher) Fetch(_ context.Context, nodeName string) (*kplugin.NodeSummary, error) {
-	if f.err != nil {
-		return nil, f.err
+	f.mu.Lock()
+	if f.calls == nil {
+		f.calls = make(map[string]int)
 	}
+	f.calls[nodeName]++
+	err := f.err
 	s, ok := f.summaries[nodeName]
+	f.mu.Unlock()
+
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return &kplugin.NodeSummary{}, nil
 	}
 	return s, nil
+}
+
+func (f *fakeSummaryFetcher) callCount(nodeName string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls[nodeName]
+}
+
+func (f *fakeSummaryFetcher) setErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
 }
 
 // ---- helpers ----
@@ -491,7 +516,10 @@ func TestFetchStats_VeryStaleCache_RecoversWhenFetcherHeals(t *testing.T) {
 		t.Fatalf("expected node skipped while very stale and failing, got %d stats", len(stats))
 	}
 
-	// The kubelet recovers. The very next scrape must re-fetch and return fresh data.
+	// The kubelet recovers. Wait past CacheTTL so the retry gate is open again, then the
+	// next scrape must re-fetch and return fresh data even though the cache is still very
+	// stale (the recovery path the lockout bug prevented).
+	time.Sleep(2 * time.Millisecond)
 	fetcher.err = nil
 	fetcher.summaries = summary
 	stats, err = p.FetchStats(context.Background(), id, plugin.TimeWindow{})
@@ -500,6 +528,98 @@ func TestFetchStats_VeryStaleCache_RecoversWhenFetcherHeals(t *testing.T) {
 	}
 	if len(stats) != 1 {
 		t.Errorf("expected node to recover with 1 stat entry once fetcher healed, got %d", len(stats))
+	}
+}
+
+// TestFetchStats_FailingNode_RetryGatedPerCacheTTL asserts the per-node retry gate: when a
+// node's kubelet is failing, repeated FetchStats calls (as happens once per enrolled
+// workload identity every scrape) must not each re-probe the kubelet. Within one CacheTTL
+// the failing node is fetched at most once; a new probe is only allowed after CacheTTL.
+func TestFetchStats_FailingNode_RetryGatedPerCacheTTL(t *testing.T) {
+	nodes := &fakeNodeLister{nodes: []corev1.Node{node("n1")}}
+	pods := &fakePodLister{pods: []corev1.Pod{
+		pod("default", "web-1", map[string]string{"app": "web"}),
+	}}
+	summary := map[string]*kplugin.NodeSummary{
+		"n1": {Pods: []kplugin.PodSummary{
+			{PodRef: kplugin.PodRef{Namespace: "default", Name: "web-1"},
+				EphemeralStorage: &kplugin.StorageStats{UsedBytes: usedBytes(999)},
+				Containers:       []kplugin.ContainerRef{{Name: "app"}}},
+		}},
+	}
+	fetcher := &fakeSummaryFetcher{summaries: summary}
+	// CacheTTL=50ms: short enough to go stale via a sleep, long enough that the burst of
+	// calls below all completes within one TTL window.
+	p := kplugin.NewWithDeps(nodes, pods, fetcher,
+		kplugin.Options{MaxBackoff: 10 * time.Second, CacheTTL: 50 * time.Millisecond},
+		logr.Discard())
+	id := plugin.WorkloadIdentity{Labels: map[string]string{"app": "web"}}
+
+	// Populate the cache (fetch #1), then let the kubelet start failing.
+	if _, err := p.FetchStats(context.Background(), id, plugin.TimeWindow{}); err != nil {
+		t.Fatalf("initial call: %v", err)
+	}
+	if got := fetcher.callCount("n1"); got != 1 {
+		t.Fatalf("expected 1 fetch after populating cache, got %d", got)
+	}
+	fetcher.setErr(errors.New("kubelet unreachable"))
+
+	// Let the cache go stale (age > CacheTTL) so refreshes are attempted, and fire a burst
+	// of calls modeling many workload identities scraping within one TTL window. Only the
+	// first should probe the failing kubelet (fetch #2); the rest are gated and serve stale.
+	time.Sleep(60 * time.Millisecond)
+	for i := range 20 {
+		stats, err := p.FetchStats(context.Background(), id, plugin.TimeWindow{})
+		if err != nil {
+			t.Fatalf("call %d unexpectedly errored: %v", i, err)
+		}
+		if len(stats) != 1 {
+			t.Fatalf("call %d: expected stale data served while gated, got %d stats", i, len(stats))
+		}
+	}
+	if got := fetcher.callCount("n1"); got != 2 {
+		t.Errorf("expected failing node probed at most once per CacheTTL (2 total fetches), got %d", got)
+	}
+}
+
+// TestFetchStats_FailingNode_NoCache_SecondWorkloadGated covers the no-prior-success arm
+// of the retry gate: a node whose very first fetch fails records an attempt but no cache.
+// A second workload identity scraping the same node within CacheTTL must be gated (serve
+// nothing, no re-probe) rather than re-hitting the failing kubelet.
+func TestFetchStats_FailingNode_NoCache_SecondWorkloadGated(t *testing.T) {
+	nodes := &fakeNodeLister{nodes: []corev1.Node{node("n1")}}
+	pods := &fakePodLister{pods: []corev1.Pod{
+		pod("default", "web-1", map[string]string{"app": "web"}),
+		pod("default", "api-1", map[string]string{"app": "api"}),
+	}}
+	fetcher := &fakeSummaryFetcher{err: errors.New("kubelet unreachable")}
+	p := kplugin.NewWithDeps(nodes, pods, fetcher,
+		kplugin.Options{MaxBackoff: 10 * time.Second, CacheTTL: time.Hour},
+		logr.Discard())
+
+	// Workload A: node has no cache and the fetch fails, so FetchStats errors (and A backs
+	// off). This records lastAttempt on the node without ever setting fetchTime.
+	_, err := p.FetchStats(context.Background(),
+		plugin.WorkloadIdentity{Labels: map[string]string{"app": "web"}}, plugin.TimeWindow{})
+	if err == nil {
+		t.Fatal("expected error for uncached failing node")
+	}
+	if got := fetcher.callCount("n1"); got != 1 {
+		t.Fatalf("expected exactly 1 fetch attempt, got %d", got)
+	}
+
+	// Workload B (different identity, not backed off) scrapes the same node within CacheTTL.
+	// The gate is closed and there is no cache, so it serves nothing without re-probing.
+	stats, err := p.FetchStats(context.Background(),
+		plugin.WorkloadIdentity{Labels: map[string]string{"app": "api"}}, plugin.TimeWindow{})
+	if err != nil {
+		t.Fatalf("workload B should not error while gated, got: %v", err)
+	}
+	if len(stats) != 0 {
+		t.Errorf("expected no stats for uncached gated node, got %d", len(stats))
+	}
+	if got := fetcher.callCount("n1"); got != 1 {
+		t.Errorf("expected gated second workload not to re-probe (still 1 fetch), got %d", got)
 	}
 }
 
