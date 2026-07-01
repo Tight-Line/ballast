@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-07-01
+
 ### Added
 
 - **OTel log export.** Ballast now ships its logs to an OTLP collector in addition to (or instead of) stdout. Log export reuses the existing `telemetry.otel` endpoint/protocol/insecure settings, so enabling OTel for metrics also ships logs by default; each structured log key is promoted to a top-level OTel log-record attribute. Set `logging.otel.enabled: false` to keep metrics on OTLP but not logs. New knobs under `logging`:
