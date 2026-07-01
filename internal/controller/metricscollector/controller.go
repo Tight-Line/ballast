@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -135,7 +136,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	now := time.Now()
 	tupleHash := store.TupleHash(profile.Status.TupleLabels)
 
-	observed, err := r.collectAllSamples(ctx, tupleHash, profile.Status.SelectorLabels, now, sources)
+	excluded := r.excludedContainerNames(ctx, profile.Status.SelectorLabels)
+
+	observed, err := r.collectAllSamples(ctx, tupleHash, profile.Status.SelectorLabels, now, sources, excluded)
 	if err != nil { // coverage:ignore - Redis error
 		return ctrl.Result{}, err
 	}
@@ -181,6 +184,7 @@ func (r *Reconciler) collectAllSamples(
 	selectorLabels map[string]string,
 	now time.Time,
 	sources map[string]*ballastv1.MetricsSource,
+	excluded map[string]struct{},
 ) (map[string]map[string]struct{}, error) {
 	log := ctrl.LoggerFrom(ctx)
 	observed := make(map[string]map[string]struct{})
@@ -193,7 +197,7 @@ func (r *Reconciler) collectAllSamples(
 			continue
 		}
 
-		additional, err := r.collectFromSource(ctx, tupleHash, selectorLabels, now, sourceName, ms, p)
+		additional, err := r.collectFromSource(ctx, tupleHash, selectorLabels, now, sourceName, ms, p, excluded)
 		if err != nil { // coverage:ignore - Redis error
 			return nil, err
 		}
@@ -222,6 +226,7 @@ func (r *Reconciler) collectFromSource(
 	sourceName string,
 	ms *ballastv1.MetricsSource,
 	p plugin.MetricsPlugin,
+	excluded map[string]struct{},
 ) (map[string]map[string]struct{}, error) {
 	log := ctrl.LoggerFrom(ctx)
 	observed := make(map[string]map[string]struct{})
@@ -236,6 +241,12 @@ func (r *Reconciler) collectFromSource(
 	}
 
 	for _, s := range samples {
+		// Init containers (including restartable-init sidecars) and ephemeral
+		// containers are never measured: apply/resize only touch spec.containers,
+		// so their samples would only produce unactionable recommendations.
+		if _, skip := excluded[s.ContainerName]; skip {
+			continue
+		}
 		markObserved(observed, s.ContainerName, s.Resource)
 
 		if r.dryRunMeasure {
@@ -266,6 +277,57 @@ func (r *Reconciler) writeSample(
 		return fmt.Errorf("adding sample for %s: %w", key, err)
 	}
 	return nil
+}
+
+// excludedContainerNames returns the set of container names that must never be
+// measured for this profile: all init containers and ephemeral (debug)
+// containers. These names come from the pod spec because the metrics API reports
+// a flat container list that does not mark them, and Ballast's apply/resize paths
+// only ever touch spec.containers — so measuring them yields recommendations that
+// can never be applied.
+//
+// TODO(#30): restartable-init "native sidecar" containers (restartPolicy:
+// Always) are long-running and are legitimate right-sizing targets, but are
+// excluded here for now because the apply and resize lanes only patch
+// spec.containers. Supporting them means measuring restartable-init containers
+// AND extending the webhook and resourceadjuster to patch spec.initContainers.
+// Until then, all init containers are excluded.
+//
+// Pods are matched with the profile's selector labels. A List failure is
+// non-fatal: it returns an empty set and logs, leaving measurement unchanged for
+// this cycle rather than failing the reconcile.
+func (r *Reconciler) excludedContainerNames(ctx context.Context, selectorLabels map[string]string) map[string]struct{} {
+	log := ctrl.LoggerFrom(ctx)
+	excluded := make(map[string]struct{})
+
+	// Narrow the List server-side with the concrete labels; LabelAbsent keys
+	// cannot be expressed as MatchingLabels, so they are applied client-side below.
+	matching := client.MatchingLabels{}
+	for k, v := range selectorLabels {
+		if v != plugin.LabelAbsent {
+			matching[k] = v
+		}
+	}
+
+	var podList corev1.PodList
+	if err := r.client.List(ctx, &podList, matching); err != nil { // coverage:ignore - transient API error
+		log.Error(err, "listing pods to exclude init/ephemeral containers; measuring all reported containers this cycle")
+		return excluded
+	}
+
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		if !plugin.MatchesSelector(pod.Labels, selectorLabels) {
+			continue
+		}
+		for j := range pod.Spec.InitContainers {
+			excluded[pod.Spec.InitContainers[j].Name] = struct{}{}
+		}
+		for j := range pod.Spec.EphemeralContainers {
+			excluded[pod.Spec.EphemeralContainers[j].Name] = struct{}{}
+		}
+	}
+	return excluded
 }
 
 // loadSources fetches the MetricsSource CRD for each unique source name referenced in the

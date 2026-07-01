@@ -34,6 +34,10 @@ The following annotation is set by Ballast itself (not by the deployment tool):
 
 The deployment tool also sets the identity tuple labels (see WorkloadProfile below). These are distinct from the behavior annotations.
 
+**Scope of measurement.** Enrollment is a whole-pod, opt-in decision, so deciding *which* workloads to enroll stays with the deployment tool — Ballast does not second-guess it with workload-kind heuristics. In particular there is no built-in Job/CronJob carve-out: a long-running Job may legitimately want right-sizing, so the tool simply should not annotate short-lived Job (or CronJob) pod templates that run to completion.
+
+Within an enrolled pod, Ballast measures and resizes only the regular `spec.containers`. The collector excludes all init containers and ephemeral debug containers from measurement, because the apply and resize paths only ever patch `spec.containers` — sampling anything else would produce recommendations that could never be applied. This is deliberately broader than the ideal end state: restartable-init "native sidecar" containers (`restartPolicy: Always`) are long-running and are legitimate right-sizing targets, so the correct axis is run-to-completion vs long-running rather than init vs regular. Treating restartable-init containers as first-class targets requires extending the apply and resize lanes to patch `spec.initContainers`, which is deferred — tracked in issue #30. Until then, all init containers are excluded.
+
 ---
 
 ## Architecture Overview

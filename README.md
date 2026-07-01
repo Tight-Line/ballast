@@ -138,6 +138,15 @@ spec:
         ballast.tightlinesoftware.com/measure: "true"
 ```
 
+### Which workloads to enroll
+
+Ballast right-sizes **long-running** workloads by learning their steady-state usage over hours or days (default readiness: 250 samples over 24 hours). Enroll Deployments, StatefulSets, DaemonSets, and similar controllers whose pods run continuously.
+
+- **Job pods: you almost certainly do not want to annotate them.** A Job runs to completion, often in seconds or minutes, so it never accumulates enough steady-state history to cross the readiness threshold. Annotating a Job's pod template only creates a `WorkloadProfile` that never produces a recommendation. Ballast will not stop you (opt-in is entirely under your control), but there is nothing to gain and it clutters your profiles.
+- **CronJob pods: think hard before annotating them.** A CronJob creates Jobs, and those Jobs create the pods (`CronJob → Job → Pod`), so CronJob pods carry the same run-to-completion caveat as any other Job pod. Annotate them only if each run is genuinely long-lived and resource-stable enough to measure meaningfully — for example, a multi-hour nightly batch job. A short or spiky periodic task is a poor fit and will mostly generate noise.
+
+**Only regular containers are right-sized today.** Even on an enrolled pod, Ballast measures and resizes only the pod's regular `spec.containers`. It excludes **all init containers and ephemeral debug containers** from measurement — there is no per-container knob to configure; the exclusion is automatic. Note this is broader than ideal: restartable-init "native sidecar" containers (`restartPolicy: Always`) are long-running and would be good right-sizing targets, but they are excluded for now because the apply and resize paths only patch `spec.containers`. Support for right-sizing restartable-init sidecars is tracked in [#30](https://github.com/Tight-Line/ballast/issues/30).
+
 ## Verifying a WorkloadProfile
 
 Once a pod with the `measure` annotation is running, Ballast creates a `WorkloadProfile` for its identity tuple. Check it with:

@@ -194,26 +194,11 @@ func filterPods(pods []metricsv1beta1.PodMetrics, selectorLabels map[string]stri
 	}
 	out := make([]metricsv1beta1.PodMetrics, 0, len(pods))
 	for i := range pods {
-		if podMatchesSelector(pods[i].Labels, selectorLabels) {
+		if plugin.MatchesSelector(pods[i].Labels, selectorLabels) {
 			out = append(out, pods[i])
 		}
 	}
 	return out
-}
-
-func podMatchesSelector(podLabels, selectorLabels map[string]string) bool {
-	for k, v := range selectorLabels {
-		if v == plugin.LabelAbsent {
-			if _, present := podLabels[k]; present {
-				return false
-			}
-		} else {
-			if podLabels[k] != v {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 // collect emits one ContainerStats per pod/container/resource combination.
