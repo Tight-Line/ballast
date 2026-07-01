@@ -21,6 +21,7 @@ import (
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/logger"
 	"github.com/tight-line/ballast/internal/metrics"
 	"github.com/tight-line/ballast/internal/plugin"
 	"github.com/tight-line/ballast/internal/store"
@@ -284,6 +285,7 @@ func HasBallastAnnotationOrFinalizer(obj client.Object) bool {
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("workloadwatcher-pod").
+		WithLogConstructor(logger.ControllerLogConstructor(mgr.GetLogger(), "workloadwatcher-pod")).
 		For(&corev1.Pod{}, builder.WithPredicates(predicate.NewPredicateFuncs(HasBallastAnnotationOrFinalizer))).
 		Complete(r)
 }
@@ -351,6 +353,7 @@ func (r *ProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 func (r *ProfileReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("workloadwatcher-profile").
+		WithLogConstructor(logger.ControllerLogConstructor(mgr.GetLogger(), "workloadwatcher-profile")).
 		For(&ballastv1.WorkloadProfile{}).
 		Complete(r)
 }

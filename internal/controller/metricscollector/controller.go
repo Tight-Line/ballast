@@ -27,6 +27,7 @@ import (
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/logger"
 	"github.com/tight-line/ballast/internal/metrics"
 	"github.com/tight-line/ballast/internal/plugin"
 	"github.com/tight-line/ballast/internal/policy"
@@ -75,6 +76,7 @@ func Setup(mgr ctrl.Manager, ks *killswitch.KillSwitch, sc store.Client, dryRunM
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("metricscollector").
+		WithLogConstructor(logger.ControllerLogConstructor(mgr.GetLogger(), "metricscollector")).
 		For(&ballastv1.WorkloadProfile{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }

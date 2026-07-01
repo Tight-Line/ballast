@@ -9,6 +9,8 @@ import (
 
 	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 func TestNew_SmokeTest(t *testing.T) {
@@ -164,6 +166,77 @@ func TestNewWithWriter_OTLPRespectsLevel(t *testing.T) {
 
 	if records := exp.snapshot(); len(records) != 0 {
 		t.Errorf("expected info records to be gated out at error level, got %d", len(records))
+	}
+}
+
+func TestComponentLevelOverrides(t *testing.T) {
+	var buf bytes.Buffer
+	l := newWithWriter(Options{
+		Component: "setup",
+		Level:     "info",
+		Format:    "json",
+		Stdout:    true,
+		LevelOverrides: map[string]string{
+			"collector": "debug",
+			"webhook":   "error",
+			"watcher":   "", // empty override is ignored (inherits the global level)
+		},
+	}, &buf)
+
+	// collector override = debug: a V(1) (debug) line on a collector-named logger emits.
+	l.WithName("metricscollector").V(1).Info("collector-debug")
+	// default level = info: a debug line on an unmatched logger is dropped.
+	l.WithName("other").V(1).Info("other-debug")
+	// webhook override = error: an info line is dropped, an error line emits.
+	l.WithName("webhook").Info("webhook-info")
+	l.WithName("webhook").Error(nil, "webhook-error")
+	// watcher inherits info: an info line emits, a debug line is dropped.
+	l.WithName("workloadwatcher-pod").Info("watcher-info")
+	l.WithName("workloadwatcher-pod").V(1).Info("watcher-debug")
+
+	out := buf.String()
+	for _, want := range []string{"collector-debug", "webhook-error", "watcher-info"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output, got: %q", want, out)
+		}
+	}
+	for _, notWant := range []string{"other-debug", "webhook-info", "watcher-debug"} {
+		if strings.Contains(out, notWant) {
+			t.Errorf("expected %q to be gated out, got: %q", notWant, out)
+		}
+	}
+}
+
+func TestComponentLevelCore_EnabledUsesMin(t *testing.T) {
+	var buf bytes.Buffer
+	withOverride := newWithWriter(Options{
+		Component: "setup", Level: "info", Format: "json", Stdout: true,
+		LevelOverrides: map[string]string{"collector": "debug"},
+	}, &buf)
+	if !withOverride.V(1).Enabled() {
+		t.Error("expected debug enabled when a component lowers the floor to debug")
+	}
+
+	noOverride := newWithWriter(Options{Component: "setup", Level: "info", Format: "json", Stdout: true}, &buf)
+	if noOverride.V(1).Enabled() {
+		t.Error("expected debug disabled when no component lowers the floor")
+	}
+}
+
+func TestControllerLogConstructor(t *testing.T) {
+	var buf bytes.Buffer
+	base := newWithWriter(Options{Component: "setup", Level: "info", Format: "json", Stdout: true}, &buf)
+	ctor := ControllerLogConstructor(base, "collector")
+
+	ctor(nil).Info("no-req")
+	ctor(&reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns", Name: "nm"}}).Info("with-req")
+
+	out := buf.String()
+	if !strings.Contains(out, `"logger":"setup.collector"`) {
+		t.Errorf("expected logger named setup.collector, got: %q", out)
+	}
+	if !strings.Contains(out, `"namespace":"ns"`) || !strings.Contains(out, `"name":"nm"`) {
+		t.Errorf("expected request namespace/name fields, got: %q", out)
 	}
 }
 

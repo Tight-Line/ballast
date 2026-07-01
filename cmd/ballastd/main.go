@@ -170,8 +170,14 @@ func run() int {
 	defer func() { _ = shutdownLogs(context.Background()) }()
 
 	logOpts := logger.Options{
-		Component:    "setup",
-		Level:        logLevel,
+		Component: "setup",
+		Level:     logLevel,
+		LevelOverrides: map[string]string{
+			"webhook":   logLevelWebhook,
+			"watcher":   logLevelWatcher,
+			"collector": logLevelCollector,
+			"adjuster":  logLevelAdjuster,
+		},
 		Format:       logFormat,
 		Stdout:       logStdout,
 		StdoutFields: stdoutFields,
