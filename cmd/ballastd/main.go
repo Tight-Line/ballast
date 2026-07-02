@@ -24,6 +24,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -254,12 +255,17 @@ func run() int {
 		return 1
 	}
 
+	// controller-runtime's metrics server serves its own registry, not the
+	// client_golang default, so ballast.* instruments must register there to
+	// appear on /metrics. The same registry is passed as the gatherer so the
+	// workqueue/reconcile/client-go metrics it holds ride the OTLP stream too.
 	var promRegisterer promclient.Registerer
 	if metricsAddr != "0" {
-		promRegisterer = promclient.DefaultRegisterer
+		promRegisterer = ctrlmetrics.Registry
 	}
 	metricProvider, shutdownMetrics, err := appmetrics.SetupProvider(context.Background(), appmetrics.Config{
 		PrometheusRegisterer: promRegisterer,
+		PrometheusGatherer:   ctrlmetrics.Registry,
 		OTLPEndpoint:         otelEndpoint,
 		OTLPProtocol:         otelProtocol,
 		OTLPInterval:         otelInterval,

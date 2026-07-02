@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Controller-runtime metrics now ship over OTLP.** The workqueue metrics (`workqueue_depth`, `workqueue_queue_duration_seconds`, `workqueue_work_duration_seconds`, `workqueue_adds_total`, `workqueue_retries_total`, and friends), reconcile metrics (`controller_runtime_reconcile_total`/`_errors_total`/`_time_seconds`, `controller_runtime_max_concurrent_reconciles`, `controller_runtime_active_workers`), plus the client-go and process/Go-runtime metrics from controller-runtime's Prometheus registry are bridged into the OTLP export stream via the OTel contrib Prometheus bridge, alongside the existing `ballast.*` instruments and with the same resource attributes. Previously these metrics were only available by scraping the optional Prometheus endpoint. Native `ballast.*` instruments are excluded from the bridge so enabling both telemetry paths does not export them twice under two spellings.
+
+
+### Fixed
+
+- **`ballast.*` metrics were absent from the Prometheus `/metrics` endpoint.** With `telemetry.prometheus.enabled`, OTel instruments were registered into the client_golang default registry, but controller-runtime's metrics server serves its own registry, so the endpoint exposed only controller-runtime metrics and silently dropped every `ballast.*` series. Instruments now register into controller-runtime's registry and appear on `/metrics` as documented.
+
 ## [0.3.1] - 2026-07-02
 
 ### Fixed

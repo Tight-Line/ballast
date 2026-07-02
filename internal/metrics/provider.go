@@ -9,9 +9,12 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	promclient "github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+	prombridge "go.opentelemetry.io/contrib/bridges/prometheus"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
@@ -23,9 +26,17 @@ import (
 // Config carries the configuration for SetupProvider.
 type Config struct {
 	// PrometheusRegisterer, when non-nil, registers OTel instruments into that
-	// registerer. Pass prometheus.DefaultRegisterer to serve them on the existing
-	// /metrics endpoint that controller-runtime exposes.
+	// registerer. Pass controller-runtime's metrics.Registry to serve them on the
+	// /metrics endpoint it exposes; the client_golang DefaultRegisterer is NOT
+	// served there.
 	PrometheusRegisterer promclient.Registerer
+
+	// PrometheusGatherer, when non-nil, bridges every metric family it gathers
+	// into the OTLP export stream (no effect when OTLPEndpoint is empty). Pass
+	// controller-runtime's metrics.Registry to ship the workqueue, reconcile,
+	// client-go, and process/Go-runtime metrics to the OTLP collector alongside
+	// the ballast.* instruments.
+	PrometheusGatherer promclient.Gatherer
 
 	// OTLPEndpoint is the OTLP collector address (e.g. "localhost:4317"). Leave
 	// empty to disable OTLP push export.
@@ -82,12 +93,60 @@ func SetupProvider(ctx context.Context, cfg Config) (*sdkmetric.MeterProvider, f
 			return nil, nil, fmt.Errorf("creating OTLP exporter: %w", err)
 		}
 
-		reader := sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(interval))
+		readerOpts := []sdkmetric.PeriodicReaderOption{sdkmetric.WithInterval(interval)}
+		if cfg.PrometheusGatherer != nil {
+			// The bridge is attached only to the OTLP reader, never to the
+			// Prometheus exporter: the gathered families already live in a
+			// Prometheus registry, so re-registering them would duplicate every
+			// series on /metrics. The gatherer is filtered because when the
+			// Prometheus path is also enabled, the exporter above mirrors the
+			// native ballast.* instruments into the same registry; bridging
+			// those back out would ship every ballast metric to the collector
+			// twice under two spellings (ballast.foo and ballast_foo).
+			gatherer := filteredGatherer{
+				inner:        cfg.PrometheusGatherer,
+				dropPrefixes: []string{"ballast_", "otel_scope_", "target_info"},
+			}
+			readerOpts = append(readerOpts, sdkmetric.WithProducer(
+				prombridge.NewMetricProducer(prombridge.WithGatherer(gatherer))))
+		}
+		reader := sdkmetric.NewPeriodicReader(exp, readerOpts...)
 		opts = append(opts, sdkmetric.WithReader(reader))
 	}
 
 	provider := sdkmetric.NewMeterProvider(opts...)
 	return provider, provider.Shutdown, nil
+}
+
+// filteredGatherer wraps a prometheus.Gatherer and drops metric families whose
+// name starts with any of dropPrefixes. It exists to keep instruments that are
+// natively OTel out of the Prometheus→OTLP bridge (see SetupProvider).
+type filteredGatherer struct {
+	inner        promclient.Gatherer
+	dropPrefixes []string
+}
+
+func (g filteredGatherer) Gather() ([]*dto.MetricFamily, error) {
+	families, err := g.inner.Gather()
+	if err != nil {
+		return nil, err
+	}
+	kept := families[:0]
+	for _, mf := range families {
+		if !g.dropped(mf.GetName()) {
+			kept = append(kept, mf)
+		}
+	}
+	return kept, nil
+}
+
+func (g filteredGatherer) dropped(name string) bool {
+	for _, p := range g.dropPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildOTLPExporter(ctx context.Context, cfg Config) (sdkmetric.Exporter, error) {

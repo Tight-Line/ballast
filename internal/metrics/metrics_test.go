@@ -363,6 +363,24 @@ func TestSetupProvider_OTLPGrpc(t *testing.T) {
 	rec.SampleCollected(ctx, "k8s", "cpu", "app", metrics.ProfileID{Name: "prof"})
 }
 
+func TestSetupProvider_OTLPWithGatherer(t *testing.T) {
+	ctx := context.Background()
+	// A gatherer wires the Prometheus→OTLP bridge onto the periodic reader.
+	reg := promclient.NewRegistry()
+	provider, shutdown, err := metrics.SetupProvider(ctx, metrics.Config{
+		OTLPEndpoint:       "localhost:4317",
+		OTLPInterval:       60 * time.Second,
+		PrometheusGatherer: reg,
+	})
+	if err != nil {
+		t.Fatalf("SetupProvider with gatherer: %v", err)
+	}
+	t.Cleanup(func() { sctx, cancel := shortCtx(t); defer cancel(); _ = shutdown(sctx) })
+	if provider == nil {
+		t.Fatal("provider is nil")
+	}
+}
+
 func TestSetupProvider_OTLPDefaultInterval(t *testing.T) {
 	ctx := context.Background()
 	// OTLPInterval=0 triggers the default-30s interval path.
