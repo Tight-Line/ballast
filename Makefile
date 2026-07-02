@@ -123,6 +123,7 @@ CHART_DIR ?= charts/ballast
 HELM_LOCAL_EXTRA ?=
 
 helm-build: manifests ## Sync CRDs from config/crd/bases/ and download chart dependencies.
+	mkdir -p $(CHART_DIR)/crds
 	cp config/crd/bases/*.yaml $(CHART_DIR)/crds/
 	$(HELM) dependency update $(CHART_DIR)
 

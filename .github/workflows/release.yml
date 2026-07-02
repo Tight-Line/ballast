@@ -97,6 +97,17 @@ jobs:
       - name: Update Helm dependencies
         run: helm dependency update charts/ballast
 
+      # crds/ is a build artifact (gitignored since it's synced from
+      # config/crd/bases/), so a fresh checkout doesn't have it. Without this
+      # step the published package ships no CRDs and a first install on a bare
+      # cluster fails validation ("ensure CRDs are installed first") before the
+      # pre-install CRD hook ever runs. Mirrors the `helm-build` Make target,
+      # minus the Go toolchain it would pull in via `manifests`.
+      - name: Sync CRDs into the chart
+        run: |
+          mkdir -p charts/ballast/crds
+          cp config/crd/bases/*.yaml charts/ballast/crds/
+
       - name: Run chart-releaser
         uses: helm/chart-releaser-action@a917fd15b20e8b64b94d9158ad54cd6345335584 # v1.6.0
         with:
