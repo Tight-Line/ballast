@@ -175,7 +175,7 @@ sequenceDiagram
     ProfR->>API: remove cleanup finalizer → object deleted
     API-->>PodR: WorkloadProfile DELETE (delete-only predicate)
     PodR->>API: podsForProfile → enqueue pods with profile-ref = web
-    Note over PodR: recompute profName = web; ensureProfile recreates it fresh
+    Note over PodR: recompute profName = web<br/>ensureProfile recreates it fresh
     PodR->>API: re-stamp + setActiveWorkloads → count restored
 ```
 
