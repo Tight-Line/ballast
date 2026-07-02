@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This is a substantial change to how enrollment and profile convergence work; it
+warrants a 0.3.0 minor release.
+
+### Added
+
+- **Deleting a `WorkloadProfile` now clears its Redis history.** A cleanup finalizer (`ballast.tightlinesoftware.com/profile-cleanup`) purges the profile's stored metric history before the object is removed. This runs on every deletion path, whether the operator's orphan-TTL sweep or a manual `kubectl delete workloadprofile`. Previously only the TTL sweep purged Redis, so a manual delete orphaned the history in Redis forever. On upgrade, the finalizer is back-filled onto existing profiles on their first reconcile, so no manual migration is required.
+
+- **Prompt convergence watches.** The pod controller now watches `WorkloadProfile` deletions and `BallastConfig` `identityLabels` changes. A deleted profile that still has matching live pods is recreated within seconds (rather than waiting for a pod event or the informer resync period), and an `identityLabels` change promptly migrates affected pods.
+
+### Changed
+
+- **Enrollment is now fully level-triggered on live pod state rather than trusting the stamped `profile-ref`.** Each pod reconcile recomputes the pod's target profile from its current labels and the current `identityLabels`, then reconciles toward it:
+  - **Identity change → migration.** Changing `identityLabels` (or a pod's own identity-label values) moves the pod to the newly-computed profile and recounts the profile it leaves so that profile can orphan and age out.
+  - **Behavior-annotation removal → un-enrollment.** Stripping all Ballast behavior annotations from a running pod now removes its `profile-ref` and finalizer and decrements the profile's `activeWorkloads`. Previously the pod stayed enrolled and kept the profile from orphaning until the pod was deleted.
+  - **Profile deletion with live pods → recreation.** Deleting a profile that still has matching workloads recreates it fresh (history reset) and, because the profile name is a deterministic function of identity, only matching workloads re-reference it.
+
+  Behavior note: deleting a `WorkloadProfile` that still has matching live pods is now a **history reset, not a permanent removal** — the profile regenerates (empty) while matching pods exist. To permanently remove a profile, remove the workload's Ballast annotations (or delete its pods) first, then delete the profile.
+
 ## [0.2.5] - 2026-07-01
 
 ### Added

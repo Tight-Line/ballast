@@ -726,6 +726,206 @@ func TestPodReconciler_SpecialLabelChars(t *testing.T) {
 	}
 }
 
+// TestPodReconciler_BarePodIgnored reconciles a pod with no behavior annotation,
+// no profile-ref, and no finalizer (e.g. a stray requeue): it must be a no-op.
+func TestPodReconciler_BarePodIgnored(t *testing.T) {
+	ctx := context.Background()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "bare",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "web"},
+		},
+	}
+	fc := newFakeClient(defaultBallastConfig(), pod)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
+	reconcilePod(t, c, "default", "bare")
+
+	var list ballastv1.WorkloadProfileList
+	if err := fc.List(ctx, &list); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list.Items) != 0 {
+		t.Errorf("expected no profiles for a bare pod, got %d", len(list.Items))
+	}
+}
+
+// TestPodReconciler_UnenrollOnAnnotationRemoval verifies that stripping a pod's
+// behavior annotation un-enrolls it: profile-ref and finalizer removed, count
+// decremented, profile orphaned once its last workload leaves.
+func TestPodReconciler_UnenrollOnAnnotationRemoval(t *testing.T) {
+	ctx := context.Background()
+	profName := "web"
+	profile := &ballastv1.WorkloadProfile{ObjectMeta: metav1.ObjectMeta{Name: profName}}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-abc",
+			Namespace: "default",
+			// No behavior annotation — only the stamp and finalizer remain.
+			Annotations: map[string]string{workloadwatcher.AnnotationProfileRef: profName},
+			Labels:      map[string]string{"app": "web"},
+			Finalizers:  []string{workloadwatcher.FinalizerName},
+		},
+	}
+	fc := newFakeClient(defaultBallastConfig(), profile, pod)
+	profile.Status.ActiveWorkloads = 1
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
+	reconcilePod(t, c, "default", "web-abc")
+
+	var gotPod corev1.Pod
+	if err := fc.Get(ctx, types.NamespacedName{Namespace: "default", Name: "web-abc"}, &gotPod); err != nil {
+		t.Fatalf("Get pod: %v", err)
+	}
+	if ref := gotPod.Annotations[workloadwatcher.AnnotationProfileRef]; ref != "" {
+		t.Errorf("profile-ref should be cleared on un-enroll, got %q", ref)
+	}
+	for _, f := range gotPod.Finalizers {
+		if f == workloadwatcher.FinalizerName {
+			t.Error("finalizer should be removed on un-enroll")
+		}
+	}
+
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: profName}, &got); err != nil {
+		t.Fatalf("Get profile: %v", err)
+	}
+	if got.Status.ActiveWorkloads != 0 {
+		t.Errorf("activeWorkloads: got %d, want 0 after un-enroll", got.Status.ActiveWorkloads)
+	}
+	if cond := apimeta.FindStatusCondition(got.Status.Conditions, "Orphaned"); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Error("expected Orphaned condition True after last workload un-enrolls")
+	}
+}
+
+// TestPodReconciler_UnenrollNoProfileRef covers the edge where a pod holds our
+// finalizer but never received a profile-ref (and carries no behavior annotation):
+// the finalizer must still be stripped, with no recount attempted.
+func TestPodReconciler_UnenrollNoProfileRef(t *testing.T) {
+	ctx := context.Background()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "web-abc",
+			Namespace:  "default",
+			Labels:     map[string]string{"app": "web"},
+			Finalizers: []string{workloadwatcher.FinalizerName},
+		},
+	}
+	fc := newFakeClient(defaultBallastConfig(), pod)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
+	reconcilePod(t, c, "default", "web-abc")
+
+	var gotPod corev1.Pod
+	if err := fc.Get(ctx, types.NamespacedName{Namespace: "default", Name: "web-abc"}, &gotPod); err != nil {
+		t.Fatalf("Get pod: %v", err)
+	}
+	for _, f := range gotPod.Finalizers {
+		if f == workloadwatcher.FinalizerName {
+			t.Error("finalizer should be removed even without a profile-ref")
+		}
+	}
+}
+
+// TestPodReconciler_MigrateOnLabelChange verifies that when a pod's identity no
+// longer maps to its stamped profile, it migrates: re-stamped to the new profile
+// (created, count 1) and the old profile recounted to 0 and orphaned.
+func TestPodReconciler_MigrateOnLabelChange(t *testing.T) {
+	ctx := context.Background()
+	oldName, newName := "stale", "web"
+	oldProfile := &ballastv1.WorkloadProfile{ObjectMeta: metav1.ObjectMeta{Name: oldName}}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-abc",
+			Namespace: "default",
+			Annotations: map[string]string{
+				workloadwatcher.AnnotationMeasure:    "true",
+				workloadwatcher.AnnotationProfileRef: oldName,
+			},
+			Labels:     map[string]string{"app": "web"},
+			Finalizers: []string{workloadwatcher.FinalizerName},
+		},
+	}
+	fc := newFakeClient(defaultBallastConfig(), oldProfile, pod)
+	oldProfile.Status.ActiveWorkloads = 1
+	if err := fc.Status().Update(ctx, oldProfile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
+	reconcilePod(t, c, "default", "web-abc")
+
+	var gotPod corev1.Pod
+	if err := fc.Get(ctx, types.NamespacedName{Namespace: "default", Name: "web-abc"}, &gotPod); err != nil {
+		t.Fatalf("Get pod: %v", err)
+	}
+	if ref := gotPod.Annotations[workloadwatcher.AnnotationProfileRef]; ref != newName {
+		t.Errorf("profile-ref: got %q, want %q", ref, newName)
+	}
+
+	var newProf ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: newName}, &newProf); err != nil {
+		t.Fatalf("Get new profile: %v", err)
+	}
+	if newProf.Status.ActiveWorkloads != 1 {
+		t.Errorf("new profile activeWorkloads: got %d, want 1", newProf.Status.ActiveWorkloads)
+	}
+
+	var oldProf ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: oldName}, &oldProf); err != nil {
+		t.Fatalf("Get old profile: %v", err)
+	}
+	if oldProf.Status.ActiveWorkloads != 0 {
+		t.Errorf("old profile activeWorkloads: got %d, want 0", oldProf.Status.ActiveWorkloads)
+	}
+	if cond := apimeta.FindStatusCondition(oldProf.Status.Conditions, "Orphaned"); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Error("expected old profile to be orphaned after migration")
+	}
+}
+
+// TestPodReconciler_MigrateOnIdentityLabelsChange verifies that expanding
+// identityLabels moves a pod to the newly-computed profile name.
+func TestPodReconciler_MigrateOnIdentityLabelsChange(t *testing.T) {
+	ctx := context.Background()
+	cfg := &ballastv1.BallastConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: killswitch.BallastConfigName},
+		Spec:       ballastv1.BallastConfigSpec{IdentityLabels: []string{"app", "tier"}, OrphanTTL: "168h"},
+	}
+	oldProfile := &ballastv1.WorkloadProfile{ObjectMeta: metav1.ObjectMeta{Name: "web"}}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-abc",
+			Namespace: "default",
+			Annotations: map[string]string{
+				workloadwatcher.AnnotationMeasure:    "true",
+				workloadwatcher.AnnotationProfileRef: "web",
+			},
+			Labels:     map[string]string{"app": "web", "tier": "api"},
+			Finalizers: []string{workloadwatcher.FinalizerName},
+		},
+	}
+	fc := newFakeClient(cfg, oldProfile, pod)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
+	reconcilePod(t, c, "default", "web-abc")
+
+	var gotPod corev1.Pod
+	if err := fc.Get(ctx, types.NamespacedName{Namespace: "default", Name: "web-abc"}, &gotPod); err != nil {
+		t.Fatalf("Get pod: %v", err)
+	}
+	if ref := gotPod.Annotations[workloadwatcher.AnnotationProfileRef]; ref != "web--api" {
+		t.Errorf("profile-ref after identityLabels change: got %q, want %q", ref, "web--api")
+	}
+	var newProf ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web--api"}, &newProf); err != nil {
+		t.Fatalf("Get migrated profile: %v", err)
+	}
+	if newProf.Status.ActiveWorkloads != 1 {
+		t.Errorf("migrated profile activeWorkloads: got %d, want 1", newProf.Status.ActiveWorkloads)
+	}
+}
+
 // -- ExtractTupleLabels unit tests --
 
 func TestExtractTupleLabels(t *testing.T) {
@@ -980,9 +1180,26 @@ func TestProfileReconciler_OrphanTTLExpired(t *testing.T) {
 	}
 
 	c := workloadwatcher.New(fc, inactiveKS(t), rc, nil)
-	_, err := reconcileProfile(t, c, profName)
-	if err != nil {
-		t.Fatalf("Profile.Reconcile: %v", err)
+
+	// First reconcile adds the finalizer and issues the delete, which only sets
+	// the DeletionTimestamp because the finalizer now holds the object.
+	if _, err := reconcileProfile(t, c, profName); err != nil {
+		t.Fatalf("Profile.Reconcile (delete): %v", err)
+	}
+	var terminating ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: profName}, &terminating); err != nil {
+		t.Fatalf("profile should still exist mid-deletion: %v", err)
+	}
+	if terminating.DeletionTimestamp.IsZero() {
+		t.Error("expected DeletionTimestamp to be set after orphan-TTL delete")
+	}
+	if len(mr.Keys()) == 0 {
+		t.Error("Redis keys should survive until the finalizer runs")
+	}
+
+	// Second reconcile runs the finalizer: it purges Redis and releases the object.
+	if _, err := reconcileProfile(t, c, profName); err != nil {
+		t.Fatalf("Profile.Reconcile (finalize): %v", err)
 	}
 
 	// Profile must be deleted.
@@ -1079,9 +1296,167 @@ func TestProfileReconciler_RedisFailure(t *testing.T) {
 	mr.Close() // shut down the server so Redis commands fail
 
 	c := workloadwatcher.New(fc, inactiveKS(t), rc, nil)
-	_, err := reconcileProfile(t, c, profName)
-	if err == nil {
+
+	// First reconcile only issues the delete (no Redis I/O) and must succeed.
+	if _, err := reconcileProfile(t, c, profName); err != nil {
+		t.Fatalf("Profile.Reconcile (delete) should not touch Redis: %v", err)
+	}
+
+	// Second reconcile runs the finalizer, which must fail against dead Redis.
+	if _, err := reconcileProfile(t, c, profName); err == nil {
 		t.Fatal("expected error when Redis is unavailable, got nil")
+	}
+}
+
+func TestProfileReconciler_AddsFinalizer(t *testing.T) {
+	ctx := context.Background()
+	profName := "web"
+	profile := &ballastv1.WorkloadProfile{ObjectMeta: metav1.ObjectMeta{Name: profName}}
+	fc := newFakeClient(defaultBallastConfig(), profile)
+
+	_, rc := newMiniredisClient(t)
+	c := workloadwatcher.New(fc, inactiveKS(t), rc, nil)
+
+	if _, err := reconcileProfile(t, c, profName); err != nil {
+		t.Fatalf("Profile.Reconcile: %v", err)
+	}
+
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: profName}, &got); err != nil {
+		t.Fatalf("Get profile: %v", err)
+	}
+	found := false
+	for _, f := range got.Finalizers {
+		if f == workloadwatcher.ProfileFinalizerName {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected cleanup finalizer to be added, finalizers=%v", got.Finalizers)
+	}
+}
+
+// TestProfileReconciler_ManualDeletePurgesRedis proves the finalizer runs the
+// Redis purge even when the delete was user-initiated rather than orphan-TTL
+// driven — the whole point of moving cleanup into the finalizer.
+func TestProfileReconciler_ManualDeletePurgesRedis(t *testing.T) {
+	ctx := context.Background()
+	profName := "web"
+	tupleLabels := map[string]string{"app": "web"}
+	profile := &ballastv1.WorkloadProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       profName,
+			Finalizers: []string{workloadwatcher.ProfileFinalizerName},
+		},
+	}
+	fc := newFakeClient(defaultBallastConfig(), profile)
+
+	profile.Status.TupleLabels = tupleLabels
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	mr, rc := newMiniredisClient(t)
+	tupleHash := store.TupleHash(tupleLabels)
+	key := store.MetricKey(tupleHash, "app", "cpu")
+	if err := store.AddSample(ctx, rc, key, 1000, "100m", 0); err != nil {
+		t.Fatalf("AddSample: %v", err)
+	}
+
+	// Manual delete: the finalizer keeps the object alive until Redis is purged.
+	if err := fc.Delete(ctx, profile); err != nil {
+		t.Fatalf("delete profile: %v", err)
+	}
+
+	c := workloadwatcher.New(fc, inactiveKS(t), rc, nil)
+	if _, err := reconcileProfile(t, c, profName); err != nil {
+		t.Fatalf("Profile.Reconcile (finalize): %v", err)
+	}
+
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: profName}, &got); !apierrors.IsNotFound(err) {
+		t.Errorf("expected profile to be deleted, got err=%v", err)
+	}
+	if remaining := mr.Keys(); len(remaining) != 0 {
+		t.Errorf("expected Redis keys purged on manual delete, remaining: %v", remaining)
+	}
+}
+
+// TestProfileReconciler_FinalizeWithoutFinalizer covers the defensive no-op path:
+// a profile being deleted that never carried our finalizer (held alive here by a
+// foreign one) must be left untouched.
+func TestProfileReconciler_FinalizeWithoutFinalizer(t *testing.T) {
+	ctx := context.Background()
+	profName := "web"
+	profile := &ballastv1.WorkloadProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       profName,
+			Finalizers: []string{"other.io/keep"},
+		},
+	}
+	fc := newFakeClient(defaultBallastConfig(), profile)
+
+	if err := fc.Delete(ctx, profile); err != nil {
+		t.Fatalf("delete profile: %v", err)
+	}
+
+	_, rc := newMiniredisClient(t)
+	c := workloadwatcher.New(fc, inactiveKS(t), rc, nil)
+
+	if _, err := reconcileProfile(t, c, profName); err != nil {
+		t.Fatalf("Profile.Reconcile: %v", err)
+	}
+
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: profName}, &got); err != nil {
+		t.Fatalf("profile should still exist (foreign finalizer holds it): %v", err)
+	}
+}
+
+// TestPodReconciler_ProfileTerminatingRequeues covers the delete/recreate race
+// guard: a new pod arriving while its profile is mid-deletion must requeue rather
+// than bind to the doomed profile.
+func TestPodReconciler_ProfileTerminatingRequeues(t *testing.T) {
+	ctx := context.Background()
+	profile := &ballastv1.WorkloadProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "web",
+			Finalizers: []string{workloadwatcher.ProfileFinalizerName},
+		},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "web-pod",
+			Namespace:   "default",
+			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
+			Labels:      map[string]string{"app": "web"},
+		},
+	}
+	fc := newFakeClient(defaultBallastConfig(), profile, pod)
+	if err := fc.Delete(ctx, profile); err != nil {
+		t.Fatalf("delete profile: %v", err)
+	}
+
+	_, rc := newMiniredisClient(t)
+	c := workloadwatcher.New(fc, inactiveKS(t), rc, nil)
+
+	result, err := c.Pod.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "web-pod"},
+	})
+	if err != nil {
+		t.Fatalf("Pod.Reconcile: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected a requeue while the profile is terminating")
+	}
+
+	// The pod must not have been bound to the doomed profile.
+	var gotPod corev1.Pod
+	if err := fc.Get(ctx, types.NamespacedName{Namespace: "default", Name: "web-pod"}, &gotPod); err != nil {
+		t.Fatalf("Get pod: %v", err)
+	}
+	if ref := gotPod.Annotations[workloadwatcher.AnnotationProfileRef]; ref != "" {
+		t.Errorf("pod should not be stamped with profileRef while profile terminating, got %q", ref)
 	}
 }
 
