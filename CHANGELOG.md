@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-07-02
+
 ### Fixed
 
 - **Published chart packages ship their CRDs again, restoring first install on a bare cluster.** When `charts/ballast/crds/` became a gitignored build artifact (synced from `config/crd/bases/` by `make helm-build`), the release workflow's chart job kept packaging straight from a fresh checkout — which has no `crds/` — so every published package since then contained no CRDs. On a cluster without a prior install, `helm install` (or the install leg of `helm upgrade --install`) then failed manifest validation with `ensure CRDs are installed first`: the manifest includes the chart's own `BallastConfig`/`MetricsSource`/`ClusterResourcePolicy` objects, and Helm validates it before the pre-install CRD hook (0.3.3) ever runs, so the hook cannot rescue a first install. Existing clusters never noticed because the pre-upgrade hook keeps their CRDs in sync. The release workflow now syncs `config/crd/bases/*.yaml` into the chart before packaging, and `helm-build` creates the `crds/` directory first so the Make path also works from a fresh clone. Installs from older packages need the CRDs applied by hand (`kubectl apply -f config/crd/bases/`) before the first `helm install`.
