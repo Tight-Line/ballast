@@ -25,6 +25,16 @@ warrants a 0.3.0 minor release.
 
   Behavior note: deleting a `WorkloadProfile` that still has matching live pods is now a **history reset, not a permanent removal** — the profile regenerates (empty) while matching pods exist. To permanently remove a profile, remove the workload's Ballast annotations (or delete its pods) first, then delete the profile.
 
+### Fixed
+
+- **Stale `activeWorkloads` counts now self-heal.** The profile reconciler independently recomputes each profile's count from live pod state on every profile event and informer resync, writing only on change. Previously a profile whose last referencing pod migrated away, un-enrolled, or disappeared without a processed delete event could keep a stale non-zero count forever, never orphan, and never age out (leaking the profile and its Redis history).
+
+- **Profile identity labels in status now converge.** `status.tupleLabels` and `status.selectorLabels` are patched whenever they differ from the values recomputed on a member pod's reconcile, and the write is a conflict-free patch. Previously they were written exactly once at profile creation; if that write was lost (for example to a conflict with the cleanup-finalizer back-fill), the profile was never measured and its eventual Redis purge targeted the wrong key hash.
+
+- **Kill-switch releases now converge within a minute.** Pod reconciles skipped while the kill switch is active requeue every minute instead of waiting for the informer resync, so enrollment work deferred during an outage (including an `identityLabels` fan-out) resumes promptly once the switch is released.
+
+- **BallastConfig re-creation is a prompt convergence trigger.** The config watch now admits create events (filtered to the canonical BallastConfig name), so deleting and re-applying the config with different `identityLabels` migrates pods promptly instead of waiting for resync. A pod arriving while its profile is mid-deletion server-side (create returns AlreadyExists through a stale cache) now requeues instead of binding to the dying object.
+
 ## [0.2.5] - 2026-07-01
 
 ### Added

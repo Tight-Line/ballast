@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -49,6 +50,14 @@ const (
 	// requeueTerminating is how long to wait before re-checking a profile that is
 	// mid-deletion, so a freshly arriving pod is not bound to a doomed profile.
 	requeueTerminating = time.Second
+
+	// requeueKillSwitch is how often a managed pod re-reconciles while the kill
+	// switch is active. The kill switch is level state with no deactivation event
+	// wired to pods, so without this requeue any enrollment work skipped while it
+	// was active (including a one-shot identityLabels fan-out) would wait for the
+	// informer resync. Reconciles under the kill switch are read-only, so this is
+	// cheap even fleet-wide.
+	requeueKillSwitch = time.Minute
 )
 
 // errProfileTerminating signals that the target WorkloadProfile is mid-deletion
@@ -130,7 +139,7 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 	if r.ks.IsActive() {
 		log.Info("kill switch active, skipping pod",
 			"kill_switch", true, "kill_switch_reason", r.ks.Reason())
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: requeueKillSwitch}, nil
 	}
 
 	currentRef := pod.Annotations[AnnotationProfileRef]
@@ -272,7 +281,7 @@ func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupl
 		if !existing.DeletionTimestamp.IsZero() {
 			return errProfileTerminating
 		}
-		return nil
+		return r.ensureProfileStatus(ctx, &existing, tupleLabels, selectorLabels)
 	}
 	if !apierrors.IsNotFound(err) { // coverage:ignore - transient API error
 		return err
@@ -281,18 +290,39 @@ func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupl
 	profile := &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: profName},
 	}
-	if err := r.client.Create(ctx, profile); err != nil { // coverage:ignore - transient API error
-		if apierrors.IsAlreadyExists(err) { // coverage:ignore - create/create race
-			return nil
+	if err := r.client.Create(ctx, profile); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			// The cache said NotFound but the API server has the object: either a
+			// concurrent create by another pod's reconcile or a deletion that has
+			// not completed server-side. Requeue and re-evaluate against a fresher
+			// cache rather than guessing which; binding now could attach the pod
+			// to an object mid-purge.
+			return errProfileTerminating
 		}
 		return err // coverage:ignore - transient non-AlreadyExists error
 	}
 	r.rec.WorkloadProfileCreated(ctx, metrics.ProfileID{Name: profName, Labels: tupleLabels})
 
-	// Status is a subresource; must be updated after creation.
+	// Status is a subresource; it can only be written after creation.
+	return r.ensureProfileStatus(ctx, profile, tupleLabels, selectorLabels)
+}
+
+// ensureProfileStatus level-triggers the profile's identity labels: whenever the
+// stored status does not match the desired tuple/selector labels, patch it.
+// Converging on every reconcile (not only at creation) heals a profile whose
+// initial status write was lost — a conflict with the profile reconciler's
+// concurrent finalizer back-fill, a crash between create and status write, or a
+// profile inherited from an older operator version. A Patch (not Update) is used
+// so the write cannot 409 against that finalizer back-fill.
+func (r *PodReconciler) ensureProfileStatus(ctx context.Context, profile *ballastv1.WorkloadProfile, tupleLabels, selectorLabels map[string]string) error {
+	if maps.Equal(profile.Status.TupleLabels, tupleLabels) &&
+		maps.Equal(profile.Status.SelectorLabels, selectorLabels) {
+		return nil
+	}
+	base := profile.DeepCopy()
 	profile.Status.TupleLabels = tupleLabels
 	profile.Status.SelectorLabels = selectorLabels
-	return r.client.Status().Update(ctx, profile)
+	return r.client.Status().Patch(ctx, profile, client.MergeFrom(base))
 }
 
 // podEnrollment overrides the reconciled pod's enrollment when recomputing a
@@ -316,22 +346,14 @@ func hasBehaviorAnnotation(pod *corev1.Pod) bool {
 	return false
 }
 
-// setActiveWorkloads counts all pods that hold our finalizer, carry a profileRef
-// matching profName, and have no DeletionTimestamp, then writes that count to the
-// WorkloadProfile status. This is level-triggered: each call derives the count from
-// actual pod state rather than incrementing/decrementing, making every reconcile
-// idempotent and self-healing against any prior miscounting. When self is non-nil,
-// the matching pod's enrollment is overridden with self.ref so the count is correct
+// countActiveWorkloads counts pods that hold our finalizer, carry a profileRef
+// matching profName, and have no DeletionTimestamp. When self is non-nil, the
+// matching pod's enrollment is overridden with self.ref so the count is correct
 // despite cache lag on a stamp written earlier in the same reconcile.
-func (r *PodReconciler) setActiveWorkloads(ctx context.Context, profName string, self *podEnrollment) error {
-	var podList corev1.PodList
-	if err := r.client.List(ctx, &podList); err != nil { // coverage:ignore - transient API error
-		return err
-	}
-
+func countActiveWorkloads(pods []corev1.Pod, profName string, self *podEnrollment) int32 {
 	var count int32
-	for i := range podList.Items {
-		p := &podList.Items[i]
+	for i := range pods {
+		p := &pods[i]
 		ref := p.Annotations[AnnotationProfileRef]
 		enrolled := controllerutil.ContainsFinalizer(p, FinalizerName)
 		if self != nil && p.Namespace == self.namespace && p.Name == self.name {
@@ -342,15 +364,12 @@ func (r *PodReconciler) setActiveWorkloads(ctx context.Context, profName string,
 			count++
 		}
 	}
+	return count
+}
 
-	var profile ballastv1.WorkloadProfile
-	if err := r.client.Get(ctx, types.NamespacedName{Name: profName}, &profile); err != nil { // coverage:ignore - transient API error
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return err // coverage:ignore - transient non-NotFound error
-	}
-	base := profile.DeepCopy()
+// setWorkloadCount records count on the profile status and maintains the Orphaned
+// condition: set when the count reaches zero, removed otherwise.
+func setWorkloadCount(profile *ballastv1.WorkloadProfile, count int32) {
 	profile.Status.ActiveWorkloads = count
 	if count == 0 {
 		apimeta.SetStatusCondition(&profile.Status.Conditions, metav1.Condition{
@@ -363,6 +382,28 @@ func (r *PodReconciler) setActiveWorkloads(ctx context.Context, profName string,
 	} else {
 		apimeta.RemoveStatusCondition(&profile.Status.Conditions, conditionOrphaned)
 	}
+}
+
+// setActiveWorkloads derives the profile's active-workload count from actual pod
+// state and writes it to the WorkloadProfile status. This is level-triggered:
+// each call recomputes rather than incrementing/decrementing, making every
+// reconcile idempotent and self-healing against any prior miscounting.
+func (r *PodReconciler) setActiveWorkloads(ctx context.Context, profName string, self *podEnrollment) error {
+	var podList corev1.PodList
+	if err := r.client.List(ctx, &podList); err != nil { // coverage:ignore - transient API error
+		return err
+	}
+	count := countActiveWorkloads(podList.Items, profName, self)
+
+	var profile ballastv1.WorkloadProfile
+	if err := r.client.Get(ctx, types.NamespacedName{Name: profName}, &profile); err != nil { // coverage:ignore - transient API error
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err // coverage:ignore - transient non-NotFound error
+	}
+	base := profile.DeepCopy()
+	setWorkloadCount(&profile, count)
 	return r.client.Status().Patch(ctx, &profile, client.MergeFrom(base))
 }
 
@@ -437,17 +478,23 @@ func profileDeleted() predicate.Predicate {
 	}
 }
 
-// identityLabelsChanged admits only BallastConfig updates that change the identity
-// label set — the single field that alters profile names.
+// identityLabelsChanged admits only the canonical BallastConfig events that can
+// change enrollment outcomes: creation (pods reconciled while the config was
+// absent were skipped, and a delete + re-apply with different identityLabels never
+// fires the update path) and updates that change the identity label set — the
+// single field that alters profile names. The name filter matches the killswitch's
+// own BallastConfig watch, so a stray non-canonical object cannot fan out
+// reconciles for the whole fleet.
 func identityLabelsChanged() predicate.Predicate {
+	canonical := func(obj client.Object) bool { return obj.GetName() == killswitch.BallastConfigName }
 	return predicate.Funcs{
-		CreateFunc:  func(event.CreateEvent) bool { return false },
+		CreateFunc:  func(e event.CreateEvent) bool { return canonical(e.Object) },
 		DeleteFunc:  func(event.DeleteEvent) bool { return false },
 		GenericFunc: func(event.GenericEvent) bool { return false },
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			oldCfg, ok1 := e.ObjectOld.(*ballastv1.BallastConfig)
 			newCfg, ok2 := e.ObjectNew.(*ballastv1.BallastConfig)
-			if !ok1 || !ok2 {
+			if !ok1 || !ok2 || !canonical(e.ObjectNew) {
 				return false
 			}
 			return !slices.Equal(oldCfg.Spec.IdentityLabels, newCfg.Spec.IdentityLabels)
@@ -511,6 +558,17 @@ func (r *ProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
+	// Correctness backstop for counts: recompute activeWorkloads from live pod
+	// state. The pod reconciler's recounts are the prompt path, but they fire only
+	// for profiles some pod still references; if the trailing recount of a
+	// migration or un-enrollment is lost (transient API error, operator crash), no
+	// pod names the old profile anymore and no pod event will ever recount it.
+	// Recounting here — on every profile event and on resync — guarantees such a
+	// profile still converges to zero, orphans, and ages out.
+	if err := r.recountActiveWorkloads(ctx, &profile); err != nil { // coverage:ignore - transient API error
+		return ctrl.Result{}, err
+	}
+
 	// Orphan-TTL policy decides *when* to delete; the finalizer decides *how* to clean up.
 	cond := apimeta.FindStatusCondition(profile.Status.Conditions, conditionOrphaned)
 	if cond == nil || cond.Status != metav1.ConditionTrue {
@@ -541,6 +599,28 @@ func (r *ProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+// recountActiveWorkloads level-triggers profile.Status.ActiveWorkloads from live
+// pod state, writing only when the stored count or Orphaned condition disagrees.
+// The write-on-change guard keeps this from generating a status event (and thus
+// another profile reconcile) on the steady-state path.
+func (r *ProfileReconciler) recountActiveWorkloads(ctx context.Context, profile *ballastv1.WorkloadProfile) error {
+	var podList corev1.PodList
+	if err := r.client.List(ctx, &podList); err != nil { // coverage:ignore - transient API error
+		return err
+	}
+	count := countActiveWorkloads(podList.Items, profile.Name, nil)
+
+	cond := apimeta.FindStatusCondition(profile.Status.Conditions, conditionOrphaned)
+	orphaned := cond != nil && cond.Status == metav1.ConditionTrue
+	if profile.Status.ActiveWorkloads == count && orphaned == (count == 0) {
+		return nil
+	}
+
+	base := profile.DeepCopy()
+	setWorkloadCount(profile, count)
+	return r.client.Status().Patch(ctx, profile, client.MergeFrom(base))
 }
 
 // finalize purges the profile's Redis history and removes the cleanup finalizer,
