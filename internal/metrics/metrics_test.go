@@ -137,7 +137,9 @@ func TestRecorder_NilSafe(t *testing.T) {
 	rec.WorkloadProfilePurged(ctx, id)
 	rec.ResizeApplied(ctx, id, "policy", "default")
 	rec.ResizeFailed(ctx, id, "policy", "default")
-	rec.ResizeSkipped(ctx, "cooldown", id)
+	rec.ResizeSkipped(ctx, "cooldown", id, "policy", "default")
+	rec.ApplyApplied(ctx, id, "policy", "default")
+	rec.ApplySkipped(ctx, "not_ready", id, "", "default")
 	rec.WebhookMutation(ctx, "mutated", "default", id)
 	rec.KillSwitchTransition(ctx, "activated")
 	rec.SetKillSwitchActive(true, "test")
@@ -275,11 +277,50 @@ func TestRecorder_ResizeSkipped(t *testing.T) {
 	rec, reg := newTestRecorder(t)
 	ctx := context.Background()
 
-	rec.ResizeSkipped(ctx, "cooldown", metrics.ProfileID{Name: "frontend--web"})
+	rec.ResizeSkipped(ctx, "cooldown", metrics.ProfileID{Name: "frontend--web"}, "default", "staging")
 
 	got := gatherCounter(t, reg, "ballast_resize_skipped_total")
 	if got != 1 {
 		t.Errorf("ballast_resize_skipped_total = %v, want 1", got)
+	}
+	ls := firstLabels(t, reg, "ballast_resize_skipped_total")
+	if ls["reason"] != "cooldown" || ls["policy"] != "default" || ls["namespace"] != "staging" {
+		t.Errorf("reason/policy/namespace attrs = %q/%q/%q", ls["reason"], ls["policy"], ls["namespace"])
+	}
+}
+
+func TestRecorder_ApplySkipped(t *testing.T) {
+	rec, reg := newTestRecorder(t)
+	ctx := context.Background()
+
+	rec.ApplySkipped(ctx, "not_ready", metrics.ProfileID{Name: "frontend--web"}, "", "staging")
+
+	got := gatherCounter(t, reg, "ballast_apply_skipped_total")
+	if got != 1 {
+		t.Errorf("ballast_apply_skipped_total = %v, want 1", got)
+	}
+	ls := firstLabels(t, reg, "ballast_apply_skipped_total")
+	if ls["reason"] != "not_ready" || ls["policy"] != "" || ls["namespace"] != "staging" {
+		t.Errorf("reason/policy/namespace attrs = %q/%q/%q", ls["reason"], ls["policy"], ls["namespace"])
+	}
+	if ls["profile"] != "frontend--web" {
+		t.Errorf("profile attr = %q, want frontend--web", ls["profile"])
+	}
+}
+
+func TestRecorder_ApplyApplied(t *testing.T) {
+	rec, reg := newTestRecorder(t)
+	ctx := context.Background()
+
+	rec.ApplyApplied(ctx, metrics.ProfileID{Name: "frontend--web"}, "default", "staging")
+
+	got := gatherCounter(t, reg, "ballast_apply_applied_total")
+	if got != 1 {
+		t.Errorf("ballast_apply_applied_total = %v, want 1", got)
+	}
+	ls := firstLabels(t, reg, "ballast_apply_applied_total")
+	if ls["profile"] != "frontend--web" || ls["policy"] != "default" || ls["namespace"] != "staging" {
+		t.Errorf("profile/policy/namespace attrs = %q/%q/%q", ls["profile"], ls["policy"], ls["namespace"])
 	}
 }
 

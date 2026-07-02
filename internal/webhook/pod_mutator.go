@@ -75,35 +75,30 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 		return admission.Denied(err.Error())
 	}
 
-	profile, ok, err := m.resolveApplyProfile(ctx, &pod)
+	if !wantsApply(pod.Annotations) {
+		m.rec.WebhookMutation(ctx, "skipped", req.Namespace, metrics.ProfileID{})
+		return admission.Allowed("apply not requested")
+	}
+
+	profile, err := m.lookupProfile(ctx, &pod)
 	if err != nil {
 		log.V(1).Info("profile resolution error, allowing without mutation", "err", err)
 		m.rec.WebhookMutation(ctx, "not_available", req.Namespace, metrics.ProfileID{})
 		return admission.Allowed("profile not available")
 	}
-	if !ok {
+	if profile == nil {
+		m.rec.ApplySkipped(ctx, "no_profile", metrics.ProfileID{}, "", pod.Namespace)
 		m.rec.WebhookMutation(ctx, "skipped", req.Namespace, metrics.ProfileID{})
-		return admission.Allowed("apply not active or profile not ready")
+		return admission.Allowed("no profile for workload yet")
+	}
+	if !profile.Status.MeetsThreshold {
+		pid := metrics.ProfileID{Name: profile.Name, Labels: profile.Status.TupleLabels}
+		m.rec.ApplySkipped(ctx, "not_ready", pid, "", pod.Namespace)
+		m.rec.WebhookMutation(ctx, "skipped", req.Namespace, metrics.ProfileID{})
+		return admission.Allowed("profile not ready")
 	}
 
 	return m.mutate(ctx, &pod, profile)
-}
-
-// resolveApplyProfile returns the WorkloadProfile to use for patching, and true if apply
-// should proceed. Returns (nil, false, nil) when apply is not requested or the profile is
-// not ready — both are normal non-error states.
-func (m *PodMutator) resolveApplyProfile(ctx context.Context, pod *corev1.Pod) (*ballastv1.WorkloadProfile, bool, error) {
-	if !wantsApply(pod.Annotations) {
-		return nil, false, nil
-	}
-	p, err := m.lookupProfile(ctx, pod)
-	if err != nil {
-		return nil, false, err
-	}
-	if p == nil || !p.Status.MeetsThreshold {
-		return nil, false, nil
-	}
-	return p, true, nil
 }
 
 // wantsApply reports whether the pod carries any annotation that requests resource application.
@@ -124,12 +119,24 @@ func (m *PodMutator) mutate(ctx context.Context, pod *corev1.Pod, profile *balla
 	log := ctrl.Log.WithName("webhook")
 
 	modifiedPod := pod.DeepCopy()
-	m.stampPolicyRef(ctx, pod, modifiedPod)
+	policyRef := m.stampPolicyRef(ctx, pod, modifiedPod)
 
 	applied := applyRecommendations(modifiedPod, profile)
 	log.Info("applying resource recommendations", "dry_run", m.dryRunApply, "containers", applied)
 
 	pid := metrics.ProfileID{Name: profile.Name, Labels: profile.Status.TupleLabels}
+
+	// Exactly one apply.* outcome per admission that requested apply: no_change
+	// wins over dry_run (nothing would have changed either way), and applied is
+	// recorded only when a real patch changed resources.
+	switch {
+	case len(applied) == 0:
+		m.rec.ApplySkipped(ctx, "no_change", pid, policyRef, pod.Namespace)
+	case m.dryRunApply:
+		m.rec.ApplySkipped(ctx, "dry_run", pid, policyRef, pod.Namespace)
+	default:
+		m.rec.ApplyApplied(ctx, pid, policyRef, pod.Namespace)
+	}
 
 	if m.dryRunApply {
 		m.rec.WebhookMutation(ctx, "dry_run", pod.Namespace, pid)
@@ -140,9 +147,10 @@ func (m *PodMutator) mutate(ctx context.Context, pod *corev1.Pod, profile *balla
 	return patchResponse(pod, modifiedPod)
 }
 
-// stampPolicyRef resolves the active policy and stamps its name onto modifiedPod.
-// Policy resolution failures are non-fatal — the admission proceeds without a policy-ref.
-func (m *PodMutator) stampPolicyRef(ctx context.Context, pod, modifiedPod *corev1.Pod) {
+// stampPolicyRef resolves the active policy and stamps its name onto modifiedPod,
+// returning the stamped ref ("" when no policy resolved). Policy resolution
+// failures are non-fatal — the admission proceeds without a policy-ref.
+func (m *PodMutator) stampPolicyRef(ctx context.Context, pod, modifiedPod *corev1.Pod) string {
 	resolved, err := m.resolver.Resolve(ctx, policy.Input{
 		Namespace:   pod.Namespace,
 		OwnerKind:   directOwnerKind(pod),
@@ -151,15 +159,17 @@ func (m *PodMutator) stampPolicyRef(ctx context.Context, pod, modifiedPod *corev
 	})
 	if err != nil { // coverage:ignore - transient API error listing policy objects
 		ctrl.Log.WithName("webhook").V(1).Info("policy resolution error, skipping policy-ref", "err", err)
-		return
+		return ""
 	}
-	if resolved != nil {
-		ref := resolved.Name
-		if resolved.Namespaced {
-			ref = pod.Namespace + "/" + resolved.Name
-		}
-		modifiedPod.Annotations[validation.AnnotationPolicyRef] = ref
+	if resolved == nil {
+		return ""
 	}
+	ref := resolved.Name
+	if resolved.Namespaced {
+		ref = pod.Namespace + "/" + resolved.Name
+	}
+	modifiedPod.Annotations[validation.AnnotationPolicyRef] = ref
+	return ref
 }
 
 // lookupProfile resolves the WorkloadProfile for the given pod.

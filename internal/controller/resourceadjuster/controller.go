@@ -96,13 +96,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if r.ks.IsActive() {
 		log.Info("kill switch active, skipping resize",
 			"kill_switch", true, "kill_switch_reason", r.ks.Reason(), "profile", profile.Name)
-		r.rec.ResizeSkipped(ctx, "kill_switch", pid)
+		r.rec.ResizeSkipped(ctx, "kill_switch", pid, "", "")
 		return ctrl.Result{RequeueAfter: defaultResizeInterval}, nil
 	}
 
 	if !profile.Status.MeetsThreshold {
 		log.V(1).Info("profile does not meet threshold, skipping resize", "profile", profile.Name)
-		r.rec.ResizeSkipped(ctx, "not_ready", pid)
+		r.rec.ResizeSkipped(ctx, "not_ready", pid, "", "")
 		return ctrl.Result{RequeueAfter: defaultResizeInterval}, nil
 	}
 
@@ -112,7 +112,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if resolved == nil {
 		log.Info("no policy matches profile, skipping resize", "profile", profile.Name)
-		r.rec.ResizeSkipped(ctx, "no_policy", pid)
+		r.rec.ResizeSkipped(ctx, "no_policy", pid, "", "")
 		return ctrl.Result{RequeueAfter: defaultResizeInterval}, nil
 	}
 
@@ -171,7 +171,7 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 	if last, ok := pod.Annotations[AnnotationLastResize]; ok {
 		if t, err := time.Parse(time.RFC3339, last); err == nil && time.Since(t) < interval {
 			log.V(1).Info("resize cooldown active, skipping", "pod", pod.Name, "namespace", pod.Namespace, "next_resize", t.Add(interval))
-			r.rec.ResizeSkipped(ctx, "cooldown", pid)
+			r.rec.ResizeSkipped(ctx, "cooldown", pid, policyName, pod.Namespace)
 			return nil
 		}
 	}
@@ -179,7 +179,7 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 	recsByName := containerRecsByName(profile)
 	adjustments := computeAdjustments(pod, recsByName, behaviors)
 	if len(adjustments) == 0 {
-		r.rec.ResizeSkipped(ctx, "no_drift", pid)
+		r.rec.ResizeSkipped(ctx, "no_drift", pid, policyName, pod.Namespace)
 		return nil
 	}
 
@@ -187,7 +187,7 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 
 	if r.dryRunResize {
 		log.Info("dry-run: would resize pod", append(logFields, "dry_run", true)...)
-		r.rec.ResizeSkipped(ctx, "dry_run", pid)
+		r.rec.ResizeSkipped(ctx, "dry_run", pid, policyName, pod.Namespace)
 		return nil
 	}
 
