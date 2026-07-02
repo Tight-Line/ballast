@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -543,8 +545,53 @@ func TestReconcile_ReadinessNotMet(t *testing.T) {
 	if got.Status.MeetsThreshold {
 		t.Error("expected meetsThreshold=false when minDataPoints not met")
 	}
+	if got.Status.State != ballastv1.WorkloadProfileStateAccruing {
+		t.Errorf("state = %q, want Accruing while threshold not met", got.Status.State)
+	}
+	// Ready is collection health, not history sufficiency: the cpu sample was
+	// collected fine, so the profile is Ready even while still accruing.
+	if cond := apimeta.FindStatusCondition(got.Status.Conditions, "Ready"); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Errorf("Ready condition = %+v, want status True while accruing with healthy collection", cond)
+	}
 	if len(got.Status.Containers) > 0 && got.Status.Containers[0].Recommendations != nil {
 		t.Error("expected no recommendations when readiness not met")
+	}
+}
+
+// TestReconcile_NoSamples_ReadyFalse pins the health semantics of the Ready
+// condition: when a policy resource produces no samples in the collection
+// cycle, the profile is not Ready, independent of meetsThreshold.
+func TestReconcile_NoSamples_ReadyFalse(t *testing.T) {
+	ctx := context.Background()
+	tupleLabels := map[string]string{"app": "web"}
+	profile := defaultProfile(tupleLabels)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile)
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	_, sc := newMiniredisClient(t)
+	// The plugin returns no samples at all: the policy tracks cpu, so cpu is missing.
+	p := &mockPlugin{typeName: "kubernetesMetrics"}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+
+	if _, err := reconcileProfile(t, r, "web"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
+		t.Fatalf("Get profile: %v", err)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, "Ready")
+	if cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("Ready condition = %+v, want status False when no samples were collected", cond)
+	}
+	if cond.Reason != "MissingSamples" || !strings.Contains(cond.Message, "cpu") {
+		t.Errorf("Ready condition reason/message = %q/%q, want MissingSamples naming cpu", cond.Reason, cond.Message)
+	}
+	if got.Status.State != ballastv1.WorkloadProfileStateAccruing {
+		t.Errorf("state = %q, want Accruing with no history", got.Status.State)
 	}
 }
 
@@ -581,6 +628,12 @@ func TestReconcile_ReadinessMet_RecommendationsPopulated(t *testing.T) {
 
 	if !got.Status.MeetsThreshold {
 		t.Error("expected meetsThreshold=true")
+	}
+	if got.Status.State != ballastv1.WorkloadProfileStateSufficient {
+		t.Errorf("state = %q, want Sufficient when threshold met", got.Status.State)
+	}
+	if cond := apimeta.FindStatusCondition(got.Status.Conditions, "Ready"); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Errorf("Ready condition = %+v, want status True when threshold met", cond)
 	}
 	if len(got.Status.Containers) == 0 {
 		t.Fatal("expected containers in status")
@@ -825,6 +878,12 @@ func TestReconcile_MemoryMetric(t *testing.T) {
 	}
 	if !got.Status.MeetsThreshold {
 		t.Error("expected meetsThreshold=true")
+	}
+	if got.Status.State != ballastv1.WorkloadProfileStateSufficient {
+		t.Errorf("state = %q, want Sufficient when threshold met", got.Status.State)
+	}
+	if cond := apimeta.FindStatusCondition(got.Status.Conditions, "Ready"); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Errorf("Ready condition = %+v, want status True when threshold met", cond)
 	}
 	if len(got.Status.Containers) == 0 {
 		t.Fatal("expected containers in status")

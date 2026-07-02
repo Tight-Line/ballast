@@ -13,10 +13,12 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -37,6 +39,13 @@ import (
 
 const (
 	defaultPollInterval = 60 * time.Second
+
+	// conditionReady is the conventional health condition (kstatus-style
+	// tooling). It reflects collection health — every resource the matched
+	// policy tracks produced at least one sample in the latest collection
+	// cycle — NOT history sufficiency, which is status.meetsThreshold/state
+	// and is reached over days.
+	conditionReady = "Ready"
 )
 
 // Reconciler collects metrics for each WorkloadProfile and updates its status.
@@ -163,6 +172,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	base := profile.DeepCopy()
 	profile.Status.Containers = containerProfiles
 	profile.Status.MeetsThreshold = allReady
+	// State is the printer-column form of meetsThreshold (kubectl cannot map
+	// booleans to labels); the Ready condition is orthogonal collection health
+	// derived from what this cycle actually observed.
+	//
+	// Writing a condition makes the collector a second writer to the conditions
+	// array (the workloadwatcher owns Orphaned), and a JSON merge patch replaces
+	// that array wholesale, so a patch computed from a stale base can transiently
+	// clobber the other writer's condition. Both self-heal within one cycle: the
+	// workloadwatcher recounts on every profile event and the collector rewrites
+	// on every poll.
+	profile.Status.State = ballastv1.WorkloadProfileStateAccruing
+	if allReady {
+		profile.Status.State = ballastv1.WorkloadProfileStateSufficient
+	}
+	apimeta.SetStatusCondition(&profile.Status.Conditions, readyCondition(resourcesInPolicy, observed))
 	if err := r.client.Status().Patch(ctx, &profile, client.MergeFrom(base)); err != nil { // coverage:ignore - transient API error
 		return ctrl.Result{}, err
 	}
@@ -634,6 +658,43 @@ func formatDuration(ms int64) string {
 
 // policyResourceMap returns a map from resource name to the list of MetricConfigs
 // that reference it. Used to look up which metrics to compute for a given resource.
+// readyCondition derives the Ready condition from the latest collection cycle:
+// True when every resource the matched policy tracks produced at least one
+// sample from some container, False naming the resources that produced none.
+// This is collection health, deliberately orthogonal to meetsThreshold: a
+// day-old profile that is measuring correctly is Ready even though its history
+// is still accruing, and a wedged pipeline is not-Ready no matter how much
+// history it accrued before wedging.
+func readyCondition(resourcesInPolicy map[string][]ballastv1.MetricConfig, observed map[string]map[string]struct{}) metav1.Condition {
+	seen := make(map[string]struct{})
+	for _, resources := range observed {
+		for res := range resources {
+			seen[res] = struct{}{}
+		}
+	}
+	var missing []string
+	for res := range resourcesInPolicy {
+		if _, ok := seen[res]; !ok {
+			missing = append(missing, res)
+		}
+	}
+	if len(missing) > 0 {
+		slices.Sort(missing)
+		return metav1.Condition{
+			Type:    conditionReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  "MissingSamples",
+			Message: "No samples in the latest collection cycle for: " + strings.Join(missing, ", "),
+		}
+	}
+	return metav1.Condition{
+		Type:    conditionReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  "SamplesCollected",
+		Message: "All policy resources produced samples in the latest collection cycle",
+	}
+}
+
 func policyResourceMap(metricCfgs []ballastv1.MetricConfig) map[string][]ballastv1.MetricConfig {
 	result := make(map[string][]ballastv1.MetricConfig)
 	for _, m := range metricCfgs {
