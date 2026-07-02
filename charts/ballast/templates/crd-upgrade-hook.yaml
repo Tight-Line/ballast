@@ -1,0 +1,99 @@
+{{- if .Values.crds.upgradeHook.enabled }}
+{{/*
+Helm's crds/ directory is install-only: `helm upgrade` never touches it, so CRD
+changes would silently not apply. This hook runs `ballastd apply-crds` before
+every install and upgrade, server-side-applying the CRD manifests baked into
+the operator image. Applies are atomic and idempotent (field manager
+"ballast-crd-installer", force ownership), so re-runs and manual invocations
+are safe. pre-install is included so the installer's field manager owns the
+CRDs from day one rather than leaving ownership with the initial Helm install.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "ballast.fullname" . }}-crd-upgrade
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ballast.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-2"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "ballast.fullname" . }}-crd-upgrade
+  labels:
+    {{- include "ballast.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-2"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["customresourcedefinitions"]
+  verbs: ["get", "list", "create", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "ballast.fullname" . }}-crd-upgrade
+  labels:
+    {{- include "ballast.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "ballast.fullname" . }}-crd-upgrade
+subjects:
+- kind: ServiceAccount
+  name: {{ include "ballast.fullname" . }}-crd-upgrade
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ballast.fullname" . }}-crd-upgrade
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ballast.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        {{- include "ballast.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: crd-upgrade
+    spec:
+      serviceAccountName: {{ include "ballast.fullname" . }}-crd-upgrade
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: apply-crds
+        image: {{ include "ballast.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        args: ["apply-crds"]
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 64Mi
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+{{- end }}
