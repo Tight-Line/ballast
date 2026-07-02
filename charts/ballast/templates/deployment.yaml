@@ -89,10 +89,18 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
         - name: OTEL_SERVICE_NAME
           value: {{ .Values.telemetry.serviceName | default "ballast" | quote }}
+        # service.instance.id distinguishes replicas in the OTLP export stream. Without
+        # it, all replicas emit identical resource attributes, the backend merges their
+        # samples into one series, and interleaved cumulative counters from the webhook
+        # path (which runs on every replica) read as constant resets, inflating rates.
         - name: OTEL_RESOURCE_ATTRIBUTES
-          value: {{ printf "service.version=%s,service.namespace=%s" .Chart.AppVersion (.Values.telemetry.serviceNamespace | default "tightlinesoftware.com") | quote }}
+          value: {{ printf "service.version=%s,service.namespace=%s,service.instance.id=$(POD_NAME)" .Chart.AppVersion (.Values.telemetry.serviceNamespace | default "tightlinesoftware.com") | quote }}
         ports:
         - name: health
           containerPort: 8081
