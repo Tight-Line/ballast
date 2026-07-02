@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-07-02
+
 ### Added
 
 - **Project logos.** The full logo tops the README, and the Helm chart now declares an `icon` (the icon-shaped variant, served from the repo), which chart UIs such as Artifact Hub display next to the chart.
