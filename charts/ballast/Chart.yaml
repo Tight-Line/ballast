@@ -10,6 +10,7 @@ keywords:
   - right-sizing
   - operator
 home: https://github.com/tight-line/ballast
+icon: https://raw.githubusercontent.com/tight-line/ballast/main/docs/images/ballast-logo-icon.png
 sources:
   - https://github.com/tight-line/ballast
 maintainers:

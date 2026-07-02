@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Project logos.** The full logo tops the README, and the Helm chart now declares an `icon` (the icon-shaped variant, served from the repo), which chart UIs such as Artifact Hub display next to the chart.
+
 ## [0.3.6] - 2026-07-02
 
 ### Fixed
 
 - **Metrics from multiple replicas no longer merge into one series.** The chart now sets `service.instance.id` (the pod name, via the downward API) in `OTEL_RESOURCE_ATTRIBUTES`. Previously every replica exported identical resource attributes, so backends fingerprinted all replicas' samples into a single series. For cumulative counters emitted on every replica — the webhook-path metrics `ballast.webhook.mutations`, `ballast.apply.applied`, and `ballast.apply.skipped` — the interleaved per-process counts looked like a counter resetting on every sample, inflating `rate()`/`increase()` beyond any real activity; leader-only counters got the same distortion transiently at leader handoff. Gauges such as `ballast.profiles` appeared correct in steady state but double-counted during rollouts, when `service.version` briefly made the replicas distinguishable. With per-pod identity, each replica is its own series: counter math is correct (sum of per-instance increases), and gauge queries that aggregate across replicas should deduplicate explicitly (e.g. `max by (<identity tuple>)` before summing). Dashboards that relied on replicas being indistinguishable will see per-pod series after upgrading.
-
-### Fixed
 
 - **In-place resize no longer fails on pods with non-cpu/memory recommendations.** The Kubernetes pod resize subresource (KEP-1287) permits mutating only `cpu` and `memory`, but the resource adjuster built its patch from every drifted recommendation. A profile with a drifted `ephemeral-storage` recommendation (measured via the `kubelet-summary` source) therefore produced a patch the API server rejected with `Forbidden: only cpu and memory resources are mutable` — which failed the entire resize, including its legal cpu/memory changes, and marked the pod `resize-blocked`. Resize patches now include only cpu and memory; recommendations for other resources still apply at admission time through the webhook and take effect when the pod is recreated. Excluded drifted resources are logged, and when they are the only drift on a pod the skip is recorded as `ballast.resize.skipped{reason="not_resizable"}` (skip reasons describe the whole pod evaluation). Pods already annotated `ballast.tightlinesoftware.com/resize-blocked: "true"` by this failure must have the annotation removed (or be recreated) to resume resizing.
 
