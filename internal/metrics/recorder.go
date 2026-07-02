@@ -298,9 +298,11 @@ func (r *Recorder) ResizeFailed(ctx context.Context, id ProfileID, policy, names
 }
 
 // ResizeSkipped records a resize evaluation that was skipped without issuing a patch.
-// reason is one of: cooldown, no_drift, kill_switch, not_ready, no_policy, dry_run.
-// policy and namespace are empty for profile-level skips (kill_switch, not_ready,
-// no_policy), which are not scoped to a single pod.
+// reason is one of: cooldown, no_drift, kill_switch, not_ready, no_policy, dry_run,
+// not_resizable. policy and namespace are empty for profile-level skips (kill_switch,
+// not_ready, no_policy), which are not scoped to a single pod. Reasons describe the
+// whole pod evaluation: not_resizable means the only drift found was on resources the
+// resize subresource cannot mutate (only cpu and memory are in-place resizable).
 func (r *Recorder) ResizeSkipped(ctx context.Context, reason string, id ProfileID, policy, namespace string) {
 	if r == nil {
 		return

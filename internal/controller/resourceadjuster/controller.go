@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -177,9 +178,19 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 	}
 
 	recsByName := containerRecsByName(profile)
-	adjustments := computeAdjustments(pod, recsByName, behaviors)
+	adjustments, notResizable := computeAdjustments(pod, recsByName, behaviors)
+	if len(notResizable) > 0 {
+		log.Info("excluding drifted resources the resize subresource cannot mutate",
+			"pod", pod.Name, "namespace", pod.Namespace, "resources", notResizable)
+	}
 	if len(adjustments) == 0 {
-		r.rec.ResizeSkipped(ctx, "no_drift", pid, policyName, pod.Namespace)
+		// The skip reason describes the whole pod: not_resizable when the only
+		// actionable drift was on resources in-place resize cannot touch.
+		reason := "no_drift"
+		if len(notResizable) > 0 {
+			reason = "not_resizable"
+		}
+		r.rec.ResizeSkipped(ctx, reason, pid, policyName, pod.Namespace)
 		return nil
 	}
 
@@ -223,37 +234,44 @@ type ContainerAdjustment struct {
 }
 
 // computeAdjustments returns one adjustment per container that has drifted
-// beyond threshold for at least one field.
+// beyond threshold for at least one resizable field, plus the sorted, deduplicated
+// names of drifted resources that were excluded because the resize subresource
+// cannot mutate them.
 func computeAdjustments(
 	pod *corev1.Pod,
 	recsByName map[string]map[string]ballastv1.ResourceRecommendation,
 	behaviors ballastv1.BehaviorConfig,
-) []ContainerAdjustment {
+) (result []ContainerAdjustment, notResizable []string) {
 	maxChange := resolveMaxChangePercent(behaviors)
-	var result []ContainerAdjustment
 
 	for _, c := range pod.Spec.Containers {
 		recs, ok := recsByName[c.Name]
 		if !ok || len(recs) == 0 {
 			continue
 		}
-		if adj, drifted := computeContainerAdjustment(c, recs, behaviors, maxChange); drifted {
+		adj, drifted, skipped := computeContainerAdjustment(c, recs, behaviors, maxChange)
+		if drifted {
 			result = append(result, adj)
 		}
+		notResizable = append(notResizable, skipped...)
 	}
 
-	return result
+	slices.Sort(notResizable)
+	return result, slices.Compact(notResizable)
 }
 
 // computeContainerAdjustment evaluates every recommended field for one container
-// and returns the capped adjustment plus whether any field drifted beyond threshold.
+// and returns the capped adjustment, whether any resizable field drifted beyond
+// threshold, and the drifted resources that were excluded as not resizable.
+// Recommendations for resources the resize subresource cannot mutate (anything
+// other than cpu and memory) are applied only at admission time by the webhook.
 func computeContainerAdjustment(
 	c corev1.Container,
 	recs map[string]ballastv1.ResourceRecommendation,
 	behaviors ballastv1.BehaviorConfig,
 	maxChange float64,
-) (ContainerAdjustment, bool) {
-	adj := ContainerAdjustment{
+) (adj ContainerAdjustment, drifted bool, notResizable []string) {
+	adj = ContainerAdjustment{
 		Name:     c.Name,
 		Requests: c.Resources.Requests.DeepCopy(),
 		Limits:   c.Resources.Limits.DeepCopy(),
@@ -265,9 +283,17 @@ func computeContainerAdjustment(
 		adj.Limits = make(corev1.ResourceList)
 	}
 
-	drifted := false
 	for res, rec := range recs {
 		resName := corev1.ResourceName(res)
+		if !resizableResource(resName) {
+			if fieldDrifts(rec.Request, ResolveFieldThreshold(behaviors, res, "request"),
+				currentValue(c.Resources.Requests, resName)) ||
+				fieldDrifts(rec.Limit, ResolveFieldThreshold(behaviors, res, "limit"),
+					currentValue(c.Resources.Limits, resName)) {
+				notResizable = append(notResizable, res)
+			}
+			continue
+		}
 		if evaluateField(adj.Requests, resName, rec.Request,
 			ResolveFieldThreshold(behaviors, res, "request"), maxChange,
 			currentValue(c.Resources.Requests, resName)) {
@@ -279,7 +305,23 @@ func computeContainerAdjustment(
 			drifted = true
 		}
 	}
-	return adj, drifted
+	return adj, drifted, notResizable
+}
+
+// resizableResource reports whether the pod resize subresource can mutate the
+// given resource. Kubernetes in-place resize (KEP-1287) allows only cpu and
+// memory; a patch touching any other resource is rejected by the API server
+// with "only cpu and memory resources are mutable".
+func resizableResource(res corev1.ResourceName) bool {
+	return res == corev1.ResourceCPU || res == corev1.ResourceMemory
+}
+
+// fieldDrifts reports whether a recommended value parses and drifts beyond
+// threshold relative to current, without recording an adjustment. An empty
+// recValue fails to parse and is treated as "no recommendation".
+func fieldDrifts(recValue string, threshold float64, current resource.Quantity) bool {
+	recommended, err := resource.ParseQuantity(recValue)
+	return err == nil && ExceedsDrift(current, recommended, threshold)
 }
 
 // evaluateField records the capped target for one field in dst when the recommended
