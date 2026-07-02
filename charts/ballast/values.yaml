@@ -12,6 +12,16 @@ fullnameOverride: ""
 serviceAccount:
   name: ""
 
+crds:
+  # Helm applies the chart's crds/ directory only on first install and never
+  # upgrades it, so CRD changes in newer releases would silently not reach the
+  # cluster. This hook runs `ballastd apply-crds` (a Job using the operator
+  # image) before every install and upgrade to keep the cluster's CRDs in
+  # sync. Disable only if CRDs are managed by external tooling; upgrades then
+  # require applying config/crd/bases/ by hand.
+  upgradeHook:
+    enabled: true
+
 # leaderElect enables Kubernetes leader election so only one replica runs the
 # controllers at a time. Must be true when replicaCount > 1; otherwise all
 # replicas run every controller simultaneously, causing duplicate Redis writes,

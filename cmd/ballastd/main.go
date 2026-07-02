@@ -23,6 +23,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -32,9 +33,11 @@ import (
 	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
+	crdmanifests "github.com/tight-line/ballast/config/crd/bases"
 	"github.com/tight-line/ballast/internal/controller/metricscollector"
 	"github.com/tight-line/ballast/internal/controller/resourceadjuster"
 	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
+	"github.com/tight-line/ballast/internal/crdapply"
 	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/logger"
 	appmetrics "github.com/tight-line/ballast/internal/metrics"
@@ -66,7 +69,35 @@ func init() {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "apply-crds" {
+		os.Exit(runApplyCRDs())
+	}
 	os.Exit(run())
+}
+
+// runApplyCRDs server-side-applies the embedded CRD manifests and exits. The
+// Helm chart runs this as a pre-install/pre-upgrade hook Job so CRD changes
+// ship with every release; Helm's crds/ directory is install-only. Safe to run
+// by hand at any time; each apply is atomic and idempotent (see crdapply).
+func runApplyCRDs() int {
+	ctrl.SetLogger(logger.New(logger.Options{Stdout: true}))
+	log := ctrl.Log.WithName("apply-crds")
+
+	cfg, err := ctrl.GetConfig()
+	if err != nil {
+		log.Error(err, "Failed to load kubeconfig")
+		return 1
+	}
+	c, err := client.New(cfg, client.Options{})
+	if err != nil {
+		log.Error(err, "Failed to create client")
+		return 1
+	}
+	if err := crdapply.Apply(context.Background(), c, crdmanifests.FS, log); err != nil {
+		log.Error(err, "Failed to apply CRDs")
+		return 1
+	}
+	return 0
 }
 
 func run() int {

@@ -40,6 +40,8 @@ helm install ballast ballast/ballast \
 
 The chart ships with a sensible default for `ballastConfig.identityLabels` (`app.kubernetes.io/name` + `app.kubernetes.io/component`). Read the section below before overriding it — the choice has cluster-wide consequences.
 
+Upgrades are `helm upgrade --install` with no extra steps. CRDs are kept in sync automatically: Helm itself never upgrades the `crds/` directory, so the chart runs a pre-install/pre-upgrade hook Job (`ballastd apply-crds`) that server-side-applies the CRD manifests baked into the operator image. Set `crds.upgradeHook.enabled: false` to opt out if external tooling manages CRDs; you are then responsible for applying `config/crd/bases/` on every upgrade.
+
 ## WorkloadProfile Identity
 
 Ballast groups pods into `WorkloadProfile` objects by matching a configurable set of pod label keys called the **identity tuple**. The tuple is defined once in `BallastConfig.spec.identityLabels` and applies to every namespace in the cluster.
