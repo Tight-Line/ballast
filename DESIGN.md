@@ -220,10 +220,13 @@ status:
           request: "410Mi"
           limit: "450Mi"
       meetsThreshold: true
+  state: Sufficient             # Accruing until meetsThreshold, then Sufficient (shown by kubectl get)
   activeWorkloads: 3            # number of workloads currently contributing
   conditions:
-    - type: Ready
+    - type: Ready               # collection health: every policy resource produced at least
+                                # one sample in the latest cycle; orthogonal to meetsThreshold
       status: "True"
+      reason: SamplesCollected
     - type: Orphaned            # true when activeWorkloads == 0
       status: "False"
       lastTransitionTime: "2026-06-17T14:30:00Z"

@@ -18,7 +18,7 @@ import (
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="ActiveWorkloads",type="integer",JSONPath=".status.activeWorkloads"
-// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="State",type="string",JSONPath=".status.state"
 // +kubebuilder:printcolumn:name="Orphaned",type="string",JSONPath=".status.conditions[?(@.type=='Orphaned')].status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 type WorkloadProfile struct {
@@ -32,6 +32,18 @@ type WorkloadProfile struct {
 	// +optional
 	Status WorkloadProfileStatus `json:"status,omitempty"`
 }
+
+// WorkloadProfileState summarizes a profile's measurement readiness.
+type WorkloadProfileState string
+
+const (
+	// WorkloadProfileStateAccruing means the profile does not yet have
+	// sufficient history to act on.
+	WorkloadProfileStateAccruing WorkloadProfileState = "Accruing"
+	// WorkloadProfileStateSufficient means the profile meets its history
+	// threshold and recommendations may be acted on.
+	WorkloadProfileStateSufficient WorkloadProfileState = "Sufficient"
+)
 
 // WorkloadProfileStatus holds the observed state of a WorkloadProfile.
 type WorkloadProfileStatus struct {
@@ -54,6 +66,18 @@ type WorkloadProfileStatus struct {
 	// MeetsThreshold is true when the profile has sufficient history to act on.
 	// +optional
 	MeetsThreshold bool `json:"meetsThreshold,omitempty"`
+
+	// State is the human-readable form of MeetsThreshold for kubectl output:
+	// Accruing until the profile has sufficient history, then Sufficient.
+	// Maintained by the metrics collector alongside MeetsThreshold; the API
+	// server defaults it to Accruing so a profile the collector has not yet
+	// visited (or that matches no policy) never shows an empty column. Distinct
+	// from the Ready condition, which reflects collection health, not history
+	// sufficiency.
+	// +optional
+	// +kubebuilder:validation:Enum=Accruing;Sufficient
+	// +kubebuilder:default=Accruing
+	State WorkloadProfileState `json:"state,omitempty"`
 
 	// ActiveWorkloads is the count of workloads currently contributing to this profile.
 	// +optional

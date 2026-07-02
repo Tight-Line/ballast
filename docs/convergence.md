@@ -285,6 +285,14 @@ yet in its cache and briefly write a lower count. This self-corrects because the
 stamp's own watch event re-triggers the pod reconciler after the cache reflects it;
 the last write always derives from the freshest state.
 
+The conditions array has the same flavor of race with a different cause: it has two
+writers (the workloadwatcher owns `Orphaned`, the metrics collector owns `Ready`),
+and a JSON merge patch replaces the array wholesale, so a patch computed from a
+stale base can transiently drop the other writer's condition. Both writers are
+level-triggered; the workloadwatcher rewrites `Orphaned` on every profile event and
+the collector rewrites `Ready` on every poll, so a clobbered condition reappears
+within one cycle.
+
 ## Convergence triggers at a glance
 
 | Change | Prompt trigger | Correctness backstop |

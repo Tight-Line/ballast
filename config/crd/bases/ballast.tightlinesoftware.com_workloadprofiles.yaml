@@ -18,8 +18,8 @@ spec:
     - jsonPath: .status.activeWorkloads
       name: ActiveWorkloads
       type: integer
-    - jsonPath: .status.conditions[?(@.type=='Ready')].status
-      name: Ready
+    - jsonPath: .status.state
+      name: State
       type: string
     - jsonPath: .status.conditions[?(@.type=='Orphaned')].status
       name: Orphaned
@@ -220,6 +220,20 @@ spec:
                   requirement. This prevents a profile for "name=nginx, no-component" from
                   accidentally collecting metrics from "name=nginx, component=server" pods.
                 type: object
+              state:
+                default: Accruing
+                description: |-
+                  State is the human-readable form of MeetsThreshold for kubectl output:
+                  Accruing until the profile has sufficient history, then Sufficient.
+                  Maintained by the metrics collector alongside MeetsThreshold; the API
+                  server defaults it to Accruing so a profile the collector has not yet
+                  visited (or that matches no policy) never shows an empty column. Distinct
+                  from the Ready condition, which reflects collection health, not history
+                  sufficiency.
+                enum:
+                - Accruing
+                - Sufficient
+                type: string
               tupleLabels:
                 additionalProperties:
                   type: string
