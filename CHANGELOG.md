@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-02
+
 ### Fixed
 
 - **Sustained full-CPU load on clusters with many pods.** Every `activeWorkloads` recount listed and deep-copied every pod in the cluster from the informer cache. The profile reconciler introduced in 0.3.0 performs such a recount on every `WorkloadProfile` event, including the metrics collector's once-per-poll status writes, so on a large cluster (thousands of pods, hundreds of profiles) the operator burned most of a core continuously, starting at startup and never settling. Pod lookups by profile now go through a cache field index keyed on the `profile-ref` annotation, so each recount touches only that profile's members. The pod reconciler's recounts and the profile-deletion fan-out use the same index. Counting semantics are unchanged, including the same-reconcile stamp override that keeps counts correct despite informer cache lag.
