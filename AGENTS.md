@@ -2,6 +2,10 @@
 
 > This file is the primary entry point for AI agents working on ballast.
 > Read DESIGN.md for full system context before making changes.
+> **For any change to enrollment or WorkloadProfile lifecycle, read
+> [docs/convergence.md](docs/convergence.md) first** — it is the canonical
+> convergence contract (sequence diagrams + invariants) and must be updated
+> alongside such changes.
 > The Key Files table below is the current reference. IMPLEMENTATION_PLAN.md is a
 > historical record of the phased build-out, not a live status tracker.
 
@@ -114,10 +118,20 @@ Not a workload reconciler — it watches the `ballast-kill-switch` ConfigMap (in
 
 ### WorkloadWatcher (`internal/controller/workloadwatcher/`)
 
+> **Before changing enrollment or profile-lifecycle behavior, read
+> [docs/convergence.md](docs/convergence.md)** — it holds the canonical sequence
+> diagrams and design invariants for how convergence is achieved. Keep it in sync
+> with any change here.
+
+Enrollment is **level-triggered**: every pod CREATE/UPDATE reconcile recomputes the
+desired profile from the pod's current labels and the current `identityLabels` and
+reconciles toward it. The `profile-ref` stamp is a hint (a deterministic function of
+identity), not the source of truth; it is trusted verbatim only on the DELETE path.
+
 Two reconcilers share the package:
 
-- `PodReconciler` — watches pods carrying any Ballast behavior annotation. On CREATE: reads `BallastConfig.identityLabels`, extracts the identity tuple, creates `WorkloadProfile` if absent, increments `activeWorkloads`, stamps `profile-ref` annotation on the pod. On DELETE: decrements `activeWorkloads`; sets `Orphaned` condition when it reaches zero. Kill switch suppresses CREATE path only; DELETE path always runs so accounting stays correct.
-- `ProfileReconciler` — watches `WorkloadProfile` objects. Checks orphan TTL; if exceeded, purges Redis keys via `AllKeysForHash`/`DeleteKey` and deletes the profile.
+- `PodReconciler` — watches pods carrying any Ballast behavior annotation (also watches WorkloadProfile deletions and BallastConfig `identityLabels` changes to converge promptly). On CREATE/UPDATE: if enrolled, computes the target profile, creates the `WorkloadProfile` if absent (recreating it if deleted), stamps `profile-ref`, and recomputes `activeWorkloads` from live pods. If the computed name differs from the stamp → **migrate** (re-stamp, recount new and old). If no behavior annotation remains → **un-enroll** (remove `profile-ref` + finalizer, decrement old). On DELETE: reads the stamp (no recompute), recounts, sets `Orphaned` at zero. Kill switch suppresses the CREATE path only; DELETE/decrement always runs. Counts are recomputed from live pods (never `++/--`), so they self-heal.
+- `ProfileReconciler` — watches `WorkloadProfile` objects. Owns the cleanup finalizer (`ballast.tightlinesoftware.com/profile-cleanup`): on any deletion it purges Redis keys via `AllKeysForHash`/`DeleteKey` before releasing the object, so manual `kubectl delete` clears history just like the orphan-TTL sweep. Orphan-TTL expiry issues the `Delete`; the finalizer does the purge.
 
 Exported helpers used by the webhook: `ExtractTupleLabels(podLabels, identityLabels)` and `ProfileName(tupleLabels, identityLabels)`. `ProfileName` joins label values in `identityLabels` order (not alphabetically) so the name reads naturally, e.g., `nginx--nocomponent` when `identityLabels = ["name", "component"]`.
 

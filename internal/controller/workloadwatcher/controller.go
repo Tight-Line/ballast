@@ -2,6 +2,7 @@ package workloadwatcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -17,6 +18,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
@@ -36,8 +39,22 @@ const (
 
 	FinalizerName = "ballast.tightlinesoftware.com/workloadwatcher"
 
+	// ProfileFinalizerName gates WorkloadProfile deletion so that any delete path
+	// — the operator's orphan-TTL sweep or a manual `kubectl delete` — routes
+	// through the Redis-history purge before the object is released.
+	ProfileFinalizerName = "ballast.tightlinesoftware.com/profile-cleanup"
+
 	conditionOrphaned = "Orphaned"
+
+	// requeueTerminating is how long to wait before re-checking a profile that is
+	// mid-deletion, so a freshly arriving pod is not bound to a doomed profile.
+	requeueTerminating = time.Second
 )
+
+// errProfileTerminating signals that the target WorkloadProfile is mid-deletion
+// (its finalizer is still purging Redis). The pod reconciler translates this into
+// a short requeue rather than binding a live pod to a profile about to disappear.
+var errProfileTerminating = errors.New("workload profile is terminating")
 
 var behaviorAnnotations = []string{
 	AnnotationMeasure,
@@ -116,17 +133,17 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 		return ctrl.Result{}, nil
 	}
 
-	// Already processed: ensure finalizer is present for cleanup, then recalibrate.
-	if pod.Annotations[AnnotationProfileRef] != "" {
-		profName := pod.Annotations[AnnotationProfileRef]
-		if !controllerutil.ContainsFinalizer(pod, FinalizerName) {
-			base := pod.DeepCopy()
-			controllerutil.AddFinalizer(pod, FinalizerName)
-			if err := r.client.Patch(ctx, pod, client.MergeFrom(base)); err != nil { // coverage:ignore - transient API error
-				return ctrl.Result{}, err
-			}
+	currentRef := pod.Annotations[AnnotationProfileRef]
+
+	// Desired enrollment is derived from the pod's live annotations, not from the
+	// stamp. A pod that no longer carries any behavior annotation must be
+	// un-enrolled: drop its profile-ref, remove the finalizer, and recount the
+	// profile it is leaving.
+	if !hasBehaviorAnnotation(pod) {
+		if currentRef != "" || controllerutil.ContainsFinalizer(pod, FinalizerName) {
+			return ctrl.Result{}, r.unenroll(ctx, pod, currentRef)
 		}
-		return ctrl.Result{}, r.setActiveWorkloads(ctx, profName)
+		return ctrl.Result{}, nil
 	}
 
 	var cfg ballastv1.BallastConfig
@@ -138,15 +155,27 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 		return ctrl.Result{}, err // coverage:ignore - transient API error
 	}
 
+	// The desired profile name is recomputed from the pod's current identity every
+	// reconcile, so a change to the pod's labels or to identityLabels migrates the
+	// pod to the correct profile instead of trusting a possibly-stale stamp.
 	tupleLabels := ExtractTupleLabels(pod.Labels, cfg.Spec.IdentityLabels)
 	selectorLabels := ExtractSelectorLabels(pod.Labels, cfg.Spec.IdentityLabels)
 	profName := ProfileName(tupleLabels, cfg.Spec.IdentityLabels)
 
-	if err := r.ensureProfile(ctx, profName, tupleLabels, selectorLabels); err != nil { // coverage:ignore - transient API error
-		return ctrl.Result{}, err
+	// Ensure the target profile exists; recreates it if it was deleted while pods
+	// still reference it.
+	if err := r.ensureProfile(ctx, profName, tupleLabels, selectorLabels); err != nil {
+		if errors.Is(err, errProfileTerminating) {
+			// The profile is being purged; wait for it to finish, then a later
+			// reconcile recreates it fresh and rebinds this pod.
+			return ctrl.Result{RequeueAfter: requeueTerminating}, nil
+		}
+		return ctrl.Result{}, err // coverage:ignore - transient API error
 	}
 
 	pid := metrics.ProfileID{Name: profName, Labels: tupleLabels}
+	firstEnroll := currentRef == ""
+	migrating := currentRef != "" && currentRef != profName
 
 	// Add finalizer before stamping the annotation so delete is always handled
 	// even if the annotation stamp fails.
@@ -156,13 +185,50 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 		if err := r.client.Patch(ctx, pod, client.MergeFrom(base)); err != nil { // coverage:ignore - transient API error
 			return ctrl.Result{}, err
 		}
+	}
+
+	if currentRef != profName {
+		if err := r.stampProfileRef(ctx, pod, profName); err != nil { // coverage:ignore - transient API error
+			return ctrl.Result{}, err
+		}
+	}
+
+	if firstEnroll {
+		r.rec.PodProcessed(ctx, "created", pod.Namespace, pid)
+	}
+	if migrating {
+		r.rec.PodProcessed(ctx, "unenrolled", pod.Namespace, metrics.ProfileID{Name: currentRef})
 		r.rec.PodProcessed(ctx, "created", pod.Namespace, pid)
 	}
 
-	if err := r.stampProfileRef(ctx, pod, profName); err != nil { // coverage:ignore - transient API error
-		return ctrl.Result{}, err
+	// Recount the target profile, treating this pod as bound to profName regardless
+	// of informer cache read-after-write lag on the stamp we just wrote.
+	self := &podEnrollment{namespace: pod.Namespace, name: pod.Name, ref: profName}
+	if migrating {
+		if err := r.setActiveWorkloads(ctx, profName, self); err != nil { // coverage:ignore - transient API error
+			return ctrl.Result{}, err
+		}
+		// Recount the profile the pod just left so it can transition to orphaned.
+		return ctrl.Result{}, r.setActiveWorkloads(ctx, currentRef, self)
 	}
-	return ctrl.Result{}, r.setActiveWorkloads(ctx, profName)
+	return ctrl.Result{}, r.setActiveWorkloads(ctx, profName, self)
+}
+
+// unenroll removes a pod from Ballast management: it drops the profile-ref
+// annotation and the finalizer, then recounts the profile the pod was leaving so
+// that profile can transition to orphaned once its last workload departs.
+func (r *PodReconciler) unenroll(ctx context.Context, pod *corev1.Pod, oldRef string) error {
+	base := pod.DeepCopy()
+	delete(pod.Annotations, AnnotationProfileRef)
+	controllerutil.RemoveFinalizer(pod, FinalizerName)
+	if err := r.client.Patch(ctx, pod, client.MergeFrom(base)); err != nil { // coverage:ignore - transient API error
+		return err
+	}
+	if oldRef == "" {
+		return nil
+	}
+	r.rec.PodProcessed(ctx, "unenrolled", pod.Namespace, metrics.ProfileID{Name: oldRef})
+	return r.setActiveWorkloads(ctx, oldRef, &podEnrollment{namespace: pod.Namespace, name: pod.Name, ref: ""})
 }
 
 func (r *PodReconciler) handleDelete(ctx context.Context, pod *corev1.Pod) (ctrl.Result, error) {
@@ -177,7 +243,7 @@ func (r *PodReconciler) handleDelete(ctx context.Context, pod *corev1.Pod) (ctrl
 	if profName := pod.Annotations[AnnotationProfileRef]; profName != "" {
 		// The pod has DeletionTimestamp set, so setActiveWorkloads excludes it from
 		// the live count automatically — no separate decrement needed.
-		if err := r.setActiveWorkloads(ctx, profName); err != nil { // coverage:ignore - transient API error
+		if err := r.setActiveWorkloads(ctx, profName, nil); err != nil { // coverage:ignore - transient API error
 			return ctrl.Result{}, err
 		}
 		// Recover the identity-tuple labels from the profile so the "deleted" event
@@ -200,6 +266,12 @@ func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupl
 	var existing ballastv1.WorkloadProfile
 	err := r.client.Get(ctx, types.NamespacedName{Name: profName}, &existing)
 	if err == nil {
+		// A profile mid-deletion is having its Redis history purged by the
+		// finalizer. Binding a live pod to it now would race the purge and lose
+		// the freshly-recreated history; signal the caller to requeue instead.
+		if !existing.DeletionTimestamp.IsZero() {
+			return errProfileTerminating
+		}
 		return nil
 	}
 	if !apierrors.IsNotFound(err) { // coverage:ignore - transient API error
@@ -223,12 +295,35 @@ func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupl
 	return r.client.Status().Update(ctx, profile)
 }
 
+// podEnrollment overrides the reconciled pod's enrollment when recomputing a
+// profile's active-workload count, so the count reflects the state just written
+// even if the informer cache has not yet caught up (read-after-write lag). A ref
+// of "" treats the pod as un-enrolled.
+type podEnrollment struct {
+	namespace string
+	name      string
+	ref       string
+}
+
+// hasBehaviorAnnotation reports whether the pod carries at least one Ballast
+// behavior annotation, i.e. whether it wants to be enrolled.
+func hasBehaviorAnnotation(pod *corev1.Pod) bool {
+	for _, ann := range behaviorAnnotations {
+		if _, ok := pod.Annotations[ann]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // setActiveWorkloads counts all pods that hold our finalizer, carry a profileRef
 // matching profName, and have no DeletionTimestamp, then writes that count to the
 // WorkloadProfile status. This is level-triggered: each call derives the count from
 // actual pod state rather than incrementing/decrementing, making every reconcile
-// idempotent and self-healing against any prior miscounting.
-func (r *PodReconciler) setActiveWorkloads(ctx context.Context, profName string) error {
+// idempotent and self-healing against any prior miscounting. When self is non-nil,
+// the matching pod's enrollment is overridden with self.ref so the count is correct
+// despite cache lag on a stamp written earlier in the same reconcile.
+func (r *PodReconciler) setActiveWorkloads(ctx context.Context, profName string, self *podEnrollment) error {
 	var podList corev1.PodList
 	if err := r.client.List(ctx, &podList); err != nil { // coverage:ignore - transient API error
 		return err
@@ -237,9 +332,13 @@ func (r *PodReconciler) setActiveWorkloads(ctx context.Context, profName string)
 	var count int32
 	for i := range podList.Items {
 		p := &podList.Items[i]
-		if p.Annotations[AnnotationProfileRef] == profName &&
-			controllerutil.ContainsFinalizer(p, FinalizerName) &&
-			p.DeletionTimestamp.IsZero() {
+		ref := p.Annotations[AnnotationProfileRef]
+		enrolled := controllerutil.ContainsFinalizer(p, FinalizerName)
+		if self != nil && p.Namespace == self.namespace && p.Name == self.name {
+			ref = self.ref
+			enrolled = self.ref != ""
+		}
+		if ref == profName && enrolled && p.DeletionTimestamp.IsZero() {
 			count++
 		}
 	}
@@ -291,12 +390,86 @@ func HasBallastAnnotationOrFinalizer(obj client.Object) bool {
 	return slices.Contains(obj.GetFinalizers(), FinalizerName)
 }
 
-// SetupWithManager registers the PodReconciler with the manager.
+// podsForProfile maps a WorkloadProfile event to reconcile requests for every pod
+// that references it by name, so a deleted profile promptly re-reconciles (and thus
+// recreates for) the workloads that still point at it.
+func (r *PodReconciler) podsForProfile(ctx context.Context, obj client.Object) []ctrl.Request {
+	var podList corev1.PodList
+	if err := r.client.List(ctx, &podList); err != nil { // coverage:ignore - transient API error
+		return nil
+	}
+	var reqs []ctrl.Request
+	for i := range podList.Items {
+		p := &podList.Items[i]
+		if p.Annotations[AnnotationProfileRef] == obj.GetName() {
+			reqs = append(reqs, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: p.Namespace, Name: p.Name}})
+		}
+	}
+	return reqs
+}
+
+// podsForConfig maps a BallastConfig change to reconcile requests for every managed
+// pod, so an identityLabels change promptly migrates each pod to its new profile.
+func (r *PodReconciler) podsForConfig(ctx context.Context, _ client.Object) []ctrl.Request {
+	var podList corev1.PodList
+	if err := r.client.List(ctx, &podList); err != nil { // coverage:ignore - transient API error
+		return nil
+	}
+	var reqs []ctrl.Request
+	for i := range podList.Items {
+		p := &podList.Items[i]
+		if hasBehaviorAnnotation(p) || controllerutil.ContainsFinalizer(p, FinalizerName) {
+			reqs = append(reqs, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: p.Namespace, Name: p.Name}})
+		}
+	}
+	return reqs
+}
+
+// profileDeleted admits only WorkloadProfile delete events. Status writes happen on
+// every pod change, so admitting updates here would enqueue the referencing pods on
+// each write and amplify work without cause.
+func profileDeleted() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return false },
+		UpdateFunc:  func(event.UpdateEvent) bool { return false },
+		DeleteFunc:  func(event.DeleteEvent) bool { return true },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
+}
+
+// identityLabelsChanged admits only BallastConfig updates that change the identity
+// label set — the single field that alters profile names.
+func identityLabelsChanged() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return false },
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldCfg, ok1 := e.ObjectOld.(*ballastv1.BallastConfig)
+			newCfg, ok2 := e.ObjectNew.(*ballastv1.BallastConfig)
+			if !ok1 || !ok2 {
+				return false
+			}
+			return !slices.Equal(oldCfg.Spec.IdentityLabels, newCfg.Spec.IdentityLabels)
+		},
+	}
+}
+
+// SetupWithManager registers the PodReconciler with the manager. Beyond watching
+// pods, it watches WorkloadProfile deletions (to promptly recreate profiles still
+// referenced by live pods) and BallastConfig identityLabels changes (to promptly
+// migrate pods to their new profiles).
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("workloadwatcher-pod").
 		WithLogConstructor(logger.ControllerLogConstructor(mgr.GetLogger(), "workloadwatcher-pod")).
 		For(&corev1.Pod{}, builder.WithPredicates(predicate.NewPredicateFuncs(HasBallastAnnotationOrFinalizer))).
+		Watches(&ballastv1.WorkloadProfile{},
+			handler.EnqueueRequestsFromMapFunc(r.podsForProfile),
+			builder.WithPredicates(profileDeleted())).
+		Watches(&ballastv1.BallastConfig{},
+			handler.EnqueueRequestsFromMapFunc(r.podsForConfig),
+			builder.WithPredicates(identityLabelsChanged())).
 		Complete(r)
 }
 
@@ -307,17 +480,38 @@ type ProfileReconciler struct {
 	rec         *metrics.Recorder
 }
 
-// Reconcile checks whether an orphaned profile has exceeded its TTL and, if so,
-// purges its Redis data and deletes the profile object.
+// Reconcile enforces the profile lifecycle. It runs the Redis-history purge for
+// profiles that are being deleted (the finalizer path), ensures the cleanup
+// finalizer is present on live profiles, and deletes profiles that have been
+// orphaned past their TTL. Cleanup itself lives entirely in the finalizer, so it
+// runs regardless of whether the delete was triggered by the TTL sweep or by an
+// operator running `kubectl delete`.
 func (r *ProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var profile ballastv1.WorkloadProfile
 	if err := r.client.Get(ctx, req.NamespacedName, &profile); err != nil { // coverage:ignore - transient API error
-		if apierrors.IsNotFound(err) { // coverage:ignore - transient API error
+		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err // coverage:ignore - transient non-NotFound error
 	}
 
+	// Deletion in progress: run the finalizer (purge Redis, release the object).
+	if !profile.DeletionTimestamp.IsZero() {
+		return r.finalize(ctx, &profile)
+	}
+
+	// Ensure the cleanup finalizer is present so every future deletion routes
+	// through finalize. This also back-fills the finalizer onto profiles created
+	// by an older operator version on their first reconcile after upgrade.
+	if !controllerutil.ContainsFinalizer(&profile, ProfileFinalizerName) {
+		base := profile.DeepCopy()
+		controllerutil.AddFinalizer(&profile, ProfileFinalizerName)
+		if err := r.client.Patch(ctx, &profile, client.MergeFrom(base)); err != nil { // coverage:ignore - transient API error
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Orphan-TTL policy decides *when* to delete; the finalizer decides *how* to clean up.
 	cond := apimeta.FindStatusCondition(profile.Status.Conditions, conditionOrphaned)
 	if cond == nil || cond.Status != metav1.ConditionTrue {
 		return ctrl.Result{}, nil
@@ -341,6 +535,21 @@ func (r *ProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: ttl - age}, nil
 	}
 
+	// Deleting only sets the DeletionTimestamp; the finalizer runs on the next
+	// reconcile and performs the Redis purge before the object is removed.
+	if err := r.client.Delete(ctx, &profile); err != nil { // coverage:ignore - transient API error
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+// finalize purges the profile's Redis history and removes the cleanup finalizer,
+// allowing the API server to complete the deletion.
+func (r *ProfileReconciler) finalize(ctx context.Context, profile *ballastv1.WorkloadProfile) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(profile, ProfileFinalizerName) {
+		return ctrl.Result{}, nil
+	}
+
 	tupleHash := store.TupleHash(profile.Status.TupleLabels)
 	keys, err := store.AllKeysForHash(ctx, r.storeClient, tupleHash)
 	if err != nil { // coverage:ignore - requires a broken Redis instance
@@ -351,12 +560,11 @@ func (r *ProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, err
 		}
 	}
-
-	if err := r.client.Delete(ctx, &profile); err != nil { // coverage:ignore - transient API error
-		return ctrl.Result{}, err
-	}
 	r.rec.WorkloadProfilePurged(ctx, metrics.ProfileID{Name: profile.Name, Labels: profile.Status.TupleLabels})
-	return ctrl.Result{}, nil
+
+	base := profile.DeepCopy()
+	controllerutil.RemoveFinalizer(profile, ProfileFinalizerName)
+	return ctrl.Result{}, r.client.Patch(ctx, profile, client.MergeFrom(base)) // coverage:ignore - transient API error on the patch itself
 }
 
 // SetupWithManager registers the ProfileReconciler with the manager.

@@ -320,13 +320,19 @@ Fires on pod CREATE for pods matching any `ballast.tightlinesoftware.com/*` anno
 
 ### WorkloadWatcher Controller
 
-Watches pods with any `ballast.tightlinesoftware.com/*` annotation.
+Watches pods with any `ballast.tightlinesoftware.com/*` annotation. Enrollment is
+**level-triggered**: every CREATE/UPDATE reconcile recomputes the pod's desired
+profile from its *current* labels and the *current* `identityLabels`, then reconciles
+toward it, rather than trusting the stamped `profile-ref`. The stamp is a cache used
+only on the DELETE path.
 
-- On new pod: resolves identity tuple from labels using the configured tuple definition. Creates `WorkloadProfile` if absent. Increments `activeWorkloads`. Stamps the pod with `ballast.tightlinesoftware.com/profile-ref: <profile-name>` recording the profile assignment at creation time.
-- On pod deletion: reads `ballast.tightlinesoftware.com/profile-ref` from the pod to identify which `WorkloadProfile` to decrement. Does not recompute the tuple. Sets `Orphaned` condition if `activeWorkloads` reaches 0.
-- On orphan TTL expiry: deletes the `WorkloadProfile` and purges its Redis keys.
+- On create/update: if the pod carries a behavior annotation, computes the target profile name, creates the `WorkloadProfile` if absent (recreating it if it was deleted), stamps `ballast.tightlinesoftware.com/profile-ref`, and recomputes `activeWorkloads` from live pods. If the computed name differs from the stamp (a pod-label or `identityLabels` change), the pod **migrates**: it is re-stamped and both the new and old profiles are recounted. If all behavior annotations have been removed, the pod is **un-enrolled**: profile-ref and finalizer removed, old profile decremented.
+- On pod deletion: reads the stamped `profile-ref` (does not recompute — the pod is leaving) to identify which `WorkloadProfile` to recount; sets `Orphaned` when `activeWorkloads` reaches 0.
+- On any profile deletion (orphan-TTL sweep **or** manual `kubectl delete`): a cleanup finalizer purges the profile's Redis keys before the object is removed. Deleting a profile that still has matching live pods is a history reset — the pod watch promptly recreates a fresh profile and re-associates only matching pods.
 
-Using the stamped `profile-ref` rather than recomputing the tuple at deletion time ensures correctness if the tuple definition or pod labels change between a pod's creation and deletion.
+The count is level-triggered (recomputed from live pod state each reconcile), so it self-heals against missed or duplicated events. Prompt convergence is driven by watches (WorkloadProfile deletions, `identityLabels` changes) with the informer resync as the correctness backstop.
+
+**See [docs/convergence.md](docs/convergence.md) for the canonical sequence diagrams and design invariants. Update it when changing enrollment or profile-lifecycle behavior.**
 
 ---
 
