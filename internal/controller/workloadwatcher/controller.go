@@ -40,6 +40,14 @@ const (
 
 	FinalizerName = "ballast.tightlinesoftware.com/workloadwatcher"
 
+	// PodProfileRefField is the cache index key for looking up pods by their
+	// profile-ref annotation. It is registered in PodReconciler.SetupWithManager;
+	// test harnesses using a fake client must register it with
+	// WithIndex(&corev1.Pod{}, PodProfileRefField, PodProfileRefIndexer).
+	// Without it, every count recomputation would list and deep-copy every pod
+	// in the cluster on each reconcile.
+	PodProfileRefField = ".metadata.annotations.profile-ref"
+
 	// ProfileFinalizerName gates WorkloadProfile deletion so that any delete path
 	// — the operator's orphan-TTL sweep or a manual `kubectl delete` — routes
 	// through the Redis-history purge before the object is released.
@@ -350,19 +358,32 @@ func hasBehaviorAnnotation(pod *corev1.Pod) bool {
 // matching profName, and have no DeletionTimestamp. When self is non-nil, the
 // matching pod's enrollment is overridden with self.ref so the count is correct
 // despite cache lag on a stamp written earlier in the same reconcile.
+//
+// pods comes from the profile-ref index, which reflects the *cached* annotation.
+// A pod stamped with profName earlier in this same reconcile is usually still
+// indexed under its previous ref, so it is absent from the list entirely; the
+// override can only exclude pods, never admit them. The insert below closes that
+// half: when self claims profName but did not appear, count it in by hand. No
+// DeletionTimestamp check is needed there because handleCreateUpdate (the only
+// caller passing a non-nil self) never runs for terminating pods.
 func countActiveWorkloads(pods []corev1.Pod, profName string, self *podEnrollment) int32 {
 	var count int32
+	seenSelf := false
 	for i := range pods {
 		p := &pods[i]
 		ref := p.Annotations[AnnotationProfileRef]
 		enrolled := controllerutil.ContainsFinalizer(p, FinalizerName)
 		if self != nil && p.Namespace == self.namespace && p.Name == self.name {
+			seenSelf = true
 			ref = self.ref
 			enrolled = self.ref != ""
 		}
 		if ref == profName && enrolled && p.DeletionTimestamp.IsZero() {
 			count++
 		}
+	}
+	if self != nil && !seenSelf && self.ref == profName {
+		count++
 	}
 	return count
 }
@@ -387,10 +408,12 @@ func setWorkloadCount(profile *ballastv1.WorkloadProfile, count int32) {
 // setActiveWorkloads derives the profile's active-workload count from actual pod
 // state and writes it to the WorkloadProfile status. This is level-triggered:
 // each call recomputes rather than incrementing/decrementing, making every
-// reconcile idempotent and self-healing against any prior miscounting.
+// reconcile idempotent and self-healing against any prior miscounting. The list
+// is served by the profile-ref index, so its cost scales with the profile's
+// membership, not the cluster's pod count.
 func (r *PodReconciler) setActiveWorkloads(ctx context.Context, profName string, self *podEnrollment) error {
 	var podList corev1.PodList
-	if err := r.client.List(ctx, &podList); err != nil { // coverage:ignore - transient API error
+	if err := r.client.List(ctx, &podList, client.MatchingFields{PodProfileRefField: profName}); err != nil { // coverage:ignore - transient API error
 		return err
 	}
 	count := countActiveWorkloads(podList.Items, profName, self)
@@ -431,20 +454,29 @@ func HasBallastAnnotationOrFinalizer(obj client.Object) bool {
 	return slices.Contains(obj.GetFinalizers(), FinalizerName)
 }
 
+// PodProfileRefIndexer extracts the profile-ref annotation as the index key for
+// PodProfileRefField. Pods without the annotation are not indexed. Exported so
+// tests can register the same index on a fake client.
+func PodProfileRefIndexer(obj client.Object) []string {
+	if ref := obj.GetAnnotations()[AnnotationProfileRef]; ref != "" {
+		return []string{ref}
+	}
+	return nil
+}
+
 // podsForProfile maps a WorkloadProfile event to reconcile requests for every pod
-// that references it by name, so a deleted profile promptly re-reconciles (and thus
-// recreates for) the workloads that still point at it.
+// that references it by name (served by the profile-ref index), so a deleted
+// profile promptly re-reconciles (and thus recreates for) the workloads that
+// still point at it.
 func (r *PodReconciler) podsForProfile(ctx context.Context, obj client.Object) []ctrl.Request {
 	var podList corev1.PodList
-	if err := r.client.List(ctx, &podList); err != nil { // coverage:ignore - transient API error
+	if err := r.client.List(ctx, &podList, client.MatchingFields{PodProfileRefField: obj.GetName()}); err != nil { // coverage:ignore - transient API error
 		return nil
 	}
 	var reqs []ctrl.Request
 	for i := range podList.Items {
 		p := &podList.Items[i]
-		if p.Annotations[AnnotationProfileRef] == obj.GetName() {
-			reqs = append(reqs, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: p.Namespace, Name: p.Name}})
-		}
+		reqs = append(reqs, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: p.Namespace, Name: p.Name}})
 	}
 	return reqs
 }
@@ -505,8 +537,15 @@ func identityLabelsChanged() predicate.Predicate {
 // SetupWithManager registers the PodReconciler with the manager. Beyond watching
 // pods, it watches WorkloadProfile deletions (to promptly recreate profiles still
 // referenced by live pods) and BallastConfig identityLabels changes (to promptly
-// migrate pods to their new profiles).
+// migrate pods to their new profiles). It also registers the profile-ref pod
+// index on the manager's shared cache, which serves both this reconciler's and
+// the ProfileReconciler's count lookups.
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &corev1.Pod{}, PodProfileRefField, PodProfileRefIndexer,
+	); err != nil { // coverage:ignore - fails only on duplicate index registration
+		return fmt.Errorf("registering pod profile-ref index: %w", err)
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("workloadwatcher-pod").
 		WithLogConstructor(logger.ControllerLogConstructor(mgr.GetLogger(), "workloadwatcher-pod")).
@@ -604,10 +643,14 @@ func (r *ProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 // recountActiveWorkloads level-triggers profile.Status.ActiveWorkloads from live
 // pod state, writing only when the stored count or Orphaned condition disagrees.
 // The write-on-change guard keeps this from generating a status event (and thus
-// another profile reconcile) on the steady-state path.
+// another profile reconcile) on the steady-state path. The indexed list matters
+// here even more than on the pod side: this runs on *every* profile event,
+// including the metrics collector's once-per-poll status writes, so an
+// unindexed list would deep-copy the whole cluster's pods several times a
+// second, forever.
 func (r *ProfileReconciler) recountActiveWorkloads(ctx context.Context, profile *ballastv1.WorkloadProfile) error {
 	var podList corev1.PodList
-	if err := r.client.List(ctx, &podList); err != nil { // coverage:ignore - transient API error
+	if err := r.client.List(ctx, &podList, client.MatchingFields{PodProfileRefField: profile.Name}); err != nil { // coverage:ignore - transient API error
 		return err
 	}
 	count := countActiveWorkloads(podList.Items, profile.Name, nil)

@@ -45,6 +45,7 @@ func newFakeClient(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().
 		WithScheme(newScheme()).
 		WithStatusSubresource(&ballastv1.WorkloadProfile{}).
+		WithIndex(&corev1.Pod{}, workloadwatcher.PodProfileRefField, workloadwatcher.PodProfileRefIndexer).
 		WithObjects(objs...).
 		Build()
 }
@@ -995,6 +996,7 @@ func TestPodReconciler_CreateRaceRequeues(t *testing.T) {
 	fc := fake.NewClientBuilder().
 		WithScheme(newScheme()).
 		WithStatusSubresource(&ballastv1.WorkloadProfile{}).
+		WithIndex(&corev1.Pod{}, workloadwatcher.PodProfileRefField, workloadwatcher.PodProfileRefIndexer).
 		WithObjects(defaultBallastConfig(), pod).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {

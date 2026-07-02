@@ -33,15 +33,30 @@ them; do not add behavior that violates one without revisiting this document.
    operator version) heals on the next reconcile of any member pod.
 
 3. **Counts are level-triggered, never incremental.** `setActiveWorkloads` derives
-   the count by listing pods and counting live members, so any missed or duplicated
-   event self-heals on the next reconcile. It never does `count++/count--`.
-   Both reconcilers enforce this. The pod reconciler recounts promptly on pod
-   events, but only for profiles some pod still references; the profile reconciler
-   independently recounts on every profile event and resync
+   the count by listing the profile's member pods and counting live ones, so any
+   missed or duplicated event self-heals on the next reconcile. It never does
+   `count++/count--`. Both reconcilers enforce this. The pod reconciler recounts
+   promptly on pod events, but only for profiles some pod still references; the
+   profile reconciler independently recounts on every profile event and resync
    (`recountActiveWorkloads`, write-on-change). The backstop is what heals a
    profile stranded with a stale count: a lost trailing recount after a migration
    or un-enrollment, or a pod that vanished without a processed delete event
    (e.g. its finalizer stripped by hand while the operator was down).
+
+   Every recount lists pods through the `PodProfileRefField` cache index (keyed on
+   the profile-ref annotation), so its cost scales with the profile's membership,
+   not the cluster's pod count. This is load-bearing: the profile reconciler's
+   backstop fires on *every* profile status write, including the metrics
+   collector's once-per-poll patches, and an unindexed list would deep-copy
+   every pod in the cluster on each of those, pinning a core indefinitely on
+   large clusters. The index reflects the *cached* annotation, so a pod stamped
+   earlier in the same reconcile is usually still indexed under its old ref;
+   `countActiveWorkloads` compensates via the self override, which both excludes
+   the pod from its old profile's list and inserts it into its new profile's
+   count when the index has not yet caught up. Do not filter profile update
+   events with a predicate instead; resync delivers update events with
+   `old == new`, so any field-diff predicate would also drop the resync events
+   the backstop depends on.
 
 4. **Cleanup lives in the finalizer, and only there.** Redis history is purged by the
    WorkloadProfile cleanup finalizer, so every deletion path (orphan-TTL sweep or
@@ -258,7 +273,7 @@ sequenceDiagram
     participant ProfR as ProfileReconciler
 
     API-->>ProfR: WorkloadProfile event (any) or resync
-    ProfR->>API: list pods → derive activeWorkloads
+    ProfR->>API: list pods by profile-ref index → derive activeWorkloads
     alt stored count or Orphaned condition disagrees
         ProfR->>API: patch status → Orphaned when count is 0
         Note over ProfR: orphan-TTL countdown starts from this transition
