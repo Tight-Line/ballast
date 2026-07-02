@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
+	"github.com/tight-line/ballast/internal/killswitch"
 )
 
 // These tests live in the internal package so they can exercise the unexported
@@ -42,8 +43,24 @@ func TestProfileDeletedPredicate(t *testing.T) {
 
 func TestIdentityLabelsChangedPredicate(t *testing.T) {
 	p := identityLabelsChanged()
-	if p.Create(event.CreateEvent{}) {
-		t.Error("create should not be admitted")
+
+	mkNamed := func(name string, labels ...string) *ballastv1.BallastConfig {
+		return &ballastv1.BallastConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       ballastv1.BallastConfigSpec{IdentityLabels: labels},
+		}
+	}
+	mk := func(labels ...string) *ballastv1.BallastConfig {
+		return mkNamed(killswitch.BallastConfigName, labels...)
+	}
+
+	// Creation of the canonical config is admitted: pods reconciled while it was
+	// absent were skipped, and a delete + re-apply never fires the update path.
+	if !p.Create(event.CreateEvent{Object: mk("app")}) {
+		t.Error("create of the canonical BallastConfig should be admitted")
+	}
+	if p.Create(event.CreateEvent{Object: mkNamed("stray", "app")}) {
+		t.Error("create of a non-canonical BallastConfig should not be admitted")
 	}
 	if p.Delete(event.DeleteEvent{}) {
 		t.Error("delete should not be admitted")
@@ -52,14 +69,14 @@ func TestIdentityLabelsChangedPredicate(t *testing.T) {
 		t.Error("generic should not be admitted")
 	}
 
-	mk := func(labels ...string) *ballastv1.BallastConfig {
-		return &ballastv1.BallastConfig{Spec: ballastv1.BallastConfigSpec{IdentityLabels: labels}}
-	}
 	if p.Update(event.UpdateEvent{ObjectOld: mk("app"), ObjectNew: mk("app")}) {
 		t.Error("update with unchanged identityLabels should not be admitted")
 	}
 	if !p.Update(event.UpdateEvent{ObjectOld: mk("app"), ObjectNew: mk("app", "tier")}) {
 		t.Error("update with changed identityLabels should be admitted")
+	}
+	if p.Update(event.UpdateEvent{ObjectOld: mkNamed("stray", "app"), ObjectNew: mkNamed("stray", "app", "tier")}) {
+		t.Error("update of a non-canonical BallastConfig should not be admitted")
 	}
 	// Non-BallastConfig objects → type assertion fails → not admitted.
 	if p.Update(event.UpdateEvent{ObjectOld: &corev1.Pod{}, ObjectNew: &corev1.Pod{}}) {

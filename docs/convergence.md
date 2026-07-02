@@ -27,11 +27,21 @@ them; do not add behavior that violates one without revisiting this document.
    CREATE/UPDATE reconcile recomputes the desired profile from the pod's *current*
    labels and the *current* `identityLabels`, then reconciles toward it. The stamp
    is a cache used only on the DELETE path (where the pod is leaving and there is
-   nothing to recompute).
+   nothing to recompute). The same applies to the profile's own status: each
+   reconcile converges `status.tupleLabels` / `status.selectorLabels` to the
+   recomputed values, so a lost initial status write (conflict, crash, older
+   operator version) heals on the next reconcile of any member pod.
 
 3. **Counts are level-triggered, never incremental.** `setActiveWorkloads` derives
    the count by listing pods and counting live members, so any missed or duplicated
    event self-heals on the next reconcile. It never does `count++/count--`.
+   Both reconcilers enforce this. The pod reconciler recounts promptly on pod
+   events, but only for profiles some pod still references; the profile reconciler
+   independently recounts on every profile event and resync
+   (`recountActiveWorkloads`, write-on-change). The backstop is what heals a
+   profile stranded with a stale count: a lost trailing recount after a migration
+   or un-enrollment, or a pod that vanished without a processed delete event
+   (e.g. its finalizer stripped by hand while the operator was down).
 
 4. **Cleanup lives in the finalizer, and only there.** Redis history is purged by the
    WorkloadProfile cleanup finalizer, so every deletion path (orphan-TTL sweep or
@@ -42,8 +52,17 @@ them; do not add behavior that violates one without revisiting this document.
    The pod controller watches WorkloadProfile deletions and `identityLabels` changes
    so convergence is prompt (seconds). Even if a watch event is missed, the ~10h
    resync re-reconciles every pod and converges. Watch predicates are deliberately
-   narrow (delete-only, identityLabels-only) to avoid enqueue amplification, since
-   profile status is written on every count change.
+   narrow (delete-only; identityLabels-only and filtered to the canonical
+   BallastConfig name) to avoid enqueue amplification, since profile status is
+   written on every count change. BallastConfig *creation* is also admitted: pods
+   reconciled while the config was absent were skipped, and a delete + re-apply
+   never fires the update predicate.
+
+6. **The kill switch defers work; it must not lose it.** Enrollment reconciles
+   skipped while the kill switch is active requeue every minute, so releasing the
+   switch converges promptly (including a one-shot `identityLabels` fan-out that
+   fired mid-outage) instead of waiting for resync. The DELETE path is never
+   suppressed, so accounting stays correct throughout.
 
 ## Participants
 
@@ -90,6 +109,9 @@ sequenceDiagram
 
     API-->>PodR: Pod UPDATE (any change)
     Note over PodR: recompute profName == current stamp → no migration
+    alt profile status labels drifted (recovery)
+        PodR->>API: patch status.tupleLabels / selectorLabels
+    end
     alt finalizer missing (recovery)
         PodR->>API: re-add pod finalizer
     end
@@ -160,7 +182,10 @@ sequenceDiagram
 **Race guard.** If a pod reconciles while the profile is still terminating,
 `ensureProfile` observes the `deletionTimestamp` and returns `errProfileTerminating`;
 the pod requeues rather than binding to the dying object, then recreates once it is
-gone.
+gone. The same guard covers the cache-lag variant: if the cached Get says NotFound
+but the create returns AlreadyExists (the object still exists server-side, either
+terminating or freshly created by a sibling pod), the pod requeues and re-evaluates
+against a fresher cache instead of binding blind.
 
 ```mermaid
 sequenceDiagram
@@ -217,12 +242,52 @@ sequenceDiagram
     PodR->>API: setActiveWorkloads(oldRef) → −1 → orphans when last leaves
 ```
 
+## 8. Count drift — the profile-side backstop
+
+The pod reconciler's recounts fire only for profiles some pod still references. If
+the trailing recount of a migration or un-enrollment is lost (transient API error or
+crash after the pod was already re-stamped or un-enrolled), no pod names the old
+profile anymore and no pod event will ever recount it. The profile reconciler closes
+that hole: on every profile event and on resync it re-derives the count from live pod
+state and patches only when the stored count or Orphaned condition disagrees, so the
+stranded profile still converges to zero, orphans, and ages out.
+
+```mermaid
+sequenceDiagram
+    participant API as K8s API
+    participant ProfR as ProfileReconciler
+
+    API-->>ProfR: WorkloadProfile event (any) or resync
+    ProfR->>API: list pods → derive activeWorkloads
+    alt stored count or Orphaned condition disagrees
+        ProfR->>API: patch status → Orphaned when count is 0
+        Note over ProfR: orphan-TTL countdown starts from this transition
+    end
+```
+
+A momentary interleaving is possible: the backstop can observe a stamp that is not
+yet in its cache and briefly write a lower count. This self-corrects because the
+stamp's own watch event re-triggers the pod reconciler after the cache reflects it;
+the last write always derives from the freshest state.
+
 ## Convergence triggers at a glance
 
 | Change | Prompt trigger | Correctness backstop |
 |---|---|---|
 | Pod created / updated / deleted | Pod watch | resync |
 | `identityLabels` changed | BallastConfig watch (`podsForConfig`) | resync of each pod |
+| BallastConfig deleted + re-applied | BallastConfig watch (create admitted) | resync of each pod |
 | Behavior annotations removed | Pod watch (finalizer keeps it admitted) | resync |
 | Profile deleted (manual or TTL) | WorkloadProfile delete watch (`podsForProfile`) | resync of referencing pods |
+| Stale count / lost trailing recount | WorkloadProfile events (`recountActiveWorkloads`) | resync of the profile |
+| Profile status labels lost | Next reconcile of any member pod | resync |
+| Kill switch released | 1-minute requeue of skipped pods | resync |
 | Redis history on any profile delete | Cleanup finalizer | — (single chokepoint) |
+
+## Known limitations
+
+- **Profile-name collisions.** `sanitizeName` can map two distinct identity tuples to
+  the same profile name (`Web` vs `web`, `a.b` vs `a-b`). Colliding workloads share
+  one profile, and its status labels converge to whichever pod reconciled most
+  recently (visible as the tuple labels flapping between the two identities). Avoid
+  identity-label values that differ only in case or punctuation.

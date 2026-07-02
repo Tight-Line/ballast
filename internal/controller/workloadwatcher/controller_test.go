@@ -14,11 +14,13 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -255,7 +257,18 @@ func TestPodReconciler_KillSwitchSuppresses(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), pod)
 	c := workloadwatcher.New(fc, activeKS(t), nil, nil)
 
-	reconcilePod(t, c, "default", "web-abc")
+	result, err := c.Pod.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "web-abc"},
+	})
+	if err != nil {
+		t.Fatalf("Pod.Reconcile: %v", err)
+	}
+	// The kill switch has no deactivation event wired to pods, so the reconcile
+	// must requeue; otherwise enrollment skipped while the switch was active would
+	// wait for the informer resync after release.
+	if result.RequeueAfter == 0 {
+		t.Error("expected a requeue while the kill switch is active")
+	}
 
 	var list ballastv1.WorkloadProfileList
 	if err := fc.List(ctx, &list); err != nil {
@@ -926,6 +939,95 @@ func TestPodReconciler_MigrateOnIdentityLabelsChange(t *testing.T) {
 	}
 }
 
+// TestPodReconciler_HealsMissingStatusLabels covers the level-triggered status
+// convergence in ensureProfile: a profile whose initial status write was lost
+// (conflict with the finalizer back-fill, crash between create and status write,
+// or created by an older operator version) must get its tuple/selector labels
+// repaired on the next reconcile of any member pod.
+func TestPodReconciler_HealsMissingStatusLabels(t *testing.T) {
+	ctx := context.Background()
+	profName := "web"
+	// Profile exists but its status labels were never written.
+	profile := &ballastv1.WorkloadProfile{ObjectMeta: metav1.ObjectMeta{Name: profName}}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-abc",
+			Namespace: "default",
+			Annotations: map[string]string{
+				workloadwatcher.AnnotationMeasure:    "true",
+				workloadwatcher.AnnotationProfileRef: profName,
+			},
+			Labels:     map[string]string{"app": "web"},
+			Finalizers: []string{workloadwatcher.FinalizerName},
+		},
+	}
+	fc := newFakeClient(defaultBallastConfig(), profile, pod)
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
+	reconcilePod(t, c, "default", "web-abc")
+
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: profName}, &got); err != nil {
+		t.Fatalf("Get profile: %v", err)
+	}
+	if got.Status.TupleLabels["app"] != "web" {
+		t.Errorf("tupleLabels[app]: got %q, want %q (status labels must be healed)", got.Status.TupleLabels["app"], "web")
+	}
+	if got.Status.SelectorLabels["app"] != "web" {
+		t.Errorf("selectorLabels[app]: got %q, want %q (status labels must be healed)", got.Status.SelectorLabels["app"], "web")
+	}
+}
+
+// TestPodReconciler_CreateRaceRequeues covers the cache-lag race on profile
+// creation: the cached Get says NotFound but the API server still has the object
+// (a concurrent create, or a deletion that has not completed server-side), so
+// Create returns AlreadyExists. The reconcile must requeue rather than bind the
+// pod to an object it could not inspect.
+func TestPodReconciler_CreateRaceRequeues(t *testing.T) {
+	ctx := context.Background()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "web-pod",
+			Namespace:   "default",
+			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
+			Labels:      map[string]string{"app": "web"},
+		},
+	}
+	fc := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithStatusSubresource(&ballastv1.WorkloadProfile{}).
+		WithObjects(defaultBallastConfig(), pod).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*ballastv1.WorkloadProfile); ok {
+					return apierrors.NewAlreadyExists(
+						schema.GroupResource{Group: "ballast.tightlinesoftware.com", Resource: "workloadprofiles"},
+						obj.GetName())
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	c := workloadwatcher.New(fc, inactiveKS(t), nil, nil)
+
+	result, err := c.Pod.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "web-pod"},
+	})
+	if err != nil {
+		t.Fatalf("Pod.Reconcile: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected a requeue when profile create hits AlreadyExists through a stale cache")
+	}
+
+	var gotPod corev1.Pod
+	if err := fc.Get(ctx, types.NamespacedName{Namespace: "default", Name: "web-pod"}, &gotPod); err != nil {
+		t.Fatalf("Get pod: %v", err)
+	}
+	if ref := gotPod.Annotations[workloadwatcher.AnnotationProfileRef]; ref != "" {
+		t.Errorf("pod should not be stamped during the create race, got profile-ref %q", ref)
+	}
+}
+
 // -- ExtractTupleLabels unit tests --
 
 func TestExtractTupleLabels(t *testing.T) {
@@ -1039,7 +1141,21 @@ func TestProfileReconciler_NotOrphaned(t *testing.T) {
 	profile := &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: profName},
 	}
-	fc := newFakeClient(defaultBallastConfig(), profile)
+	// A live enrolled pod keeps the profile non-orphaned through the backstop
+	// recount. Its stored count is stale (0); the recount must correct it upward.
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-abc",
+			Namespace: "default",
+			Annotations: map[string]string{
+				workloadwatcher.AnnotationMeasure:    "true",
+				workloadwatcher.AnnotationProfileRef: profName,
+			},
+			Labels:     map[string]string{"app": "web"},
+			Finalizers: []string{workloadwatcher.FinalizerName},
+		},
+	}
+	fc := newFakeClient(defaultBallastConfig(), profile, pod)
 
 	_, mr := newMiniredisClient(t)
 	c := workloadwatcher.New(fc, inactiveKS(t), mr, nil)
@@ -1052,10 +1168,57 @@ func TestProfileReconciler_NotOrphaned(t *testing.T) {
 		t.Errorf("expected no requeue for non-orphaned profile, got RequeueAfter=%v", result.RequeueAfter)
 	}
 
-	// Profile must still exist.
+	// Profile must still exist, with the backstop recount fixing the stale count.
 	var got ballastv1.WorkloadProfile
 	if err := fc.Get(ctx, types.NamespacedName{Name: profName}, &got); err != nil {
 		t.Fatalf("Get profile: %v", err)
+	}
+	if got.Status.ActiveWorkloads != 1 {
+		t.Errorf("activeWorkloads: got %d, want 1 (backstop recount should correct upward)", got.Status.ActiveWorkloads)
+	}
+	if cond := apimeta.FindStatusCondition(got.Status.Conditions, "Orphaned"); cond != nil && cond.Status == metav1.ConditionTrue {
+		t.Error("expected no Orphaned condition while an enrolled pod exists")
+	}
+}
+
+// TestProfileReconciler_RecountHealsStaleCount covers the count backstop: a
+// profile stranded with a stale non-zero count and no referencing pods (e.g. the
+// trailing recount of a migration was lost to a transient error) must be
+// recounted to zero and orphaned by the profile reconciler itself, so it can age
+// out and be purged.
+func TestProfileReconciler_RecountHealsStaleCount(t *testing.T) {
+	ctx := context.Background()
+
+	profName := "stale"
+	profile := &ballastv1.WorkloadProfile{ObjectMeta: metav1.ObjectMeta{Name: profName}}
+	fc := newFakeClient(defaultBallastConfig(), profile)
+	profile.Status.ActiveWorkloads = 1 // stale: no pod references this profile
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	_, mr := newMiniredisClient(t)
+	c := workloadwatcher.New(fc, inactiveKS(t), mr, nil)
+
+	result, err := reconcileProfile(t, c, profName)
+	if err != nil {
+		t.Fatalf("Profile.Reconcile: %v", err)
+	}
+
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: profName}, &got); err != nil {
+		t.Fatalf("Get profile: %v", err)
+	}
+	if got.Status.ActiveWorkloads != 0 {
+		t.Errorf("activeWorkloads: got %d, want 0 (backstop recount should heal stale count)", got.Status.ActiveWorkloads)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, "Orphaned")
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatal("expected Orphaned condition True after backstop recount")
+	}
+	// The orphan-TTL countdown starts from the recount's transition time.
+	if result.RequeueAfter == 0 {
+		t.Error("expected a TTL requeue once the profile is orphaned")
 	}
 }
 
@@ -1535,14 +1698,9 @@ func TestController_SetupWithManager(t *testing.T) {
 	// Wait for WorkloadProfile to appear.
 	waitForProfile(t, ctx, c, "web")
 
-	// Verify activeWorkloads=1.
-	var profile ballastv1.WorkloadProfile
-	if err := c.Get(ctx, types.NamespacedName{Name: "web"}, &profile); err != nil {
-		t.Fatalf("Get WorkloadProfile: %v", err)
-	}
-	if profile.Status.ActiveWorkloads != 1 {
-		t.Errorf("activeWorkloads: got %d, want 1", profile.Status.ActiveWorkloads)
-	}
+	// Wait for activeWorkloads=1: the pod reconciler's recount and the profile
+	// reconciler's backstop recount converge on it, but may interleave briefly.
+	waitForActiveWorkloads(t, ctx, c, "web", 1)
 
 	// Delete the pod and wait for the Orphaned condition to be set.
 	if err := c.Delete(ctx, pod); err != nil {
@@ -1562,6 +1720,23 @@ func waitForProfile(t *testing.T, ctx context.Context, c client.Client, name str
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Errorf("timed out waiting for WorkloadProfile %q to appear", name)
+}
+
+func waitForActiveWorkloads(t *testing.T, ctx context.Context, c client.Client, name string, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	var last int32
+	for time.Now().Before(deadline) {
+		var p ballastv1.WorkloadProfile
+		if err := c.Get(ctx, types.NamespacedName{Name: name}, &p); err == nil {
+			last = p.Status.ActiveWorkloads
+			if last == want {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Errorf("timed out waiting for WorkloadProfile %q activeWorkloads=%d, last seen %d", name, want, last)
 }
 
 func waitForOrphaned(t *testing.T, ctx context.Context, c client.Client, name string) {
