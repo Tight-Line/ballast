@@ -51,6 +51,8 @@ type Recorder struct {
 	resizeApplied           metric.Int64Counter
 	resizeFailed            metric.Int64Counter
 	resizeSkipped           metric.Int64Counter
+	applyApplied            metric.Int64Counter
+	applySkipped            metric.Int64Counter
 	webhookMutations        metric.Int64Counter
 	killSwitchTransitions   metric.Int64Counter
 
@@ -95,6 +97,10 @@ func NewRecorder(provider metric.MeterProvider) (*Recorder, error) {
 		"In-place resize operations that failed")
 	r.resizeSkipped = counter("ballast.resize.skipped",
 		"Resize evaluations skipped before issuing a patch")
+	r.applyApplied = counter("ballast.apply.applied",
+		"Admission-time mutations that changed container resource requests/limits")
+	r.applySkipped = counter("ballast.apply.skipped",
+		"Admission-time apply evaluations that changed nothing, by reason")
 	r.webhookMutations = counter("ballast.webhook.mutations",
 		"Pod admission webhook invocations and their outcomes")
 	r.killSwitchTransitions = counter("ballast.kill_switch.transitions",
@@ -293,12 +299,49 @@ func (r *Recorder) ResizeFailed(ctx context.Context, id ProfileID, policy, names
 
 // ResizeSkipped records a resize evaluation that was skipped without issuing a patch.
 // reason is one of: cooldown, no_drift, kill_switch, not_ready, no_policy, dry_run.
-func (r *Recorder) ResizeSkipped(ctx context.Context, reason string, id ProfileID) {
+// policy and namespace are empty for profile-level skips (kill_switch, not_ready,
+// no_policy), which are not scoped to a single pod.
+func (r *Recorder) ResizeSkipped(ctx context.Context, reason string, id ProfileID, policy, namespace string) {
 	if r == nil {
 		return
 	}
-	attrs := append(profileAttrs(id), attribute.String("reason", reason))
+	attrs := append(profileAttrs(id),
+		attribute.String("reason", reason),
+		attribute.String("policy", policy),
+		attribute.String("namespace", namespace),
+	)
 	r.resizeSkipped.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// ApplyApplied records an admission-time mutation that changed at least one
+// container's resource requests/limits. This is narrower than a "mutated"
+// WebhookMutation, which also counts patches that only stamp annotations
+// (e.g. the policy-ref) without touching resources.
+func (r *Recorder) ApplyApplied(ctx context.Context, id ProfileID, policy, namespace string) {
+	if r == nil {
+		return
+	}
+	attrs := append(profileAttrs(id),
+		attribute.String("policy", policy),
+		attribute.String("namespace", namespace),
+	)
+	r.applyApplied.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// ApplySkipped records an admission evaluation for a pod that requested apply but
+// where nothing was changed. reason is one of: no_profile, not_ready, no_change,
+// dry_run. policy is empty when the skip happens before policy resolution
+// (no_profile, not_ready).
+func (r *Recorder) ApplySkipped(ctx context.Context, reason string, id ProfileID, policy, namespace string) {
+	if r == nil {
+		return
+	}
+	attrs := append(profileAttrs(id),
+		attribute.String("reason", reason),
+		attribute.String("policy", policy),
+		attribute.String("namespace", namespace),
+	)
+	r.applySkipped.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // WebhookMutation records a pod admission webhook invocation.

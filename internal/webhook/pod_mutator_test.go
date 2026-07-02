@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 
+	promclient "github.com/prometheus/client_golang/prometheus"
+	promexporter "go.opentelemetry.io/otel/exporters/prometheus"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,6 +31,7 @@ import (
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/metrics"
 	"github.com/tight-line/ballast/internal/validation"
 	"github.com/tight-line/ballast/internal/webhook"
 )
@@ -134,6 +138,47 @@ func testPod(name string, anns map[string]string) *corev1.Pod {
 			},
 		},
 	}
+}
+
+// newMetricsRecorder returns a Recorder backed by a Prometheus registry so tests
+// can assert on the series the webhook records.
+func newMetricsRecorder(t *testing.T) (*metrics.Recorder, *promclient.Registry) {
+	t.Helper()
+	reg := promclient.NewRegistry()
+	exp, err := promexporter.New(promexporter.WithRegisterer(reg))
+	if err != nil {
+		t.Fatalf("creating prometheus exporter: %v", err)
+	}
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exp))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	rec, err := metrics.NewRecorder(provider)
+	if err != nil {
+		t.Fatalf("creating recorder: %v", err)
+	}
+	return rec, reg
+}
+
+// counterSeries returns the value and labels of the named counter's first series,
+// or (0, nil) when the metric has no series.
+func counterSeries(t *testing.T, reg *promclient.Registry, name string) (value float64, labels map[string]string) {
+	t.Helper()
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			labels := make(map[string]string, len(m.GetLabel()))
+			for _, lp := range m.GetLabel() {
+				labels[lp.GetName()] = lp.GetValue()
+			}
+			return m.GetCounter().GetValue(), labels
+		}
+	}
+	return 0, nil
 }
 
 func hasResourcePatch(resp admission.Response) bool {
@@ -436,6 +481,150 @@ func TestPodMutator_UnmatchedContainer(t *testing.T) {
 	}
 	if !hasResourcePatch(resp) {
 		t.Errorf("expected patches for matched container, got none")
+	}
+}
+
+// TestPodMutator_ApplyAppliedMetric asserts a mutation that changes container
+// resources records ballast.apply.applied with profile, policy, and namespace
+// attributes.
+func TestPodMutator_ApplyAppliedMetric(t *testing.T) {
+	policy := &ballastv1.ClusterResourcePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "default-policy"},
+		Spec:       ballastv1.ClusterResourcePolicySpec{},
+	}
+	fc := newFakeClient(defaultBallastConfig(), readyProfile(), policy)
+	rec, reg := newMetricsRecorder(t)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, rec)
+
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
+		validation.AnnotationMeasure: "true",
+		validation.AnnotationApply:   "true",
+	})))
+	if !resp.Allowed {
+		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
+	}
+
+	got, labels := counterSeries(t, reg, "ballast_apply_applied_total")
+	if got != 1 {
+		t.Fatalf("ballast_apply_applied_total = %v, want 1", got)
+	}
+	if labels["profile"] != "web" || labels["policy"] != "default-policy" || labels["namespace"] != "default" {
+		t.Errorf("profile/policy/namespace attrs = %q/%q/%q",
+			labels["profile"], labels["policy"], labels["namespace"])
+	}
+}
+
+// TestPodMutator_ApplyAppliedMetric_AnnotationOnlyMutation asserts a mutation whose
+// patch touches no container resources (no container matches the profile) reports
+// result=mutated but does not record ballast.apply.applied.
+func TestPodMutator_ApplyAppliedMetric_AnnotationOnlyMutation(t *testing.T) {
+	fc := newFakeClient(defaultBallastConfig(), readyProfile())
+	rec, reg := newMetricsRecorder(t)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, rec)
+
+	// The pod's only container is absent from the profile, so the patch carries
+	// no resource changes.
+	pod := testPod("p", map[string]string{
+		validation.AnnotationMeasure: "true",
+		validation.AnnotationApply:   "true",
+	})
+	pod.Spec.Containers = []corev1.Container{{Name: "sidecar", Image: "envoy"}}
+
+	resp := m.Handle(context.Background(), makeRequest(pod))
+	if !resp.Allowed {
+		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
+	}
+
+	// Prove the mutate path ran: the webhook counted the invocation as mutated.
+	mutations, mutationLabels := counterSeries(t, reg, "ballast_webhook_mutations_total")
+	if mutations != 1 || mutationLabels["result"] != "mutated" {
+		t.Fatalf("ballast_webhook_mutations_total = %v (result=%q), want 1 with result=mutated",
+			mutations, mutationLabels["result"])
+	}
+	if got, _ := counterSeries(t, reg, "ballast_apply_applied_total"); got != 0 {
+		t.Errorf("ballast_apply_applied_total = %v, want 0 when no resources changed", got)
+	}
+	skipped, skipLabels := counterSeries(t, reg, "ballast_apply_skipped_total")
+	if skipped != 1 || skipLabels["reason"] != "no_change" {
+		t.Errorf("ballast_apply_skipped_total = %v (reason=%q), want 1 with reason=no_change",
+			skipped, skipLabels["reason"])
+	}
+}
+
+// TestPodMutator_ApplySkippedMetric_NotReady asserts a pod that requests apply
+// against a below-threshold profile records ballast.apply.skipped{reason=not_ready}
+// carrying the profile attributes.
+func TestPodMutator_ApplySkippedMetric_NotReady(t *testing.T) {
+	fc := newFakeClient(defaultBallastConfig(), notReadyProfile())
+	rec, reg := newMetricsRecorder(t)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, rec)
+
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
+		validation.AnnotationMeasure: "true",
+		validation.AnnotationApply:   "true",
+	})))
+	if !resp.Allowed {
+		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
+	}
+
+	got, labels := counterSeries(t, reg, "ballast_apply_skipped_total")
+	if got != 1 || labels["reason"] != "not_ready" {
+		t.Fatalf("ballast_apply_skipped_total = %v (reason=%q), want 1 with reason=not_ready",
+			got, labels["reason"])
+	}
+	if labels["profile"] != "web" || labels["namespace"] != "default" {
+		t.Errorf("profile/namespace attrs = %q/%q", labels["profile"], labels["namespace"])
+	}
+}
+
+// TestPodMutator_ApplySkippedMetric_NoProfile asserts a pod that requests apply
+// before any profile exists records ballast.apply.skipped{reason=no_profile}
+// without profile attributes.
+func TestPodMutator_ApplySkippedMetric_NoProfile(t *testing.T) {
+	fc := newFakeClient(defaultBallastConfig())
+	rec, reg := newMetricsRecorder(t)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, rec)
+
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
+		validation.AnnotationMeasure: "true",
+		validation.AnnotationApply:   "true",
+	})))
+	if !resp.Allowed {
+		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
+	}
+
+	got, labels := counterSeries(t, reg, "ballast_apply_skipped_total")
+	if got != 1 || labels["reason"] != "no_profile" {
+		t.Fatalf("ballast_apply_skipped_total = %v (reason=%q), want 1 with reason=no_profile",
+			got, labels["reason"])
+	}
+	if _, ok := labels["profile"]; ok {
+		t.Errorf("profile attr present on no_profile skip: %q", labels["profile"])
+	}
+}
+
+// TestPodMutator_ApplySkippedMetric_DryRun asserts a suppressed apply that would
+// have changed resources records reason=dry_run and no apply.applied.
+func TestPodMutator_ApplySkippedMetric_DryRun(t *testing.T) {
+	fc := newFakeClient(defaultBallastConfig(), readyProfile())
+	rec, reg := newMetricsRecorder(t)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), true /* dryRunApply */, rec)
+
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
+		validation.AnnotationMeasure: "true",
+		validation.AnnotationApply:   "true",
+	})))
+	if !resp.Allowed {
+		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
+	}
+
+	got, labels := counterSeries(t, reg, "ballast_apply_skipped_total")
+	if got != 1 || labels["reason"] != "dry_run" {
+		t.Fatalf("ballast_apply_skipped_total = %v (reason=%q), want 1 with reason=dry_run",
+			got, labels["reason"])
+	}
+	if applied, _ := counterSeries(t, reg, "ballast_apply_applied_total"); applied != 0 {
+		t.Errorf("ballast_apply_applied_total = %v, want 0 in dry-run", applied)
 	}
 }
 
