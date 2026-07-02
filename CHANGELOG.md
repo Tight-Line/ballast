@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-07-02
+
 ### Fixed
 
 - **In-place resize no longer fails on pods with non-cpu/memory recommendations.** The Kubernetes pod resize subresource (KEP-1287) permits mutating only `cpu` and `memory`, but the resource adjuster built its patch from every drifted recommendation. A profile with a drifted `ephemeral-storage` recommendation (measured via the `kubelet-summary` source) therefore produced a patch the API server rejected with `Forbidden: only cpu and memory resources are mutable` — which failed the entire resize, including its legal cpu/memory changes, and marked the pod `resize-blocked`. Resize patches now include only cpu and memory; recommendations for other resources still apply at admission time through the webhook and take effect when the pod is recreated. Excluded drifted resources are logged, and when they are the only drift on a pod the skip is recorded as `ballast.resize.skipped{reason="not_resizable"}` (skip reasons describe the whole pod evaluation). Pods already annotated `ballast.tightlinesoftware.com/resize-blocked: "true"` by this failure must have the annotation removed (or be recreated) to resume resizing.
