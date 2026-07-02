@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-01
+
 This is a substantial change to how enrollment and profile convergence work; it
 warrants a 0.3.0 minor release.
 
