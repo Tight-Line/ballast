@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-07-02
+
 ### Fixed
 
 - **Metrics from multiple replicas no longer merge into one series.** The chart now sets `service.instance.id` (the pod name, via the downward API) in `OTEL_RESOURCE_ATTRIBUTES`. Previously every replica exported identical resource attributes, so backends fingerprinted all replicas' samples into a single series. For cumulative counters emitted on every replica — the webhook-path metrics `ballast.webhook.mutations`, `ballast.apply.applied`, and `ballast.apply.skipped` — the interleaved per-process counts looked like a counter resetting on every sample, inflating `rate()`/`increase()` beyond any real activity; leader-only counters got the same distortion transiently at leader handoff. Gauges such as `ballast.profiles` appeared correct in steady state but double-counted during rollouts, when `service.version` briefly made the replicas distinguishable. With per-pod identity, each replica is its own series: counter math is correct (sum of per-instance increases), and gauge queries that aggregate across replicas should deduplicate explicitly (e.g. `max by (<identity tuple>)` before summing). Dashboards that relied on replicas being indistinguishable will see per-pod series after upgrading.
