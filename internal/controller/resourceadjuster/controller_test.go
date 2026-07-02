@@ -423,6 +423,110 @@ func TestReconcile_CooldownActive_ResizeSkipped(t *testing.T) {
 	}
 }
 
+// readyProfileWithRecs returns a ready WorkloadProfile with the given
+// recommendations for the "app" container.
+func readyProfileWithRecs(recs map[string]ballastv1.ResourceRecommendation) *ballastv1.WorkloadProfile {
+	return &ballastv1.WorkloadProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: "prod"},
+		Status: ballastv1.WorkloadProfileStatus{
+			TupleLabels:    map[string]string{"app": "app", "env": "prod"},
+			MeetsThreshold: true,
+			Containers: []ballastv1.ContainerProfile{
+				{Name: "app", Recommendations: recs},
+			},
+		},
+	}
+}
+
+func TestReconcile_NonResizableDriftOnly_NoResizeNoBlock(t *testing.T) {
+	// Only ephemeral-storage drifts (5Mi -> 66Ki). The resize subresource cannot
+	// mutate it, so no resize is attempted and the pod is not marked blocked.
+	profile := readyProfileWithRecs(map[string]ballastv1.ResourceRecommendation{
+		"ephemeral-storage": {Request: "66Ki"},
+	})
+	pod := resizePod("100m", "200m")
+	pod.Spec.Containers[0].Resources.Requests[corev1.ResourceEphemeralStorage] = resource.MustParse("5Mi")
+	fc := newFakeClient(profile, noResizePolicy(), pod)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+	resizeCalled := false
+	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
+		resizeCalled = true
+		return nil
+	}
+	if _, err := doReconcile(t, r, profile.Name); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resizeCalled {
+		t.Error("resize should not be called when only non-resizable resources drift")
+	}
+	var updated corev1.Pod
+	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web-abc"}, &updated); err != nil {
+		t.Fatalf("getting pod: %v", err)
+	}
+	if updated.Annotations[resourceadjuster.AnnotationResizeBlocked] != "" {
+		t.Errorf("pod should not be marked resize-blocked, got %q", updated.Annotations[resourceadjuster.AnnotationResizeBlocked])
+	}
+	if updated.Annotations[resourceadjuster.AnnotationLastResize] != "" {
+		t.Errorf("last-resize should not be stamped when nothing was resized, got %q", updated.Annotations[resourceadjuster.AnnotationLastResize])
+	}
+}
+
+func TestReconcile_MixedDrift_NonResizableExcludedFromAdjustments(t *testing.T) {
+	// cpu and ephemeral-storage both drift; the resize proceeds with the cpu
+	// change only and leaves ephemeral-storage at its current value.
+	profile := readyProfileWithRecs(map[string]ballastv1.ResourceRecommendation{
+		"cpu":               {Request: "200m", Limit: "400m"},
+		"ephemeral-storage": {Request: "66Ki"},
+	})
+	pod := resizePod("100m", "200m")
+	pod.Spec.Containers[0].Resources.Requests[corev1.ResourceEphemeralStorage] = resource.MustParse("5Mi")
+	fc := newFakeClient(profile, noResizePolicy(), pod)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+	var captured []resourceadjuster.ContainerAdjustment
+	r.ResizePod = func(_ context.Context, _ *corev1.Pod, adjs []resourceadjuster.ContainerAdjustment) error {
+		captured = adjs
+		return nil
+	}
+	if _, err := doReconcile(t, r, profile.Name); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 adjustment, got %d", len(captured))
+	}
+	// 100m -> 200m is capped at 50% per cycle: 150m.
+	if got := captured[0].Requests[corev1.ResourceCPU]; got.String() != "150m" {
+		t.Errorf("cpu request = %s, want 150m", got.String())
+	}
+	// ephemeral-storage keeps its current value: drift on it must not be applied.
+	if got := captured[0].Requests[corev1.ResourceEphemeralStorage]; got.String() != "5Mi" {
+		t.Errorf("ephemeral-storage request = %s, want unchanged 5Mi", got.String())
+	}
+}
+
+func TestReconcile_NonResizableLimitDrift_Skipped(t *testing.T) {
+	// Drift on the ephemeral-storage limit only (200Mi -> 300Mi, 50% > 20%
+	// threshold); the request recommendation is empty. Still skipped: limits are
+	// no more mutable than requests for non-resizable resources.
+	profile := readyProfileWithRecs(map[string]ballastv1.ResourceRecommendation{
+		"ephemeral-storage": {Limit: "300Mi"},
+	})
+	pod := resizePod("100m", "200m")
+	pod.Spec.Containers[0].Resources.Limits[corev1.ResourceEphemeralStorage] = resource.MustParse("200Mi")
+	fc := newFakeClient(profile, noResizePolicy(), pod)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+	resizeCalled := false
+	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
+		resizeCalled = true
+		return nil
+	}
+	if _, err := doReconcile(t, r, profile.Name); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resizeCalled {
+		t.Error("resize should not be called for non-resizable limit drift")
+	}
+}
+
 func TestReconcile_RequeueInterval_FromPolicy(t *testing.T) {
 	policy := noResizePolicy()
 	policy.Spec.Behaviors.Resize.Interval = "5m"
