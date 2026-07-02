@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/ballast-logo-full.png" alt="Ballast — three ballast tanks trimming a ship to level" width="440">
+</p>
+
 # Ballast
 
 [![Known Vulnerabilities](https://snyk.io/test/github/Tight-Line/ballast/badge.svg)](https://snyk.io/test/github/Tight-Line/ballast)
