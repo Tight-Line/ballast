@@ -9,3 +9,6 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Re-include the CRD manifests embedded into the binary (config/crd/bases/embed.go)
+!config/crd/bases/*.yaml
