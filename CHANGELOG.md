@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-07-02
+
 ### Added
 
 - **New `ballast.apply.applied` and `ballast.apply.skipped` metrics.** `ballast.apply.applied` counts admission-time mutations that actually changed a pod's container resource requests or limits, carrying the same `profile`/`policy`/`namespace` attributes as `ballast.resize.applied` so dashboards can chart apply and resize activity side by side. Previously the only apply-side signal was `ballast.webhook.mutations{result="mutated"}`, which also counts patches that merely stamp annotations (such as the policy-ref) without touching resources, so "the webhook ran" and "resources were applied" were indistinguishable. `ballast.apply.skipped` counts admissions where the pod requested apply but nothing changed, with a `reason` attribute: `no_profile` (no WorkloadProfile exists yet for the workload's identity tuple), `not_ready` (profile exists but is below its history threshold), `no_change` (profile is ready but no container matched a recommendation), or `dry_run`. In particular, `no_profile` and `not_ready` (workloads that want recommendations but are not getting them yet) were previously invisible, folded into `ballast.webhook.mutations{result="skipped"}` together with pods that never requested apply. Exactly one of `apply.applied` / `apply.skipped` is recorded per admission that requests apply and finds its profile.
