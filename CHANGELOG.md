@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-02
+
 ### Fixed
 
 - **CRD changes now apply on `helm upgrade`.** Helm installs the chart's `crds/` directory only on first install and never upgrades it, so every CRD change since a cluster's initial install was silently skipped (first visible symptom: 0.3.2's `STATE` printer column never appearing). A new pre-install/pre-upgrade hook Job runs `ballastd apply-crds`, a new operator subcommand that server-side-applies the CRD manifests baked into the image at build time (field manager `ballast-crd-installer`, force ownership). Applies are atomic and idempotent, so re-runs, concurrent runs, and manual invocations are all safe; running as `pre-install` also means the installer owns the CRD fields from day one, avoiding server-side-apply ownership conflicts with the initial Helm install. Disable with `crds.upgradeHook.enabled: false` if CRDs are managed by external tooling (upgrades then require applying `config/crd/bases/` by hand). The `crds/` directory remains for first-install bootstrapping, since Helm validates templated resources against cluster discovery before hooks run.
