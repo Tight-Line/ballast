@@ -274,3 +274,20 @@ func TestComputeRecommendation(t *testing.T) {
 		})
 	}
 }
+
+// A zero MinDataPoints means the field was omitted; EvaluateReadiness applies
+// the canonical default rather than treating it as "no minimum". The resolver
+// normally fills the field first, so this is the defense for direct callers.
+func TestEvaluateReadinessZeroMinDataPointsUsesDefault(t *testing.T) {
+	cfg := ballastv1.ReadinessConfig{MinTimeSpan: "1h", MaxCV: "1.5"}
+	spanMs := int64(60 * 60 * 1000)
+	s := store.Stats{Count: int(ballastv1.DefaultMinDataPoints) - 1, Mean: 100, StdDev: 10, CV: 0.1}
+
+	if stats.EvaluateReadiness(s, 0, spanMs, cfg, "cpu") {
+		t.Errorf("count %d below default %d should not be ready", s.Count, ballastv1.DefaultMinDataPoints)
+	}
+	s.Count = int(ballastv1.DefaultMinDataPoints)
+	if !stats.EvaluateReadiness(s, 0, spanMs, cfg, "cpu") {
+		t.Errorf("count %d at default should be ready", s.Count)
+	}
+}

@@ -43,10 +43,6 @@ const (
 	AnnotationResizeBlockedAt = "ballast.tightlinesoftware.com/resize-blocked-at"
 	AnnotationLastResize      = "ballast.tightlinesoftware.com/last-resize"
 
-	defaultResizeInterval   = 15 * time.Minute
-	defaultThresholdPercent = 20.0
-	defaultMaxChangePercent = 50.0
-
 	// maxBlockedReasonLen caps the error text stored in AnnotationResizeBlocked.
 	maxBlockedReasonLen = 256
 )
@@ -110,13 +106,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		log.Info("kill switch active, skipping resize",
 			"kill_switch", true, "kill_switch_reason", r.ks.Reason(), "profile", profile.Name)
 		r.rec.ResizeSkipped(ctx, "kill_switch", pid, "", "")
-		return ctrl.Result{RequeueAfter: defaultResizeInterval}, nil
+		return ctrl.Result{RequeueAfter: ballastv1.DefaultResizeIntervalDuration}, nil
 	}
 
 	if !profile.Status.MeetsThreshold {
 		log.V(1).Info("profile does not meet threshold, skipping resize", "profile", profile.Name)
 		r.rec.ResizeSkipped(ctx, "not_ready", pid, "", "")
-		return ctrl.Result{RequeueAfter: defaultResizeInterval}, nil
+		return ctrl.Result{RequeueAfter: ballastv1.DefaultResizeIntervalDuration}, nil
 	}
 
 	resolved, err := r.resolver.Resolve(ctx, policy.Input{Labels: profile.Status.TupleLabels})
@@ -126,7 +122,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if resolved == nil {
 		log.Info("no policy matches profile, skipping resize", "profile", profile.Name)
 		r.rec.ResizeSkipped(ctx, "no_policy", pid, "", "")
-		return ctrl.Result{RequeueAfter: defaultResizeInterval}, nil
+		return ctrl.Result{RequeueAfter: ballastv1.DefaultResizeIntervalDuration}, nil
 	}
 
 	interval := ParseResizeInterval(resolved.Spec.Behaviors.Resize)
@@ -282,7 +278,7 @@ func computeAdjustments(
 	recsByName map[string]map[string]ballastv1.ResourceRecommendation,
 	behaviors ballastv1.BehaviorConfig,
 ) (result []ContainerAdjustment, notResizable []string) {
-	maxChange := resolveMaxChangePercent(behaviors)
+	maxChange := ResolveMaxChangePercent(behaviors)
 
 	for _, c := range pod.Spec.Containers {
 		recs, ok := recsByName[c.Name]
@@ -404,15 +400,15 @@ func ResolveFieldThreshold(behaviors ballastv1.BehaviorConfig, res, field string
 	if v := parsePercent(behaviors.Thresholds.Default); v > 0 {
 		return v
 	}
-	return defaultThresholdPercent
+	return ballastv1.DefaultThresholdPercent
 }
 
-// resolveMaxChangePercent parses the maxChangePerCycle value from the policy.
-func resolveMaxChangePercent(behaviors ballastv1.BehaviorConfig) float64 {
+// ResolveMaxChangePercent parses the maxChangePerCycle value from the policy.
+func ResolveMaxChangePercent(behaviors ballastv1.BehaviorConfig) float64 {
 	if v := parsePercent(behaviors.Resize.MaxChangePerCycle); v > 0 {
 		return v
 	}
-	return defaultMaxChangePercent
+	return ballastv1.DefaultMaxChangePercent
 }
 
 // exceedsDrift returns true when |recommended - current| / current > threshold%.
@@ -618,7 +614,7 @@ func ParseResizeInterval(resize ballastv1.ResizeConfig) time.Duration {
 	if d, err := time.ParseDuration(resize.Interval); err == nil && d > 0 {
 		return d
 	}
-	return defaultResizeInterval
+	return ballastv1.DefaultResizeIntervalDuration
 }
 
 // parsePercent parses a "20%" style string and returns the float64 value (20.0).

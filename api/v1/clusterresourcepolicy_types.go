@@ -15,8 +15,8 @@ import (
 type ClusterResourcePolicySpec struct {
 	// Priority determines which policy wins when multiple match a workload.
 	// Higher value wins. Same-priority ties break alphabetically by name.
+	// Omitted means 0, the lowest priority.
 	// +optional
-	// +kubebuilder:default=0
 	Priority int32 `json:"priority,omitempty"`
 
 	// Selector controls which workloads this policy applies to.
@@ -91,26 +91,33 @@ type MetricConfig struct {
 
 	// Headroom is the multiplier applied to the aggregated usage value.
 	// Expressed as a decimal string (e.g. "1.2"); must be greater than 0.
-	// +kubebuilder:default="1.0"
+	// Omitted defaults to "1.0" at recommendation time.
+	// +optional
 	Headroom string `json:"headroom,omitempty"`
 }
 
 // ReadinessConfig defines conditions that must pass before Ballast will act.
+//
+// Omitted fields are filled with the canonical runtime defaults (see defaults.go)
+// when the policy is resolved, not at admission time, so sparse policies always
+// track the running release's defaults. Deliberate: +kubebuilder:default markers
+// persist their values into stored objects at write time and never revisit them,
+// which strands old defaults on existing policies after an upgrade.
 type ReadinessConfig struct {
 	// MinDataPoints is the minimum number of samples required.
+	// Omitted defaults to 500 at policy-resolve time.
 	// +optional
-	// +kubebuilder:default=500
 	// +kubebuilder:validation:Minimum=1
 	MinDataPoints int64 `json:"minDataPoints,omitempty"`
 
 	// MinTimeSpan is the minimum duration of observed history required.
+	// Omitted defaults to "24h" at policy-resolve time.
 	// +optional
-	// +kubebuilder:default="24h"
 	MinTimeSpan string `json:"minTimeSpan,omitempty"`
 
 	// MaxCV is the maximum coefficient of variation (stddev/mean) allowed.
+	// Omitted defaults to "1.5" at policy-resolve time.
 	// +optional
-	// +kubebuilder:default="1.5"
 	MaxCV string `json:"maxCV,omitempty"`
 
 	// CVMeanFloor exempts a resource from the MaxCV check when its observed
@@ -122,8 +129,10 @@ type ReadinessConfig struct {
 	// the floor is too small for a mis-sized recommendation to matter. The
 	// floors are deliberately tiny; resources without an entry (or set to "0")
 	// always get the CV check.
+	// Omitted defaults to {"cpu": "25m", "memory": "25Mi", "ephemeral-storage":
+	// "2Mi"} at policy-resolve time; an explicit empty map ({}) disables all
+	// floors so every resource gets the CV check.
 	// +optional
-	// +kubebuilder:default={"cpu": "25m", "memory": "25Mi", "ephemeral-storage": "2Mi"}
 	CVMeanFloor map[string]string `json:"cvMeanFloor,omitempty"`
 }
 
@@ -141,8 +150,8 @@ type BehaviorConfig struct {
 // ThresholdConfig defines drift thresholds for resize.
 type ThresholdConfig struct {
 	// Default is the global fallback drift threshold for all behaviors and resources.
+	// Omitted defaults to "20%" at policy-resolve time.
 	// +optional
-	// +kubebuilder:default="20%"
 	Default string `json:"default,omitempty"`
 
 	// Resize contains thresholds specific to the resize behavior.
@@ -153,8 +162,8 @@ type ThresholdConfig struct {
 // ResizeThresholds defines drift thresholds for resize triggering.
 type ResizeThresholds struct {
 	// Default overrides the global default threshold for resize.
+	// Omitted defaults to "20%" at policy-resolve time.
 	// +optional
-	// +kubebuilder:default="20%"
 	Default string `json:"default,omitempty"`
 
 	// ResourceThresholds provides per-resource per-field overrides.
@@ -178,15 +187,15 @@ type ResourceFieldThresholds struct {
 type ResizeConfig struct {
 	// MaxChangePerCycle caps how much a single adjustment cycle can change a value,
 	// expressed as a percentage of the gap between the current and recommended
-	// values. When a capped step would land within the drift threshold of the
+	// values. When a capped step would come within the drift threshold of the
 	// recommendation, the recommendation is applied exactly instead.
+	// Omitted defaults to "50%" at policy-resolve time.
 	// +optional
-	// +kubebuilder:default="50%"
 	MaxChangePerCycle string `json:"maxChangePerCycle,omitempty"`
 
 	// Interval is how often the ResourceAdjuster re-evaluates drift.
+	// Omitted defaults to "15m" at policy-resolve time.
 	// +optional
-	// +kubebuilder:default="15m"
 	Interval string `json:"interval,omitempty"`
 }
 

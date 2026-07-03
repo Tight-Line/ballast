@@ -1084,7 +1084,8 @@ func TestReconcile_PodNilAnnotations_BlockedAnnotationStamped(t *testing.T) {
 }
 
 func TestReconcile_EmptyMaxChangePerCycle_UsesDefault(t *testing.T) {
-	// Policy with empty MaxChangePerCycle — resolveMaxChangePercent falls back to 50%.
+	// Policy with empty MaxChangePerCycle; the resolver fills it with the
+	// canonical default ("50%") before the adjuster sees it.
 	policy := noResizePolicy()
 	policy.Spec.Behaviors.Resize.MaxChangePerCycle = ""
 	profile := readyProfile("200m", "400m")
@@ -1398,5 +1399,20 @@ func TestReconciler_SetupWithManager(t *testing.T) {
 
 	if !mgr.GetCache().WaitForCacheSync(ctx) {
 		t.Fatal("cache did not sync")
+	}
+}
+
+// Direct unit coverage of the in-function default: the resolver normally fills
+// MaxChangePerCycle before the adjuster sees it, so the Reconcile path can no
+// longer reach this branch.
+func TestResolveMaxChangePercent(t *testing.T) {
+	if got := resourceadjuster.ResolveMaxChangePercent(ballastv1.BehaviorConfig{}); got != ballastv1.DefaultMaxChangePercent {
+		t.Errorf("empty behaviors: got %v, want %v", got, ballastv1.DefaultMaxChangePercent)
+	}
+	behaviors := ballastv1.BehaviorConfig{
+		Resize: ballastv1.ResizeConfig{MaxChangePerCycle: "25%"},
+	}
+	if got := resourceadjuster.ResolveMaxChangePercent(behaviors); got != 25.0 {
+		t.Errorf("explicit 25%%: got %v, want 25", got)
 	}
 }

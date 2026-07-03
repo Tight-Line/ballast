@@ -94,6 +94,14 @@ func (r *Resolver) Resolve(ctx context.Context, in Input) (*ResolvedPolicy, erro
 		"priority", best.priority,
 	)
 
+	// best.spec is a value copy of the cached object's spec, so filling its
+	// unset fields here cannot mutate the informer cache (ApplyDefaults only
+	// writes value fields and nil maps). Defaulting at resolve time, rather
+	// than via CRD schema defaults, keeps sparse policies tracking the running
+	// release's defaults instead of freezing whatever was current when the
+	// object was written.
+	best.spec.ApplyDefaults()
+
 	return &ResolvedPolicy{
 		Spec:       best.spec,
 		Name:       best.name,

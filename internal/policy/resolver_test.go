@@ -400,3 +400,52 @@ func TestResolve(t *testing.T) {
 		})
 	}
 }
+
+// Resolve must return a fully populated spec: sparse policies rely on
+// resolve-time defaulting (not CRD schema defaults, which freeze into stored
+// objects and go stale across releases).
+func TestResolveAppliesDefaultsToSparseSpec(t *testing.T) {
+	c := newClient(t, clusterPolicy("sparse", 0, ballastv1.PolicySelector{}))
+	r := policy.NewResolver(c, logr.Discard())
+
+	got, err := r.Resolve(context.Background(), policy.Input{Namespace: "any", Labels: map[string]string{"app": "x"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected a resolved policy, got nil")
+	}
+
+	rd := got.Spec.Readiness
+	if rd.MinDataPoints != ballastv1.DefaultMinDataPoints {
+		t.Errorf("MinDataPoints = %d, want %d", rd.MinDataPoints, ballastv1.DefaultMinDataPoints)
+	}
+	if rd.MinTimeSpan != ballastv1.DefaultMinTimeSpan || rd.MaxCV != ballastv1.DefaultMaxCV {
+		t.Errorf("readiness scalars = %+v, want defaults", rd)
+	}
+	if rd.CVMeanFloor["ephemeral-storage"] != ballastv1.DefaultCVMeanFloor()["ephemeral-storage"] {
+		t.Errorf("CVMeanFloor = %v, want %v", rd.CVMeanFloor, ballastv1.DefaultCVMeanFloor())
+	}
+	if got.Spec.Behaviors.Resize.Interval != ballastv1.DefaultResizeInterval {
+		t.Errorf("Resize.Interval = %q, want %q", got.Spec.Behaviors.Resize.Interval, ballastv1.DefaultResizeInterval)
+	}
+}
+
+// Defaulting fills a copy; the object in the client (standing in for the
+// informer cache) must stay sparse.
+func TestResolveDoesNotMutateCachedPolicy(t *testing.T) {
+	c := newClient(t, clusterPolicy("sparse", 0, ballastv1.PolicySelector{}))
+	r := policy.NewResolver(c, logr.Discard())
+
+	if _, err := r.Resolve(context.Background(), policy.Input{Namespace: "any"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var stored ballastv1.ClusterResourcePolicy
+	if err := c.Get(context.Background(), client.ObjectKey{Name: "sparse"}, &stored); err != nil {
+		t.Fatalf("getting policy: %v", err)
+	}
+	if stored.Spec.Readiness.CVMeanFloor != nil || stored.Spec.Readiness.MinDataPoints != 0 {
+		t.Errorf("stored policy was mutated by Resolve: %+v", stored.Spec.Readiness)
+	}
+}
