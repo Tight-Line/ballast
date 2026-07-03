@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-07-02
+
 ### Fixed
 
 - **`maxChangePerCycle` now caps resize steps as a percentage of the gap to the recommendation, as documented.** The cap was computed against the current value instead of the current→recommended gap, so a badly underprovisioned workload converged backwards: tiny steps first, then exponentially larger ones (each cycle at most 1.5x the previous value with the default 50%), taking hours to correct a large gap. Steps are now capped at `maxChangePerCycle` percent of the remaining gap, so the first cycle makes the largest correction and later cycles refine it. To avoid the geometric tail never reaching the target (and parking a request just inside the drift threshold, which for the default policy could mean settling at the observed average usage with no headroom), a capped step that would land within the drift threshold of the recommendation applies the recommendation exactly; with the defaults (50% cap, 20% threshold) convergence completes in at most a few cycles from any starting point.
