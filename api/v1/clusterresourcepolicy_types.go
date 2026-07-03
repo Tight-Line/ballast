@@ -150,7 +150,7 @@ type BehaviorConfig struct {
 // ThresholdConfig defines drift thresholds for resize.
 type ThresholdConfig struct {
 	// Default is the global fallback drift threshold for all behaviors and resources.
-	// Omitted defaults to "20%" at policy-resolve time.
+	// Omitted defaults to "10%" at policy-resolve time.
 	// +optional
 	Default string `json:"default,omitempty"`
 
@@ -162,7 +162,7 @@ type ThresholdConfig struct {
 // ResizeThresholds defines drift thresholds for resize triggering.
 type ResizeThresholds struct {
 	// Default overrides the global default threshold for resize.
-	// Omitted defaults to "20%" at policy-resolve time.
+	// Omitted defaults to "10%" at policy-resolve time.
 	// +optional
 	Default string `json:"default,omitempty"`
 

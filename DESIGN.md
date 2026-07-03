@@ -151,16 +151,16 @@ spec:
 
   behaviors:
     thresholds:
-      default: "20%"              # default: 20% — global fallback for all behaviors and resources
+      default: "10%"              # default: 10% — global fallback for all behaviors and resources
       resize:
-        default: "20%"            # default: 20% — overrides global default for resize trigger
+        default: "10%"            # default: 10% — overrides global default for resize trigger
         resourceThresholds:       # coalesce: resourceThresholds -> resize.default -> default
           cpu:
             limit: "20%"
             request: "15%"
           memory:
             limit: "10%"
-            # memory.request uses resize.default = "20%"
+            # memory.request uses resize.default = "10%"
     # a drift in ANY field exceeding its threshold independently triggers the behavior
     resize:
       maxChangePerCycle: "50%"    # default: 50% — cap single-cycle step to this % of the current→recommended gap

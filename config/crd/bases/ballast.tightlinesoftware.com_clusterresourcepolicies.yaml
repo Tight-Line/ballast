@@ -74,7 +74,7 @@ spec:
                       default:
                         description: |-
                           Default is the global fallback drift threshold for all behaviors and resources.
-                          Omitted defaults to "20%" at policy-resolve time.
+                          Omitted defaults to "10%" at policy-resolve time.
                         type: string
                       resize:
                         description: Resize contains thresholds specific to the resize
@@ -83,7 +83,7 @@ spec:
                           default:
                             description: |-
                               Default overrides the global default threshold for resize.
-                              Omitted defaults to "20%" at policy-resolve time.
+                              Omitted defaults to "10%" at policy-resolve time.
                             type: string
                           resourceThresholds:
                             additionalProperties:

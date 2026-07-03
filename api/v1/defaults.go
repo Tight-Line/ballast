@@ -35,7 +35,7 @@ const (
 	// DefaultHeadroom is the multiplier applied to an aggregated usage value.
 	DefaultHeadroom = "1.0"
 	// DefaultThreshold is the drift threshold that triggers a resize.
-	DefaultThreshold = "20%"
+	DefaultThreshold = "10%"
 	// DefaultMaxChangePerCycle caps a single adjustment step as a percentage of
 	// the current-to-recommended gap.
 	DefaultMaxChangePerCycle = "50%"
@@ -52,7 +52,7 @@ const (
 	// DefaultHeadroomValue is DefaultHeadroom as a float64.
 	DefaultHeadroomValue = 1.0
 	// DefaultThresholdPercent is DefaultThreshold as a float64 percentage.
-	DefaultThresholdPercent = 20.0
+	DefaultThresholdPercent = 10.0
 	// DefaultMaxChangePercent is DefaultMaxChangePerCycle as a float64 percentage.
 	DefaultMaxChangePercent = 50.0
 	// DefaultResizeIntervalDuration is DefaultResizeInterval as a time.Duration.

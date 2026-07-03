@@ -209,7 +209,7 @@ defaultClusterResourcePolicy:
   # state typical occupancy so the scheduler's claim matches reality. p50 is
   # robust to startup transients, and the 5% cushion keeps a typical pod just
   # under its request (outside the "using more than requested" eviction class)
-  # without normal wobble re-tripping the 20% drift threshold.
+  # without normal wobble re-tripping the 10% drift threshold.
   #
   # The memory limit is set at p99 * 1.2: p99 is the highest usage seen in
   # production, and the 20% headroom absorbs a normal rare spike while still
@@ -268,7 +268,11 @@ defaultClusterResourcePolicy:
   behaviors:
     thresholds:
       # default is the minimum drift from the recommendation before a resize fires.
-      default: "20%"
+      # Set at 10%: in-place resize is cheap and safe (a request/limit patch on a
+      # running pod, no restart), so there is little reason to tolerate a wide band
+      # of staleness. A recommendation that has moved more than 10% from the current
+      # value reflects a real shift in observed usage worth acting on, not noise.
+      default: "10%"
     resize:
       # maxChangePerCycle caps a single adjustment at this percentage of the gap
       # between the current and recommended values; a step landing within the

@@ -1106,11 +1106,11 @@ func TestReconcile_EmptyMaxChangePerCycle_UsesDefault(t *testing.T) {
 }
 
 func TestResolveFieldThreshold_AllLevelsEmpty_UsesHardcodedDefault(t *testing.T) {
-	// All threshold fields empty — falls back to hardcoded 20%.
+	// All threshold fields empty — falls back to the canonical default.
 	behaviors := ballastv1.BehaviorConfig{}
 	got := resourceadjuster.ResolveFieldThreshold(behaviors, "cpu", "request")
-	if got != 20 {
-		t.Errorf("expected 20 (hardcoded default), got %v", got)
+	if got != ballastv1.DefaultThresholdPercent {
+		t.Errorf("expected %v (canonical default), got %v", ballastv1.DefaultThresholdPercent, got)
 	}
 }
 
