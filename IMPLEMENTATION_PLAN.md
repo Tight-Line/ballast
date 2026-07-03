@@ -418,7 +418,7 @@ Pod eviction is out of scope for Ballast — delegated to [Kubernetes Deschedule
   - Re-evaluates on `behaviors.resize.interval` timer
   - **Drift detection:** for each container/resource/field in `recommendations`, compare current pod value to recommended value; compute drift as `|current - recommended| / recommended`; look up threshold via coalesce order (`resourceThresholds -> resize.default -> thresholds.default`); trigger if drift exceeds threshold for any field
   - **Resize path (if `resize` annotation present and drift exceeds threshold):**
-    1. Cap adjustment to `maxChangePerCycle` relative to current value
+    1. Cap adjustment to `maxChangePerCycle` relative to the current→recommended gap
     2. Patch pod via `resize` subresource (`v1.Pod` resize API, Kubernetes 1.35+)
     3. On success: record in pod annotation and profile status
     4. On failure (node pressure / infeasible): emit Kubernetes Event, record blocked state in profile status, requeueAfter interval

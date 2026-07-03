@@ -163,7 +163,10 @@ type ResourceFieldThresholds struct {
 
 // ResizeConfig configures in-place pod resize behavior.
 type ResizeConfig struct {
-	// MaxChangePerCycle caps how much a single adjustment cycle can change a value.
+	// MaxChangePerCycle caps how much a single adjustment cycle can change a value,
+	// expressed as a percentage of the gap between the current and recommended
+	// values. When a capped step would land within the drift threshold of the
+	// recommendation, the recommendation is applied exactly instead.
 	// +optional
 	// +kubebuilder:default="50%"
 	MaxChangePerCycle string `json:"maxChangePerCycle,omitempty"`

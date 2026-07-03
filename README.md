@@ -316,7 +316,7 @@ This catch-all policy applies to every opted-in pod in the cluster. Key design d
 - **Ephemeral storage from the kubelet Summary API.** The request is sized at p90 (the growth-skewed distribution) and the limit at `p99 * 1.2` so the kubelet evicts a genuine runaway pod before the node hits disk pressure while tolerating a normal spike above the observed peak.
 - **250 samples over 24 hours before acting.** At the 5-minute poll interval a single long-running pod accrues ~288 samples in 24h, so the 24h window — not the sample count — is the binding constraint. A high coefficient of variation (CV > 1.5) also blocks action — it means the workload is too spiky to size reliably.
 - **20% drift threshold.** A resize only fires when the current resource value deviates from the recommendation by more than 20%, avoiding churn from minor fluctuations.
-- **50% max change per cycle.** Caps how aggressively a single resize can move a value, giving workloads time to stabilize between adjustments.
+- **50% max change per cycle.** Each resize moves at most half the remaining gap between the current value and the recommendation, giving workloads time to stabilize between adjustments. The first step makes most of the correction; once a step would land within the drift threshold, the recommendation is applied exactly, so convergence completes instead of stalling just inside the threshold.
 - **Priority 0.** This is the lowest possible priority. Any `ClusterResourcePolicy` or `ResourcePolicy` with `priority > 0` wins for matched workloads, so you can override specific namespaces or workload kinds without touching this default.
 
 ### Policy presets

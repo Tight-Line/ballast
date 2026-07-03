@@ -584,33 +584,44 @@ func TestCapChange(t *testing.T) {
 		current     string
 		recommended string
 		maxPct      float64
+		threshold   float64
 		wantAtMost  string // upper bound on result (result must be <= recommended and <= wantAtMost)
 		wantAtLeast string // result must be > current when drifting upward
 	}{
 		{
-			name: "small move, no cap needed",
-			// current=200m, recommended=210m, maxPct=50% → delta 10m <= 100m cap → use recommended
-			current: "200m", recommended: "210m", maxPct: 50,
-			wantAtMost: "210m", wantAtLeast: "200m",
+			name: "small move lands inside drift band, snaps to recommended",
+			// current=200m, recommended=210m: capped step 205m is within 20% of
+			// 210m, so the recommendation is applied exactly
+			current: "200m", recommended: "210m", maxPct: 50, threshold: 20,
+			wantAtMost: "210m", wantAtLeast: "210m",
 		},
 		{
 			name: "large move, cap applied upward",
-			// current=100m, recommended=300m, maxPct=50% → cap at 150m
-			current: "100m", recommended: "300m", maxPct: 50,
-			wantAtMost: "150m", wantAtLeast: "100m",
+			// current=100m, recommended=300m: gap 200m, step 100m → ~200m,
+			// still >20% from 300m so no snap
+			current: "100m", recommended: "300m", maxPct: 50, threshold: 20,
+			wantAtMost: "200m", wantAtLeast: "199m",
 		},
 		{
 			name: "large move, cap applied downward",
-			// current=300m, recommended=100m, maxPct=50% → cap at 150m
-			current: "300m", recommended: "100m", maxPct: 50,
-			wantAtMost: "300m", wantAtLeast: "149m",
+			// current=300m, recommended=100m: gap 200m, step 100m → ~200m,
+			// still >20% from 100m so no snap
+			current: "300m", recommended: "100m", maxPct: 50, threshold: 20,
+			wantAtMost: "200m", wantAtLeast: "199m",
+		},
+		{
+			name: "capped step within threshold of recommendation, snaps",
+			// current=100m, recommended=140m: gap 40m, step 20m → 120m, which is
+			// within 20% of 140m, so the recommendation is applied exactly
+			current: "100m", recommended: "140m", maxPct: 50, threshold: 20,
+			wantAtMost: "140m", wantAtLeast: "140m",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cur := resource.MustParse(tc.current)
 			rec := resource.MustParse(tc.recommended)
-			result := resourceadjuster.CapChange(cur, rec, tc.maxPct)
+			result := resourceadjuster.CapChange(cur, rec, tc.maxPct, tc.threshold)
 			atMost := resource.MustParse(tc.wantAtMost)
 			atLeast := resource.MustParse(tc.wantAtLeast)
 			if result.Cmp(atMost) > 0 {
@@ -958,9 +969,10 @@ func TestCapChange_Memory(t *testing.T) {
 	// Memory uses BinarySI (bytes), not milli-units. Large move triggers the cap.
 	current := resource.MustParse("100Mi")
 	recommended := resource.MustParse("300Mi")
-	result := resourceadjuster.CapChange(current, recommended, 50)
-	// maxDelta = 100Mi * 50% = 50Mi; capped result = 150Mi
-	expectedCap := resource.MustParse("150Mi")
+	result := resourceadjuster.CapChange(current, recommended, 50, 20)
+	// gap = 200Mi, step = 200Mi * 50% = 100Mi; capped result = 200Mi,
+	// still >20% from 300Mi so no snap
+	expectedCap := resource.MustParse("200Mi")
 	if result.Cmp(expectedCap) > 0 {
 		t.Errorf("CapChange memory result %s exceeds cap %s", result.String(), expectedCap.String())
 	}
@@ -973,9 +985,32 @@ func TestCapChange_CurrentZero(t *testing.T) {
 	// When current is zero, CapChange returns the recommended value directly.
 	current := resource.MustParse("0")
 	recommended := resource.MustParse("200m")
-	result := resourceadjuster.CapChange(current, recommended, 50)
+	result := resourceadjuster.CapChange(current, recommended, 50, 20)
 	if result.Cmp(recommended) != 0 {
 		t.Errorf("CapChange with current=0: expected %s, got %s", recommended.String(), result.String())
+	}
+}
+
+func TestCapChange_ConvergesExactly(t *testing.T) {
+	// Regression test for the Zeno tail: capping each step at 50% of the
+	// remaining gap must still terminate exactly at the recommendation, not
+	// park just inside the drift band. Simulates the resize loop (resize only
+	// while drift exceeds the threshold) for a badly underprovisioned workload.
+	cur := resource.MustParse("15m")
+	rec := resource.MustParse("145m")
+	steps := 0
+	for resourceadjuster.ExceedsDrift(cur, rec, 20) {
+		cur = resourceadjuster.CapChange(cur, rec, 50, 20)
+		steps++
+		if steps > 10 {
+			t.Fatalf("did not converge after %d steps; stuck at %s", steps, cur.String())
+		}
+	}
+	if cur.Cmp(rec) != 0 {
+		t.Errorf("converged to %s inside the drift band; want exact recommendation %s", cur.String(), rec.String())
+	}
+	if steps > 4 {
+		t.Errorf("took %d steps to converge; want at most 4", steps)
 	}
 }
 

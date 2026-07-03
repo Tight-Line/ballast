@@ -245,7 +245,9 @@ defaultClusterResourcePolicy:
       # default is the minimum drift from the recommendation before a resize fires.
       default: "20%"
     resize:
-      # maxChangePerCycle caps how much a single adjustment can change a value.
+      # maxChangePerCycle caps a single adjustment at this percentage of the gap
+      # between the current and recommended values; a step landing within the
+      # drift threshold applies the recommendation exactly.
       maxChangePerCycle: "50%"
       # interval is how often the ResourceAdjuster re-evaluates drift.
       interval: "15m"

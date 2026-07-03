@@ -338,7 +338,7 @@ func evaluateField(
 	if err != nil || !ExceedsDrift(current, recommended, threshold) {
 		return false
 	}
-	dst[resName] = CapChange(current, recommended, maxChange)
+	dst[resName] = CapChange(current, recommended, maxChange, threshold)
 	return true
 }
 
@@ -378,8 +378,11 @@ func resolveMaxChangePercent(behaviors ballastv1.BehaviorConfig) float64 {
 // exceedsDrift returns true when |recommended - current| / current > threshold%.
 // If current is zero and recommended is nonzero, drift is treated as infinite (always resize).
 func ExceedsDrift(current, recommended resource.Quantity, thresholdPct float64) bool {
-	cur := current.AsApproximateFloat64()
-	rec := recommended.AsApproximateFloat64()
+	return exceedsDriftFloat(current.AsApproximateFloat64(), recommended.AsApproximateFloat64(), thresholdPct)
+}
+
+// exceedsDriftFloat is ExceedsDrift on raw float values.
+func exceedsDriftFloat(cur, rec, thresholdPct float64) bool {
 	if cur == 0 {
 		return rec > 0
 	}
@@ -390,9 +393,12 @@ func ExceedsDrift(current, recommended resource.Quantity, thresholdPct float64) 
 	return drift > thresholdPct/100.0
 }
 
-// capChange applies maxChangePerCycle: if the move from current to recommended
-// exceeds maxChangePct% of current, cap it at that fraction toward recommended.
-func CapChange(current, recommended resource.Quantity, maxChangePct float64) resource.Quantity {
+// CapChange applies maxChangePerCycle: a single cycle moves at most
+// maxChangePct% of the gap between current and recommended. When the capped
+// step would land within thresholdPct of the recommendation (so the next
+// cycle's drift check would not fire), the recommendation is applied exactly
+// instead of parking the value just inside the drift band forever.
+func CapChange(current, recommended resource.Quantity, maxChangePct, thresholdPct float64) resource.Quantity {
 	cur := current.AsApproximateFloat64()
 	rec := recommended.AsApproximateFloat64()
 
@@ -400,20 +406,20 @@ func CapChange(current, recommended resource.Quantity, maxChangePct float64) res
 		return recommended
 	}
 
-	maxDelta := cur * (maxChangePct / 100.0)
-	delta := rec - cur
-	if delta < 0 {
-		delta = -delta
+	gap := rec - cur
+	if gap < 0 {
+		gap = -gap
 	}
-	if delta <= maxDelta {
-		return recommended
-	}
+	step := gap * (maxChangePct / 100.0)
 
 	var capped float64
 	if rec > cur {
-		capped = cur + maxDelta
+		capped = cur + step
 	} else {
-		capped = cur - maxDelta
+		capped = cur - step
+	}
+	if !exceedsDriftFloat(capped, rec, thresholdPct) {
+		return recommended
 	}
 
 	if strings.HasSuffix(recommended.String(), "m") {
