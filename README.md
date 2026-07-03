@@ -394,6 +394,8 @@ spec:
     maxCV: "1.0"
 ```
 
+State only your intentional deviations: any `readiness` or `behaviors` field you omit (here, `cvMeanFloor` and all of `behaviors`) is filled with the documented default by the operator **when the policy is resolved**, so sparse policies automatically track the current release's defaults across upgrades. Nothing is baked into the stored object at write time. `kubectl get` shows only what you wrote; `kubectl explain clusterresourcepolicy.spec.readiness` documents the effective defaults. To disable the `cvMeanFloor` exemption entirely, set it to an explicit empty map (`cvMeanFloor: {}`).
+
 ## Dry-run Mode
 
 Each action has an independent dry-run flag. They cascade: dry-running `measure` implies dry-running everything downstream.

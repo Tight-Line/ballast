@@ -53,17 +53,17 @@ spec:
                     description: Resize configures in-place pod resize behavior.
                     properties:
                       interval:
-                        default: 15m
-                        description: Interval is how often the ResourceAdjuster re-evaluates
-                          drift.
+                        description: |-
+                          Interval is how often the ResourceAdjuster re-evaluates drift.
+                          Omitted defaults to "15m" at policy-resolve time.
                         type: string
                       maxChangePerCycle:
-                        default: 50%
                         description: |-
                           MaxChangePerCycle caps how much a single adjustment cycle can change a value,
                           expressed as a percentage of the gap between the current and recommended
-                          values. When a capped step would land within the drift threshold of the
+                          values. When a capped step would come within the drift threshold of the
                           recommendation, the recommendation is applied exactly instead.
+                          Omitted defaults to "50%" at policy-resolve time.
                         type: string
                     type: object
                   thresholds:
@@ -71,18 +71,18 @@ spec:
                       actions.
                     properties:
                       default:
-                        default: 20%
-                        description: Default is the global fallback drift threshold
-                          for all behaviors and resources.
+                        description: |-
+                          Default is the global fallback drift threshold for all behaviors and resources.
+                          Omitted defaults to "20%" at policy-resolve time.
                         type: string
                       resize:
                         description: Resize contains thresholds specific to the resize
                           behavior.
                         properties:
                           default:
-                            default: 20%
-                            description: Default overrides the global default threshold
-                              for resize.
+                            description: |-
+                              Default overrides the global default threshold for resize.
+                              Omitted defaults to "20%" at policy-resolve time.
                             type: string
                           resourceThresholds:
                             additionalProperties:
@@ -131,10 +131,10 @@ spec:
                       - limit
                       type: string
                     headroom:
-                      default: "1.0"
                       description: |-
                         Headroom is the multiplier applied to the aggregated usage value.
                         Expressed as a decimal string (e.g. "1.2"); must be greater than 0.
+                        Omitted defaults to "1.0" at recommendation time.
                       type: string
                     resource:
                       description: Resource is the Kubernetes resource being measured
@@ -153,10 +153,10 @@ spec:
                   type: object
                 type: array
               priority:
-                default: 0
                 description: |-
                   Priority determines which policy wins when multiple match a workload.
                   Higher value wins. Same-priority ties break alphabetically by name.
+                  Omitted means 0, the lowest priority.
                 format: int32
                 type: integer
               readiness:
@@ -166,10 +166,6 @@ spec:
                   cvMeanFloor:
                     additionalProperties:
                       type: string
-                    default:
-                      cpu: 25m
-                      ephemeral-storage: 2Mi
-                      memory: 25Mi
                     description: |-
                       CVMeanFloor exempts a resource from the MaxCV check when its observed
                       mean usage is below the given quantity (cpu in cores, others in bytes).
@@ -180,22 +176,26 @@ spec:
                       the floor is too small for a mis-sized recommendation to matter. The
                       floors are deliberately tiny; resources without an entry (or set to "0")
                       always get the CV check.
+                      Omitted defaults to {"cpu": "25m", "memory": "25Mi", "ephemeral-storage":
+                      "2Mi"} at policy-resolve time; an explicit empty map ({}) disables all
+                      floors so every resource gets the CV check.
                     type: object
                   maxCV:
-                    default: "1.5"
-                    description: MaxCV is the maximum coefficient of variation (stddev/mean)
-                      allowed.
+                    description: |-
+                      MaxCV is the maximum coefficient of variation (stddev/mean) allowed.
+                      Omitted defaults to "1.5" at policy-resolve time.
                     type: string
                   minDataPoints:
-                    default: 500
-                    description: MinDataPoints is the minimum number of samples required.
+                    description: |-
+                      MinDataPoints is the minimum number of samples required.
+                      Omitted defaults to 500 at policy-resolve time.
                     format: int64
                     minimum: 1
                     type: integer
                   minTimeSpan:
-                    default: 24h
-                    description: MinTimeSpan is the minimum duration of observed history
-                      required.
+                    description: |-
+                      MinTimeSpan is the minimum duration of observed history required.
+                      Omitted defaults to "24h" at policy-resolve time.
                     type: string
                 type: object
               selector:

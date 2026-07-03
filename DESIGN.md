@@ -167,6 +167,8 @@ spec:
       interval: "15m"             # default: 15m — how often ResourceAdjuster re-evaluates
 ```
 
+**Defaulting happens at policy-resolve time, not at admission.** Omitted `readiness` and `behaviors` fields (and `metrics[].headroom`) are filled with the defaults above by the operator when it resolves the policy for a workload; the CRD schema deliberately carries no `default:` values. Admission-time (`+kubebuilder:default`) values persist into the stored object the moment it is written and are never revisited, so a policy created under an older release keeps that release's defaults forever, even after a CRD upgrade changes them (this pinned real profiles at `Accruing` when the `cvMeanFloor` default was raised: the old `100Ki` floor stayed frozen in policies written before the change). With resolve-time defaulting, a sparse policy always tracks the running release's defaults. The trade-off: `kubectl get` shows only what the author wrote; the effective defaults live in this table, in the CRD field descriptions (`kubectl explain clusterresourcepolicy.spec.readiness`), and in `api/v1/defaults.go`, their single source of truth in code.
+
 Behaviors in the policy are **parameters**, not switches. Whether a workload gets resized is still gated by the `ballast.tightlinesoftware.com/resize` annotation on the pod template. Policy says how; annotations say whether.
 
 Cardinality: N policies -> M workloads (selector match); one workload -> at most one effective policy (ResourcePolicy beats ClusterResourcePolicy; within the same class, highest priority wins).

@@ -23,13 +23,17 @@ import (
 // firstMs and lastMs are Unix timestamps (milliseconds) of the oldest and newest samples.
 // resourceName selects the cvMeanFloor entry that can exempt the CV check.
 func EvaluateReadiness(s store.Stats, firstMs, lastMs int64, cfg ballastv1.ReadinessConfig, resourceName string) bool {
-	if int64(s.Count) < cfg.MinDataPoints {
+	minPoints := cfg.MinDataPoints
+	if minPoints <= 0 {
+		minPoints = ballastv1.DefaultMinDataPoints
+	}
+	if int64(s.Count) < minPoints {
 		return false
 	}
 
 	minSpan, err := time.ParseDuration(cfg.MinTimeSpan)
 	if err != nil || minSpan <= 0 {
-		minSpan = 24 * time.Hour
+		minSpan = ballastv1.DefaultMinTimeSpanDuration
 	}
 	if time.Duration(lastMs-firstMs)*time.Millisecond < minSpan {
 		return false
@@ -54,7 +58,7 @@ func EvaluateReadiness(s store.Stats, firstMs, lastMs int64, cfg ballastv1.Readi
 
 	maxCV, err := strconv.ParseFloat(strings.TrimSpace(cfg.MaxCV), 64)
 	if err != nil || maxCV < 0 {
-		maxCV = 1.5
+		maxCV = ballastv1.DefaultMaxCVValue
 	}
 	return s.CV <= maxCV
 }
@@ -82,7 +86,7 @@ func ComputeRecommendation(s store.Stats, metric ballastv1.MetricConfig) (resour
 		return resource.Quantity{}, fmt.Errorf("unknown aggregation %q", metric.Aggregation)
 	}
 
-	headroom := 1.0
+	headroom := ballastv1.DefaultHeadroomValue
 	if h, err := strconv.ParseFloat(strings.TrimSpace(metric.Headroom), 64); err == nil && h > 0 {
 		headroom = h
 	}
