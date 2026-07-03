@@ -310,7 +310,7 @@ spec:
       ephemeral-storage: "2Mi"
   behaviors:
     thresholds:
-      default: "20%"
+      default: "10%"
     resize:
       maxChangePerCycle: "50%"
       interval: "15m"
@@ -323,7 +323,7 @@ This catch-all policy applies to every opted-in pod in the cluster. Key design d
 - **Memory limit at `p99 * 1.2`.** p99 is the highest usage the workload has shown in production; the 20% headroom absorbs a normal rare spike while still OOMKilling a pod that runs well past its observed peak (a likely leak). This yields Burstable QoS (limit > request), the right class for most production workloads. **CPU limits are intentionally omitted** — they cause throttling rather than reclaiming waste.
 - **Ephemeral storage from the kubelet Summary API.** The request is sized at p90 (the growth-skewed distribution) and the limit at `p99 * 1.2` so the kubelet evicts a genuine runaway pod before the node hits disk pressure while tolerating a normal spike above the observed peak.
 - **250 samples over 24 hours before acting.** At the 5-minute poll interval a single long-running pod accrues ~288 samples in 24h, so the 24h window — not the sample count — is the binding constraint. A high coefficient of variation (CV > 1.5) also blocks action — it means the workload is too spiky to size reliably. The CV check is skipped when mean usage sits below a tiny per-resource floor (`cvMeanFloor`, defaults: 25m CPU, 25Mi memory, 2Mi ephemeral-storage): CV divides by the mean, so near-idle workloads produce huge CVs from quantization noise and rare startup spikes alone, and without the floor a single near-idle resource would pin the whole profile at `Accruing` forever — blocking recommendations for every other resource. Usage below the floor is too small for a mis-sized recommendation to matter.
-- **20% drift threshold.** A resize only fires when the current resource value deviates from the recommendation by more than 20%, avoiding churn from minor fluctuations.
+- **10% drift threshold.** A resize only fires when the current resource value deviates from the recommendation by more than 10%. In-place resize is cheap and safe (a request/limit patch on a running pod, no restart), so the band is deliberately tight: a recommendation that has moved more than 10% reflects a real shift in observed usage worth acting on, not noise.
 - **50% max change per cycle.** Each resize moves at most half the remaining gap between the current value and the recommendation, giving workloads time to stabilize between adjustments. The first step makes most of the correction; once a step would land within the drift threshold, the recommendation is applied exactly, so convergence completes instead of stalling just inside the threshold.
 - **Priority 0.** This is the lowest possible priority. Any `ClusterResourcePolicy` or `ResourcePolicy` with `priority > 0` wins for matched workloads, so you can override specific namespaces or workload kinds without touching this default.
 
