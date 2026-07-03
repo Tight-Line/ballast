@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **OTLP metric export now uses delta temporality for counters and histograms, so single-increment series render on dashboards.** The OTel SDK exports a counter series only once it has data, so a series whose attribute set increments exactly once is born already at its final value — and a backend needs two samples of a *cumulative* series to compute an increase, so that lone increment never charts. This is not an edge case: `ballast.resize.applied` increments once per pod and then sits in cooldown for the whole resize interval, so the resize wave right after an operator restart (fresh series for every attribute set) was completely invisible — dashboards showed a huge burst of `cooldown` skips with zero applied resizes, which read as a broken panel. Delta exports carry each interval's increment directly, so a series' first export window charts correctly. Non-monotonic instruments (updown counters, gauges) remain cumulative, and the Prometheus `/metrics` endpoint is unaffected.
+
+- **Failed in-place resizes now back off for one resize interval instead of retrying every reconcile.** The `resize-blocked` annotation was write-only: stamped `"true"` on failure but read by nothing, so a pod whose resize could not succeed was retried on every profile reconcile — each retry logging an error, emitting a `ResizeBlocked` warning event, and incrementing `ballast.resize.failed`, forever. The annotation now records the failure's error text (truncated to 256 characters) and a new `ballast.tightlinesoftware.com/resize-blocked-at` annotation records when it happened; evaluations within one resize interval of the failure are skipped with `ballast.resize.skipped{reason="blocked"}`, and a subsequent successful resize removes both annotations. Pods stamped `resize-blocked: "true"` by earlier versions carry no `resize-blocked-at` and are simply evaluated normally, so no migration is needed.
+
+### Added
+
+- **Resizes that would change a pod's QoS class are skipped as `qos_pinned` instead of failing forever.** Kubernetes fixes a pod's QoS class at creation and the resize subresource rejects any patch that would change it (`Pod QOS Class may not change as a result of resizing`). A `BestEffort` pod can therefore never gain requests in place, and a `Guaranteed` pod can only move requests and limits together. The resource adjuster now computes the QoS class before and after the planned adjustment and, when they differ, records `ballast.resize.skipped{reason="qos_pinned"}` without attempting the patch — previously such pods entered a permanent fail-retry loop of doomed patches, error logs, and warning events. `qos_pinned` pods still receive their recommendation at admission time (`apply`) when next recreated. Fuller QoS-class support (coupled request+limit moves for `Guaranteed` pods, a story for long-lived `BestEffort` pods) is tracked in [#48](https://github.com/Tight-Line/ballast/issues/48).
+
 ## [0.3.10] - 2026-07-02
 
 ### Added
