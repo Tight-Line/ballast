@@ -52,7 +52,7 @@ make generate     # Regenerate DeepCopy methods
 | `internal/plugin/plugin.go` | `MetricsPlugin` interface; `WorkloadIdentity`, `TimeWindow`, `ContainerStats` types |
 | `internal/plugin/registry.go` | `Register(p)`, `Get(typeName)` — global plugin registry; plugins self-register via `init()` |
 | `internal/plugin/kubernetes/plugin.go` | `kubernetesMetrics` plugin — calls in-cluster metrics API; token-bucket rate limiting; exponential backoff on errors |
-| `internal/stats/aggregator.go` | `EvaluateReadiness(Stats, firstMs, lastMs, ReadinessConfig) bool`; `ComputeRecommendation(Stats, MetricConfig) (resource.Quantity, error)` |
+| `internal/stats/aggregator.go` | `EvaluateReadiness(Stats, firstMs, lastMs, ReadinessConfig, resourceName) bool`; `ComputeRecommendation(Stats, MetricConfig) (resource.Quantity, error)` |
 | `internal/validation/annotations.go` | `ValidateAnnotations(map[string]string) error` — enforces annotation combination rules |
 | `internal/controller/workloadwatcher/controller.go` | Watches pods; creates/updates `WorkloadProfile`; `ProfileName(tupleLabels, identityLabels)` and `ExtractTupleLabels(podLabels, identityLabels)` exported for webhook use |
 | `internal/controller/metricscollector/controller.go` | Reconciles `WorkloadProfile` on timer; polls plugins; writes to Redis lists; updates status with stats and recommendations |

@@ -20,13 +20,25 @@ func TestEvaluateReadiness(t *testing.T) {
 	// 1h in milliseconds
 	spanMs := int64(60 * 60 * 1000)
 
+	cfgFloor := ballastv1.ReadinessConfig{
+		MinDataPoints: 10,
+		MinTimeSpan:   "1h",
+		MaxCV:         "1.5",
+		CVMeanFloor: map[string]string{
+			"cpu":               "10m",
+			"memory":            "25Mi",
+			"ephemeral-storage": "100Ki",
+		},
+	}
+
 	tests := []struct {
-		name    string
-		s       store.Stats
-		firstMs int64
-		lastMs  int64
-		cfg     ballastv1.ReadinessConfig
-		want    bool
+		name     string
+		s        store.Stats
+		firstMs  int64
+		lastMs   int64
+		cfg      ballastv1.ReadinessConfig
+		resource string
+		want     bool
 	}{
 		{
 			name:    "all conditions pass",
@@ -92,11 +104,77 @@ func TestEvaluateReadiness(t *testing.T) {
 			cfg:  cfg,
 			want: true,
 		},
+		{
+			// The observed near-idle case: mean 1m, CV inflated by a startup
+			// spike. The 10m cpu floor exempts the CV check.
+			name:    "cpu mean below floor exempts CV check",
+			s:       store.Stats{Count: 20, CV: 10.343, Mean: 1},
+			firstMs: 0, lastMs: spanMs,
+			cfg: cfgFloor, resource: "cpu",
+			want: true,
+		},
+		{
+			name:    "cpu mean above floor keeps CV check",
+			s:       store.Stats{Count: 20, CV: 2.0, Mean: 50},
+			firstMs: 0, lastMs: spanMs,
+			cfg: cfgFloor, resource: "cpu",
+			want: false,
+		},
+		{
+			// Memory stats are bytes; the floor must not get the millicore
+			// conversion. 10Mi mean is below the 25Mi floor.
+			name:    "memory mean below floor exempts CV check",
+			s:       store.Stats{Count: 20, CV: 3.0, Mean: 10 * 1024 * 1024},
+			firstMs: 0, lastMs: spanMs,
+			cfg: cfgFloor, resource: "memory",
+			want: true,
+		},
+		{
+			name:    "resource without floor entry keeps CV check",
+			s:       store.Stats{Count: 20, CV: 2.0, Mean: 1},
+			firstMs: 0, lastMs: spanMs,
+			cfg: cfgFloor, resource: "example.com/foo",
+			want: false,
+		},
+		{
+			name:    "invalid floor value keeps CV check",
+			s:       store.Stats{Count: 20, CV: 2.0, Mean: 1},
+			firstMs: 0, lastMs: spanMs,
+			cfg: ballastv1.ReadinessConfig{
+				MinDataPoints: 10,
+				MinTimeSpan:   "1h",
+				MaxCV:         "1.5",
+				CVMeanFloor:   map[string]string{"cpu": "bogus"},
+			},
+			resource: "cpu",
+			want:     false,
+		},
+		{
+			name:    "floor of zero disables the exemption",
+			s:       store.Stats{Count: 20, CV: 5.0, Mean: 0.5},
+			firstMs: 0, lastMs: spanMs,
+			cfg: ballastv1.ReadinessConfig{
+				MinDataPoints: 10,
+				MinTimeSpan:   "1h",
+				MaxCV:         "1.5",
+				CVMeanFloor:   map[string]string{"cpu": "0"},
+			},
+			resource: "cpu",
+			want:     false,
+		},
+		{
+			// The floor exempts only the CV check, not the history gates.
+			name:    "floor does not bypass minDataPoints",
+			s:       store.Stats{Count: 5, CV: 10.0, Mean: 1},
+			firstMs: 0, lastMs: spanMs,
+			cfg: cfgFloor, resource: "cpu",
+			want: false,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := stats.EvaluateReadiness(tc.s, tc.firstMs, tc.lastMs, tc.cfg)
+			got := stats.EvaluateReadiness(tc.s, tc.firstMs, tc.lastMs, tc.cfg, tc.resource)
 			if got != tc.want {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}

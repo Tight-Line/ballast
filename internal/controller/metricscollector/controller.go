@@ -532,7 +532,7 @@ func (r *Reconciler) processResourceStats(
 		return ballastv1.ContainerUsageStats{}, nil, false, fmt.Errorf("FirstSeenMs %s: %w", key, err)
 	}
 
-	ready := stats.EvaluateReadiness(s, firstMs, nowMs, policySpec.Readiness)
+	ready := stats.EvaluateReadiness(s, firstMs, nowMs, policySpec.Readiness, resourceName)
 	sourceName := metricsForResource[0].Source
 	usageStats := buildUsageStats(resourceName, sourceName, s, firstMs, nowMs)
 

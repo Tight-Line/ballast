@@ -112,6 +112,19 @@ type ReadinessConfig struct {
 	// +optional
 	// +kubebuilder:default="1.5"
 	MaxCV string `json:"maxCV,omitempty"`
+
+	// CVMeanFloor exempts a resource from the MaxCV check when its observed
+	// mean usage is below the given quantity (cpu in cores, others in bytes).
+	// CV is numerically unstable near a zero mean: quantization noise and rare
+	// one-off spikes (e.g. process startup) produce huge CVs on workloads whose
+	// usage is negligible, which would otherwise leave the profile Accruing
+	// forever and block recommendations for every other resource. Usage below
+	// the floor is too small for a mis-sized recommendation to matter. The
+	// floors are deliberately tiny; resources without an entry (or set to "0")
+	// always get the CV check.
+	// +optional
+	// +kubebuilder:default={"cpu": "10m", "memory": "25Mi", "ephemeral-storage": "100Ki"}
+	CVMeanFloor map[string]string `json:"cvMeanFloor,omitempty"`
 }
 
 // BehaviorConfig defines thresholds and parameters for resize actions.
