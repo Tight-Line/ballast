@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-07-03
+
 ### Fixed
 
 - **OTLP metric export now uses delta temporality for counters and histograms, so single-increment series render on dashboards.** The OTel SDK exports a counter series only once it has data, so a series whose attribute set increments exactly once is born already at its final value — and a backend needs two samples of a *cumulative* series to compute an increase, so that lone increment never charts. This is not an edge case: `ballast.resize.applied` increments once per pod and then sits in cooldown for the whole resize interval, so the resize wave right after an operator restart (fresh series for every attribute set) was completely invisible — dashboards showed a huge burst of `cooldown` skips with zero applied resizes, which read as a broken panel. Delta exports carry each interval's increment directly, so a series' first export window charts correctly. Non-monotonic instruments (updown counters, gauges) remain cumulative, and the Prometheus `/metrics` endpoint is unaffected.
