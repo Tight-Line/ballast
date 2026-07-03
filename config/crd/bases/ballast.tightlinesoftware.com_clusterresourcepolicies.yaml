@@ -164,6 +164,24 @@ spec:
                 description: Readiness defines the conditions that must pass before
                   Ballast acts.
                 properties:
+                  cvMeanFloor:
+                    additionalProperties:
+                      type: string
+                    default:
+                      cpu: 10m
+                      ephemeral-storage: 100Ki
+                      memory: 25Mi
+                    description: |-
+                      CVMeanFloor exempts a resource from the MaxCV check when its observed
+                      mean usage is below the given quantity (cpu in cores, others in bytes).
+                      CV is numerically unstable near a zero mean: quantization noise and rare
+                      one-off spikes (e.g. process startup) produce huge CVs on workloads whose
+                      usage is negligible, which would otherwise leave the profile Accruing
+                      forever and block recommendations for every other resource. Usage below
+                      the floor is too small for a mis-sized recommendation to matter. The
+                      floors are deliberately tiny; resources without an entry (or set to "0")
+                      always get the CV check.
+                    type: object
                   maxCV:
                     default: "1.5"
                     description: MaxCV is the maximum coefficient of variation (stddev/mean)

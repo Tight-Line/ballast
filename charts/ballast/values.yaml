@@ -240,6 +240,16 @@ defaultClusterResourcePolicy:
     # maxCV is the maximum coefficient of variation (stddev/mean) allowed.
     # High CV means the workload is too spiky to size reliably.
     maxCV: "1.5"
+    # cvMeanFloor exempts a resource from the maxCV check when its mean usage is
+    # below the given quantity. CV is meaningless near a zero mean (quantization
+    # noise and rare startup spikes dominate), and usage this small is safe to
+    # size regardless of dispersion; without the floor, one near-idle resource
+    # would keep the whole profile Accruing forever. The floors are deliberately
+    # tiny. Set a resource to "0" to always apply the CV check.
+    cvMeanFloor:
+      cpu: "10m"
+      memory: "25Mi"
+      ephemeral-storage: "100Ki"
   behaviors:
     thresholds:
       # default is the minimum drift from the recommendation before a resize fires.

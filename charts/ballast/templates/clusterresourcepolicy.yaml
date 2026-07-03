@@ -19,6 +19,10 @@ spec:
     minDataPoints: {{ .Values.defaultClusterResourcePolicy.readiness.minDataPoints }}
     minTimeSpan: {{ .Values.defaultClusterResourcePolicy.readiness.minTimeSpan | quote }}
     maxCV: {{ .Values.defaultClusterResourcePolicy.readiness.maxCV | quote }}
+    {{- with .Values.defaultClusterResourcePolicy.readiness.cvMeanFloor }}
+    cvMeanFloor:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
   behaviors:
     thresholds:
       default: {{ .Values.defaultClusterResourcePolicy.behaviors.thresholds.default | quote }}

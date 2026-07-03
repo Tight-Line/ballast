@@ -21,7 +21,8 @@ import (
 // EvaluateReadiness returns true when all three readiness conditions are satisfied:
 // sampleCount >= minDataPoints, timeSpan >= minTimeSpan, and CV <= maxCV.
 // firstMs and lastMs are Unix timestamps (milliseconds) of the oldest and newest samples.
-func EvaluateReadiness(s store.Stats, firstMs, lastMs int64, cfg ballastv1.ReadinessConfig) bool {
+// resourceName selects the cvMeanFloor entry that can exempt the CV check.
+func EvaluateReadiness(s store.Stats, firstMs, lastMs int64, cfg ballastv1.ReadinessConfig, resourceName string) bool {
 	if int64(s.Count) < cfg.MinDataPoints {
 		return false
 	}
@@ -32,6 +33,23 @@ func EvaluateReadiness(s store.Stats, firstMs, lastMs int64, cfg ballastv1.Readi
 	}
 	if time.Duration(lastMs-firstMs)*time.Millisecond < minSpan {
 		return false
+	}
+
+	// CV (stddev/mean) is numerically unstable near a zero mean: quantization
+	// noise and rare one-off spikes produce huge CVs on workloads whose usage
+	// is negligible. Below the configured floor the check is skipped — usage
+	// that small is safe to size regardless of dispersion. Unparseable floor
+	// values are ignored (the CV check applies), matching the maxCV fallback.
+	if floor, ok := cfg.CVMeanFloor[resourceName]; ok {
+		if q, err := resource.ParseQuantity(strings.TrimSpace(floor)); err == nil {
+			floorVal := q.AsApproximateFloat64()
+			if resourceName == "cpu" {
+				floorVal *= 1000 // stats store cpu in millicores
+			}
+			if floorVal > 0 && s.Mean < floorVal {
+				return true
+			}
+		}
 	}
 
 	maxCV, err := strconv.ParseFloat(strings.TrimSpace(cfg.MaxCV), 64)

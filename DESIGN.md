@@ -142,6 +142,12 @@ spec:
     minTimeSpan: "24h"            # default: 24h (covers one full daily cycle)
     maxCV: 1.5                    # default: 1.5 — permissive; CPU is inherently spiky.
                                   # coefficient of variation (stddev/mean); lower = more stable
+    cvMeanFloor:                  # skip the maxCV check when mean usage is below the floor.
+      cpu: "10m"                  # CV divides by the mean, so near-idle workloads get huge CVs
+      memory: "25Mi"              # from quantization noise and rare startup spikes alone; one
+      ephemeral-storage: "100Ki"  # stuck resource would otherwise pin the profile at Accruing.
+                                  # Usage below the floor is too small to mis-size dangerously.
+                                  # Resources without an entry (or "0") always get the CV check.
 
   behaviors:
     thresholds:
@@ -352,7 +358,7 @@ For each `WorkloadProfile`:
 3. Writes new samples to Redis via `ZADD`.
 4. Runs `ZREMRANGEBYSCORE` to expire old samples.
 5. Queries Redis for p50/p95/p99/mean/stddev/count/timespan.
-6. Evaluates `readiness` conditions (minDataPoints, minTimeSpan, maxCV).
+6. Evaluates `readiness` conditions (minDataPoints, minTimeSpan, maxCV with the cvMeanFloor exemption).
 7. Computes the cached recommendation (aggregation + headroom from policy).
 8. Updates `WorkloadProfile` status.
 
