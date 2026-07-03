@@ -157,7 +157,7 @@ spec:
             # memory.request uses resize.default = "20%"
     # a drift in ANY field exceeding its threshold independently triggers the behavior
     resize:
-      maxChangePerCycle: "50%"    # default: 50% — cap single-cycle adjustment
+      maxChangePerCycle: "50%"    # default: 50% — cap single-cycle step to this % of the current→recommended gap
       interval: "15m"             # default: 15m — how often ResourceAdjuster re-evaluates
 ```
 

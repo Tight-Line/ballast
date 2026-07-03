@@ -90,7 +90,7 @@ Pod CREATE ──► PodMutator (admission webhook)
                   ▼
            ResourceAdjuster (controller, WorkloadProfile events)
                   │  detects drift between current and recommended values
-                  │  caps adjustment per cycle (maxChangePerCycle)
+                  │  caps adjustment per cycle (maxChangePerCycle, % of gap)
                   └──► in-place pod resize (Kubernetes 1.35+)
 ```
 
@@ -155,7 +155,7 @@ Dry-run (`--dry-run-measure`) skips steps 5 and 10. Kill switch skips both.
 
 Triggered by `WorkloadProfile` status changes and a periodic requeue timer (`behaviors.resize.interval`, default 15 minutes). For each pod with `resize` (or `autoresize`) annotation and a ready profile:
 1. Calls `ExceedsDrift(current, recommended, thresholdPct)` per container/resource/field
-2. If drift exceeded, calls `CapChange(current, recommended, maxChangePct)` to bound the adjustment
+2. If drift exceeded, calls `CapChange(current, recommended, maxChangePct, thresholdPct)` to bound the adjustment to `maxChangePct`% of the current→recommended gap; a capped step landing within the drift threshold applies the recommendation exactly (no Zeno tail)
 3. Issues the resize patch via the pod resize subresource
 4. On failure (node pressure, infeasible): emits a Kubernetes Event and stamps `resize-blocked` annotation; retries on next cycle
 

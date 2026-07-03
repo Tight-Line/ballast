@@ -60,8 +60,11 @@ spec:
                         type: string
                       maxChangePerCycle:
                         default: 50%
-                        description: MaxChangePerCycle caps how much a single adjustment
-                          cycle can change a value.
+                        description: |-
+                          MaxChangePerCycle caps how much a single adjustment cycle can change a value,
+                          expressed as a percentage of the gap between the current and recommended
+                          values. When a capped step would land within the drift threshold of the
+                          recommendation, the recommendation is applied exactly instead.
                         type: string
                     type: object
                   thresholds:
