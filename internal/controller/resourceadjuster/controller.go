@@ -31,12 +31,24 @@ import (
 )
 
 const (
+	// AnnotationResizeBlocked carries the error text of the pod's most recent
+	// failed resize (truncated to maxBlockedReasonLen), so "why is this pod not
+	// being resized" is answerable from the pod itself after the failure Events
+	// have expired. Prior to v0.3.11 the value was the literal "true".
 	AnnotationResizeBlocked = "ballast.tightlinesoftware.com/resize-blocked"
-	AnnotationLastResize    = "ballast.tightlinesoftware.com/last-resize"
+	// AnnotationResizeBlockedAt is the RFC3339 time of the most recent failed
+	// resize. While it is younger than the policy's resize interval the pod is
+	// skipped (reason "blocked") instead of retrying a patch that just failed.
+	// Both blocked annotations are removed by the next successful resize.
+	AnnotationResizeBlockedAt = "ballast.tightlinesoftware.com/resize-blocked-at"
+	AnnotationLastResize      = "ballast.tightlinesoftware.com/last-resize"
 
 	defaultResizeInterval   = 15 * time.Minute
 	defaultThresholdPercent = 20.0
 	defaultMaxChangePercent = 50.0
+
+	// maxBlockedReasonLen caps the error text stored in AnnotationResizeBlocked.
+	maxBlockedReasonLen = 256
 )
 
 // Reconciler watches WorkloadProfile objects and resizes pods in-place when
@@ -169,6 +181,17 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 
 	pid := metrics.ProfileID{Name: profile.Name, Labels: profile.Status.TupleLabels}
 
+	if at, ok := pod.Annotations[AnnotationResizeBlockedAt]; ok {
+		if t, err := time.Parse(time.RFC3339, at); err == nil && time.Since(t) < interval {
+			log.V(1).Info("resize recently failed, backing off",
+				"pod", pod.Name, "namespace", pod.Namespace,
+				"blocked_reason", pod.Annotations[AnnotationResizeBlocked],
+				"next_attempt", t.Add(interval))
+			r.rec.ResizeSkipped(ctx, "blocked", pid, policyName, pod.Namespace)
+			return nil
+		}
+	}
+
 	if last, ok := pod.Annotations[AnnotationLastResize]; ok {
 		if t, err := time.Parse(time.RFC3339, last); err == nil && time.Since(t) < interval {
 			log.V(1).Info("resize cooldown active, skipping", "pod", pod.Name, "namespace", pod.Namespace, "next_resize", t.Add(interval))
@@ -196,6 +219,18 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 
 	logFields := []any{"profile", profile.Name, "pod", pod.Name, "namespace", pod.Namespace}
 
+	// The resize subresource may not change the pod's QoS class (fixed at
+	// creation). Detect that before patching: attempting it would fail every
+	// evaluation forever, since the class can only change on pod recreation.
+	all := append(slices.Clone(pod.Spec.InitContainers), pod.Spec.Containers...)
+	adjusted := append(slices.Clone(pod.Spec.InitContainers), adjustedContainers(pod.Spec.Containers, adjustments)...)
+	if cur, next := PodQOS(all), PodQOS(adjusted); cur != next {
+		log.Info("resize would change pod QoS class, which Kubernetes forbids; skipping",
+			append(logFields, "qos_current", string(cur), "qos_after", string(next))...)
+		r.rec.ResizeSkipped(ctx, "qos_pinned", pid, policyName, pod.Namespace)
+		return nil
+	}
+
 	if r.dryRunResize {
 		log.Info("dry-run: would resize pod", append(logFields, "dry_run", true)...)
 		r.rec.ResizeSkipped(ctx, "dry_run", pid, policyName, pod.Namespace)
@@ -207,13 +242,18 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 		r.rec.ResizeFailed(ctx, pid, policyName, pod.Namespace)
 		r.emitEvent(ctx, pod, corev1.EventTypeWarning, "ResizeBlocked",
 			fmt.Sprintf("in-place resize failed: %v", err))
-		return r.stampPodAnnotation(ctx, pod, AnnotationResizeBlocked, "true")
+		return r.patchPodAnnotations(ctx, pod, map[string]string{
+			AnnotationResizeBlocked:   truncate(err.Error(), maxBlockedReasonLen),
+			AnnotationResizeBlockedAt: metav1.Now().UTC().Format(time.RFC3339),
+		}, nil)
 	}
 
 	log.Info("resize applied", logFields...)
 	r.rec.ResizeApplied(ctx, pid, policyName, pod.Namespace)
 	r.emitEvent(ctx, pod, corev1.EventTypeNormal, "Resized", "in-place resize applied by Ballast")
-	return r.stampPodAnnotation(ctx, pod, AnnotationLastResize, metav1.Now().UTC().Format(time.RFC3339))
+	return r.patchPodAnnotations(ctx, pod,
+		map[string]string{AnnotationLastResize: metav1.Now().UTC().Format(time.RFC3339)},
+		[]string{AnnotationResizeBlocked, AnnotationResizeBlockedAt})
 }
 
 // containerRecsByName indexes profile recommendations by container name.
@@ -437,35 +477,111 @@ func currentValue(list corev1.ResourceList, name corev1.ResourceName) resource.Q
 	return resource.MustParse("0")
 }
 
+// adjustedContainers returns a deep copy of containers with adjustments merged
+// into the matching containers' requests and limits.
+func adjustedContainers(containers []corev1.Container, adjustments []ContainerAdjustment) []corev1.Container {
+	out := make([]corev1.Container, len(containers))
+	for i := range containers {
+		out[i] = *containers[i].DeepCopy()
+		for _, adj := range adjustments {
+			if out[i].Name != adj.Name {
+				continue
+			}
+			if out[i].Resources.Requests == nil {
+				out[i].Resources.Requests = make(corev1.ResourceList)
+			}
+			if out[i].Resources.Limits == nil {
+				out[i].Resources.Limits = make(corev1.ResourceList)
+			}
+			maps.Copy(out[i].Resources.Requests, adj.Requests)
+			maps.Copy(out[i].Resources.Limits, adj.Limits)
+		}
+	}
+	return out
+}
+
+// PodQOS computes the QoS class Kubernetes assigns to a pod built from the
+// given containers (pass regular and init containers together), following the
+// upstream GetPodQOS algorithm over cpu and memory, the only QoS-relevant
+// resources: BestEffort when no container sets any cpu/memory request or
+// limit, Guaranteed when every container sets both cpu and memory limits and
+// aggregate requests equal aggregate limits, Burstable otherwise.
+func PodQOS(containers []corev1.Container) corev1.PodQOSClass {
+	requests := corev1.ResourceList{}
+	limits := corev1.ResourceList{}
+	isGuaranteed := true
+	for _, c := range containers {
+		for name, q := range c.Resources.Requests {
+			if !resizableResource(name) || q.IsZero() {
+				continue
+			}
+			addQuantity(requests, name, q)
+		}
+		qosLimits := 0
+		for name, q := range c.Resources.Limits {
+			if !resizableResource(name) || q.IsZero() {
+				continue
+			}
+			qosLimits++
+			addQuantity(limits, name, q)
+		}
+		if qosLimits != 2 { // both cpu and memory
+			isGuaranteed = false
+		}
+	}
+	if len(requests) == 0 && len(limits) == 0 {
+		return corev1.PodQOSBestEffort
+	}
+	if isGuaranteed {
+		for name, req := range requests {
+			if lim, ok := limits[name]; !ok || lim.Cmp(req) != 0 {
+				isGuaranteed = false
+				break
+			}
+		}
+	}
+	if isGuaranteed && len(requests) == len(limits) {
+		return corev1.PodQOSGuaranteed
+	}
+	return corev1.PodQOSBurstable
+}
+
+// addQuantity adds q to the running total for name in list.
+func addQuantity(list corev1.ResourceList, name corev1.ResourceName, q resource.Quantity) {
+	total := q.DeepCopy()
+	if cur, ok := list[name]; ok {
+		total.Add(cur)
+	}
+	list[name] = total
+}
+
 // applyResize patches the pod via the resize subresource.
 func (r *Reconciler) applyResize(ctx context.Context, pod *corev1.Pod, adjustments []ContainerAdjustment) error {
 	modified := pod.DeepCopy()
-	for i := range modified.Spec.Containers {
-		for _, adj := range adjustments {
-			if modified.Spec.Containers[i].Name != adj.Name {
-				continue
-			}
-			if modified.Spec.Containers[i].Resources.Requests == nil {
-				modified.Spec.Containers[i].Resources.Requests = make(corev1.ResourceList)
-			}
-			if modified.Spec.Containers[i].Resources.Limits == nil {
-				modified.Spec.Containers[i].Resources.Limits = make(corev1.ResourceList)
-			}
-			maps.Copy(modified.Spec.Containers[i].Resources.Requests, adj.Requests)
-			maps.Copy(modified.Spec.Containers[i].Resources.Limits, adj.Limits)
-		}
-	}
+	modified.Spec.Containers = adjustedContainers(pod.Spec.Containers, adjustments)
 	return r.client.SubResource("resize").Patch(ctx, modified, client.MergeFrom(pod))
 }
 
-// stampPodAnnotation patches a single annotation onto the pod.
-func (r *Reconciler) stampPodAnnotation(ctx context.Context, pod *corev1.Pod, key, value string) error {
+// patchPodAnnotations patches pod annotations: entries in set are added or
+// replaced, keys in remove are deleted.
+func (r *Reconciler) patchPodAnnotations(ctx context.Context, pod *corev1.Pod, set map[string]string, remove []string) error {
 	base := pod.DeepCopy()
 	if pod.Annotations == nil {
 		pod.Annotations = make(map[string]string)
 	}
-	pod.Annotations[key] = value
+	maps.Copy(pod.Annotations, set)
+	for _, k := range remove {
+		delete(pod.Annotations, k)
+	}
 	return r.client.Patch(ctx, pod, client.MergeFrom(base))
+}
+
+// truncate shortens s to at most n bytes.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 // emitEvent creates a Kubernetes Event on the pod.

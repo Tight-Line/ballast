@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	promexporter "go.opentelemetry.io/otel/exporters/prometheus"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 )
 
@@ -149,16 +150,41 @@ func (g filteredGatherer) dropped(name string) bool {
 	return false
 }
 
+// deltaTemporality selects delta temporality for monotonic counters and
+// histograms, cumulative for everything else. With cumulative temporality a
+// counter series whose attribute set increments exactly once (e.g. one
+// ballast.resize.applied per pod, which then sits in cooldown) is born already
+// at its final value: the backend's increase/rate needs two samples to compute
+// a difference, so the increment never renders on dashboards. Delta exports
+// carry each interval's increment directly, so bursts inside a series' first
+// export window (typically right after operator startup) chart correctly.
+func deltaTemporality(ik sdkmetric.InstrumentKind) metricdata.Temporality {
+	switch ik {
+	case sdkmetric.InstrumentKindCounter,
+		sdkmetric.InstrumentKindObservableCounter,
+		sdkmetric.InstrumentKindHistogram:
+		return metricdata.DeltaTemporality
+	default:
+		return metricdata.CumulativeTemporality
+	}
+}
+
 func buildOTLPExporter(ctx context.Context, cfg Config) (sdkmetric.Exporter, error) {
 	switch cfg.OTLPProtocol {
 	case "http/protobuf":
-		httpOpts := []otlpmetrichttp.Option{otlpmetrichttp.WithEndpoint(cfg.OTLPEndpoint)}
+		httpOpts := []otlpmetrichttp.Option{
+			otlpmetrichttp.WithEndpoint(cfg.OTLPEndpoint),
+			otlpmetrichttp.WithTemporalitySelector(deltaTemporality),
+		}
 		if cfg.OTLPInsecure {
 			httpOpts = append(httpOpts, otlpmetrichttp.WithInsecure())
 		}
 		return otlpmetrichttp.New(ctx, httpOpts...)
 	default: // "grpc"
-		grpcOpts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(cfg.OTLPEndpoint)}
+		grpcOpts := []otlpmetricgrpc.Option{
+			otlpmetricgrpc.WithEndpoint(cfg.OTLPEndpoint),
+			otlpmetricgrpc.WithTemporalitySelector(deltaTemporality),
+		}
 		if cfg.OTLPInsecure {
 			grpcOpts = append(grpcOpts, otlpmetricgrpc.WithInsecure())
 		}

@@ -12,6 +12,8 @@ import (
 
 	promclient "github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // TestFilteredGatherer_DropsPrefixes pins the anti-duplication filter on the
@@ -54,6 +56,30 @@ func TestFilteredGatherer_DropsPrefixes(t *testing.T) {
 	for _, dropped := range []string{"ballast_pods_processed_total", "otel_scope_info", "target_info"} {
 		if got[dropped] {
 			t.Errorf("family %s was kept, want dropped", dropped)
+		}
+	}
+}
+
+// TestDeltaTemporality pins the OTLP export temporality: monotonic counters and
+// histograms must export deltas (so a series born mid-burst still charts its
+// first increments), while non-monotonic and gauge-like instruments stay
+// cumulative.
+func TestDeltaTemporality(t *testing.T) {
+	cases := []struct {
+		kind sdkmetric.InstrumentKind
+		want metricdata.Temporality
+	}{
+		{sdkmetric.InstrumentKindCounter, metricdata.DeltaTemporality},
+		{sdkmetric.InstrumentKindObservableCounter, metricdata.DeltaTemporality},
+		{sdkmetric.InstrumentKindHistogram, metricdata.DeltaTemporality},
+		{sdkmetric.InstrumentKindUpDownCounter, metricdata.CumulativeTemporality},
+		{sdkmetric.InstrumentKindObservableUpDownCounter, metricdata.CumulativeTemporality},
+		{sdkmetric.InstrumentKindObservableGauge, metricdata.CumulativeTemporality},
+		{sdkmetric.InstrumentKindGauge, metricdata.CumulativeTemporality},
+	}
+	for _, tc := range cases {
+		if got := deltaTemporality(tc.kind); got != tc.want {
+			t.Errorf("deltaTemporality(%v) = %v, want %v", tc.kind, got, tc.want)
 		}
 	}
 }

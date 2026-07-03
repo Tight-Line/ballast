@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -363,7 +364,7 @@ func TestReconcile_DryRun_NoResize(t *testing.T) {
 	}
 }
 
-func TestReconcile_ResizeFails_BlockedAnnotationStamped(t *testing.T) {
+func TestReconcile_ResizeFails_BlockedAnnotationsStamped(t *testing.T) {
 	profile := readyProfile("200m", "400m")
 	pod := resizePod("100m", "200m")
 	fc := newFakeClient(profile, noResizePolicy(), pod)
@@ -378,8 +379,132 @@ func TestReconcile_ResizeFails_BlockedAnnotationStamped(t *testing.T) {
 	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web-abc"}, &updated); err != nil {
 		t.Fatalf("getting pod: %v", err)
 	}
-	if updated.Annotations[resourceadjuster.AnnotationResizeBlocked] != "true" {
-		t.Errorf("expected resize-blocked annotation, got %q", updated.Annotations[resourceadjuster.AnnotationResizeBlocked])
+	if got := updated.Annotations[resourceadjuster.AnnotationResizeBlocked]; got != "node pressure: infeasible" {
+		t.Errorf("resize-blocked should carry the failure reason, got %q", got)
+	}
+	at := updated.Annotations[resourceadjuster.AnnotationResizeBlockedAt]
+	if _, err := time.Parse(time.RFC3339, at); err != nil {
+		t.Errorf("resize-blocked-at should be RFC3339, got %q: %v", at, err)
+	}
+}
+
+func TestReconcile_ResizeFails_LongError_ReasonTruncated(t *testing.T) {
+	profile := readyProfile("200m", "400m")
+	pod := resizePod("100m", "200m")
+	fc := newFakeClient(profile, noResizePolicy(), pod)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
+		return errors.New(strings.Repeat("x", 1000))
+	}
+	if _, err := doReconcile(t, r, profile.Name); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var updated corev1.Pod
+	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web-abc"}, &updated); err != nil {
+		t.Fatalf("getting pod: %v", err)
+	}
+	if got := len(updated.Annotations[resourceadjuster.AnnotationResizeBlocked]); got != 256 {
+		t.Errorf("resize-blocked reason length = %d, want truncated to 256", got)
+	}
+}
+
+func TestReconcile_BlockedRecently_NoRetry(t *testing.T) {
+	// The pod's last resize failed 5 minutes ago — within the 15m interval — so
+	// no new attempt is made even though drift persists.
+	profile := readyProfile("200m", "400m")
+	pod := resizePod("100m", "200m")
+	pod.Annotations[resourceadjuster.AnnotationResizeBlocked] = "some earlier failure"
+	pod.Annotations[resourceadjuster.AnnotationResizeBlockedAt] = time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	fc := newFakeClient(profile, noResizePolicy(), pod)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+	resizeCalled := false
+	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
+		resizeCalled = true
+		return nil
+	}
+	if _, err := doReconcile(t, r, profile.Name); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resizeCalled {
+		t.Error("resize should not be retried while the blocked backoff is active")
+	}
+}
+
+func TestReconcile_BlockedStale_RetriedAndClearedOnSuccess(t *testing.T) {
+	// The pod's last resize failed longer than one interval ago: it is retried,
+	// and a successful resize removes both blocked annotations.
+	profile := readyProfile("200m", "400m")
+	pod := resizePod("100m", "200m")
+	pod.Annotations[resourceadjuster.AnnotationResizeBlocked] = "some earlier failure"
+	pod.Annotations[resourceadjuster.AnnotationResizeBlockedAt] = time.Now().Add(-20 * time.Minute).UTC().Format(time.RFC3339)
+	fc := newFakeClient(profile, noResizePolicy(), pod)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+	resizeCalled := false
+	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
+		resizeCalled = true
+		return nil
+	}
+	if _, err := doReconcile(t, r, profile.Name); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resizeCalled {
+		t.Fatal("resize should be retried once the blocked backoff has elapsed")
+	}
+	var updated corev1.Pod
+	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web-abc"}, &updated); err != nil {
+		t.Fatalf("getting pod: %v", err)
+	}
+	if v, ok := updated.Annotations[resourceadjuster.AnnotationResizeBlocked]; ok {
+		t.Errorf("resize-blocked should be cleared after a successful resize, got %q", v)
+	}
+	if v, ok := updated.Annotations[resourceadjuster.AnnotationResizeBlockedAt]; ok {
+		t.Errorf("resize-blocked-at should be cleared after a successful resize, got %q", v)
+	}
+	if updated.Annotations[resourceadjuster.AnnotationLastResize] == "" {
+		t.Error("expected last-resize annotation after successful resize")
+	}
+}
+
+func TestReconcile_BlockedAtUnparseable_Retried(t *testing.T) {
+	// A mangled resize-blocked-at value must not wedge the pod: the backoff is
+	// ignored and the resize proceeds.
+	profile := readyProfile("200m", "400m")
+	pod := resizePod("100m", "200m")
+	pod.Annotations[resourceadjuster.AnnotationResizeBlockedAt] = "not-a-timestamp"
+	fc := newFakeClient(profile, noResizePolicy(), pod)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+	resizeCalled := false
+	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
+		resizeCalled = true
+		return nil
+	}
+	if _, err := doReconcile(t, r, profile.Name); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resizeCalled {
+		t.Error("resize should proceed when resize-blocked-at cannot be parsed")
+	}
+}
+
+func TestReconcile_LegacyBlockedTrue_StillRetried(t *testing.T) {
+	// Pods stamped resize-blocked: "true" by versions before the backoff have no
+	// resize-blocked-at, so they are evaluated normally (and the annotation is
+	// rewritten by the next failure or cleared by the next success).
+	profile := readyProfile("200m", "400m")
+	pod := resizePod("100m", "200m")
+	pod.Annotations[resourceadjuster.AnnotationResizeBlocked] = "true"
+	fc := newFakeClient(profile, noResizePolicy(), pod)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+	resizeCalled := false
+	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
+		resizeCalled = true
+		return nil
+	}
+	if _, err := doReconcile(t, r, profile.Name); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resizeCalled {
+		t.Error("legacy resize-blocked=true without resize-blocked-at should not suppress evaluation")
 	}
 }
 
@@ -750,8 +875,11 @@ func TestReconcile_ContainerNotInRecommendations_Skipped(t *testing.T) {
 	}
 }
 
-func TestReconcile_NilContainerResources_HandledGracefully(t *testing.T) {
-	// Container with nil Requests and Limits — should still produce an adjustment.
+func TestReconcile_BestEffortPod_QOSPinned_NoResizeNoBlock(t *testing.T) {
+	// A pod with no requests or limits anywhere is BestEffort. Adding requests
+	// via the resize subresource would change its QoS class to Burstable, which
+	// Kubernetes rejects — so no resize is attempted and the pod is not marked
+	// blocked (the patch was never issued, let alone failed).
 	profile := readyProfile("200m", "400m")
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -779,8 +907,109 @@ func TestReconcile_NilContainerResources_HandledGracefully(t *testing.T) {
 	if _, err := doReconcile(t, r, profile.Name); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if resizeCalled {
+		t.Error("resize should not be attempted on a BestEffort pod: it cannot succeed")
+	}
+	var updated corev1.Pod
+	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web-nil"}, &updated); err != nil {
+		t.Fatalf("getting pod: %v", err)
+	}
+	if v, ok := updated.Annotations[resourceadjuster.AnnotationResizeBlocked]; ok {
+		t.Errorf("qos_pinned skip should not mark the pod blocked, got %q", v)
+	}
+}
+
+func TestReconcile_GuaranteedPod_RequestOnlyDrift_QOSPinned(t *testing.T) {
+	// A Guaranteed pod (requests == limits for cpu and memory) whose
+	// recommendation moves only the cpu request would become Burstable, so the
+	// resize is skipped as qos_pinned.
+	profile := readyProfileWithRecs(map[string]ballastv1.ResourceRecommendation{
+		"cpu": {Request: "200m"},
+	})
+	pod := guaranteedPod()
+	fc := newFakeClient(profile, noResizePolicy(), pod)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+	resizeCalled := false
+	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
+		resizeCalled = true
+		return nil
+	}
+	if _, err := doReconcile(t, r, profile.Name); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resizeCalled {
+		t.Error("resize breaking requests==limits on a Guaranteed pod should be skipped")
+	}
+}
+
+func TestReconcile_GuaranteedPod_CoupledMove_Resized(t *testing.T) {
+	// A Guaranteed pod whose recommendation moves the cpu request and limit
+	// together (to the same value) stays Guaranteed, so the resize proceeds.
+	profile := readyProfileWithRecs(map[string]ballastv1.ResourceRecommendation{
+		"cpu": {Request: "200m", Limit: "200m"},
+	})
+	pod := guaranteedPod()
+	fc := newFakeClient(profile, noResizePolicy(), pod)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+	resizeCalled := false
+	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
+		resizeCalled = true
+		return nil
+	}
+	if _, err := doReconcile(t, r, profile.Name); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !resizeCalled {
-		t.Error("resize should be called when current resources are absent (treated as zero drift from zero)")
+		t.Error("a QoS-preserving resize of a Guaranteed pod should proceed")
+	}
+}
+
+// guaranteedPod returns a resize-annotated pod with requests == limits for both
+// cpu and memory (QoS class Guaranteed).
+func guaranteedPod() *corev1.Pod {
+	pod := resizePod("100m", "100m")
+	pod.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory] = resource.MustParse("128Mi")
+	pod.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory] = resource.MustParse("128Mi")
+	return pod
+}
+
+func TestReconcile_NilContainerLimits_HandledGracefully(t *testing.T) {
+	// Container with requests set but a nil Limits map — adjustments must still
+	// be produced and the limit written into a freshly initialized map. The pod
+	// is Burstable before and after (a cpu limit alone is not Guaranteed), so
+	// the QoS pre-check does not interfere.
+	profile := readyProfile("200m", "400m")
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-nil",
+			Namespace: "default",
+			Annotations: map[string]string{
+				workloadwatcher.AnnotationResize:     "true",
+				workloadwatcher.AnnotationProfileRef: "prod",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name: "app",
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+					// nil Limits
+				},
+			}},
+		},
+	}
+	fc := newFakeClient(profile, noResizePolicy(), pod)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+	resizeCalled := false
+	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
+		resizeCalled = true
+		return nil
+	}
+	if _, err := doReconcile(t, r, profile.Name); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resizeCalled {
+		t.Error("resize should be called when the limits map is nil but requests drift")
 	}
 }
 
@@ -849,8 +1078,8 @@ func TestReconcile_PodNilAnnotations_BlockedAnnotationStamped(t *testing.T) {
 	if err := fc.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web-noanns"}, &updated); err != nil {
 		t.Fatalf("getting pod: %v", err)
 	}
-	if updated.Annotations[resourceadjuster.AnnotationResizeBlocked] != "true" {
-		t.Errorf("expected resize-blocked annotation to be stamped, got %q", updated.Annotations[resourceadjuster.AnnotationResizeBlocked])
+	if got := updated.Annotations[resourceadjuster.AnnotationResizeBlocked]; got != "resize failed" {
+		t.Errorf("expected resize-blocked annotation to carry the failure reason, got %q", got)
 	}
 }
 
@@ -920,10 +1149,10 @@ func TestReconcile_ApplyResize_MultiContainer_SkipsNonMatching(t *testing.T) {
 	}
 }
 
-func TestReconcile_ApplyResize_NilResources_InitializedCorrectly(t *testing.T) {
-	// Pod container has nil Requests and Limits. applyResize must initialize them
-	// before writing. When current is zero, CapChange returns recommended directly
-	// (no cap), so the result should equal the full recommended value.
+func TestReconcile_ApplyResize_NilLimits_InitializedCorrectly(t *testing.T) {
+	// Pod container has requests but a nil Limits map. applyResize must
+	// initialize the map before writing. When the current limit is zero,
+	// CapChange returns the recommendation directly (no cap).
 	profile := readyProfile("200m", "400m")
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -936,8 +1165,11 @@ func TestReconcile_ApplyResize_NilResources_InitializedCorrectly(t *testing.T) {
 		},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{
-				Name:      "app",
-				Resources: corev1.ResourceRequirements{}, // nil Requests and Limits
+				Name: "app",
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+					// nil Limits
+				},
 			}},
 		},
 	}
@@ -951,17 +1183,114 @@ func TestReconcile_ApplyResize_NilResources_InitializedCorrectly(t *testing.T) {
 		t.Fatalf("getting pod: %v", err)
 	}
 	if updated.Annotations[resourceadjuster.AnnotationLastResize] == "" {
-		t.Error("expected last-resize annotation after successful resize with nil resources")
+		t.Error("expected last-resize annotation after successful resize with nil limits")
 	}
-	// current=0, recommended=200m → no cap, result is the full recommended value
+	// request: current=100m, recommended=200m, 50% of the gap → 150m
 	gotReq := updated.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]
-	if gotReq.Cmp(resource.MustParse("200m")) != 0 {
-		t.Errorf("CPU request: want 200m, got %s", gotReq.String())
+	if gotReq.Cmp(resource.MustParse("150m")) != 0 {
+		t.Errorf("CPU request: want 150m, got %s", gotReq.String())
 	}
-	// current=0, recommended=400m → no cap
+	// limit: current=0, recommended=400m → no cap, full recommendation
 	gotLim := updated.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU]
 	if gotLim.Cmp(resource.MustParse("400m")) != 0 {
 		t.Errorf("CPU limit: want 400m, got %s", gotLim.String())
+	}
+}
+
+func TestPodQOS(t *testing.T) {
+	req := func(cpu, mem string) corev1.ResourceList {
+		rl := corev1.ResourceList{}
+		if cpu != "" {
+			rl[corev1.ResourceCPU] = resource.MustParse(cpu)
+		}
+		if mem != "" {
+			rl[corev1.ResourceMemory] = resource.MustParse(mem)
+		}
+		return rl
+	}
+	cases := []struct {
+		name       string
+		containers []corev1.Container
+		want       corev1.PodQOSClass
+	}{
+		{
+			name:       "no resources anywhere",
+			containers: []corev1.Container{{Name: "a"}},
+			want:       corev1.PodQOSBestEffort,
+		},
+		{
+			name: "non-qos resources and zero quantities are ignored",
+			containers: []corev1.Container{{Name: "a", Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
+					corev1.ResourceCPU:              resource.MustParse("0"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceEphemeralStorage: resource.MustParse("2Gi"),
+				},
+			}}},
+			want: corev1.PodQOSBestEffort,
+		},
+		{
+			name: "request only",
+			containers: []corev1.Container{{Name: "a", Resources: corev1.ResourceRequirements{
+				Requests: req("100m", ""),
+			}}},
+			want: corev1.PodQOSBurstable,
+		},
+		{
+			name: "requests equal limits for cpu and memory",
+			containers: []corev1.Container{{Name: "a", Resources: corev1.ResourceRequirements{
+				Requests: req("100m", "128Mi"),
+				Limits:   req("100m", "128Mi"),
+			}}},
+			want: corev1.PodQOSGuaranteed,
+		},
+		{
+			name: "cpu limit only is not guaranteed",
+			containers: []corev1.Container{{Name: "a", Resources: corev1.ResourceRequirements{
+				Requests: req("100m", ""),
+				Limits:   req("100m", ""),
+			}}},
+			want: corev1.PodQOSBurstable,
+		},
+		{
+			name: "request below limit is not guaranteed",
+			containers: []corev1.Container{{Name: "a", Resources: corev1.ResourceRequirements{
+				Requests: req("100m", "128Mi"),
+				Limits:   req("200m", "128Mi"),
+			}}},
+			want: corev1.PodQOSBurstable,
+		},
+		{
+			name: "init container resources count",
+			containers: []corev1.Container{
+				{Name: "a"},
+				{Name: "init", Resources: corev1.ResourceRequirements{Requests: req("10m", "")}},
+			},
+			want: corev1.PodQOSBurstable,
+		},
+		{
+			name: "two guaranteed containers aggregate",
+			containers: []corev1.Container{
+				{Name: "a", Resources: corev1.ResourceRequirements{
+					Requests: req("100m", "128Mi"),
+					Limits:   req("100m", "128Mi"),
+				}},
+				{Name: "b", Resources: corev1.ResourceRequirements{
+					Requests: req("50m", "64Mi"),
+					Limits:   req("50m", "64Mi"),
+				}},
+			},
+			want: corev1.PodQOSGuaranteed,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resourceadjuster.PodQOS(tc.containers); got != tc.want {
+				t.Errorf("PodQOS = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 
