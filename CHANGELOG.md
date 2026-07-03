@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-07-02
+
 ### Added
 
 - **New `readiness.cvMeanFloor` policy field unsticks near-idle workloads from `Accruing`.** The maxCV readiness check divides stddev by the mean, so a workload idling near zero produces a huge CV from measurement quantization and rare one-off spikes alone — a single ~750m startup burst among ~1700 samples of a ~1m-mean container yields CV ≈ 10 — and since profile readiness is an AND across all tracked resources, that one resource pinned the whole profile at `Accruing` forever, blocking recommendations for every other resource (including scaling down overstated reservations). `cvMeanFloor` maps a resource to a quantity below which its mean usage exempts it from the CV check; the sample-count and time-span gates still apply. Usage below the floor is too small for a mis-sized recommendation to matter: with the defaults (`cpu: 10m`, `memory: 25Mi`, `ephemeral-storage: 100Ki`) the resulting requests (~1.2 × mean) and limits (~1.2 × p99) stay far too small to hurt a node even when reached. Set a resource to `"0"` to always apply the CV check. The defaults apply through CRD defaulting, so after a CRD upgrade existing policies that don't set the field pick them up and previously stuck near-idle profiles flip to `Sufficient` on their next collection cycle.
