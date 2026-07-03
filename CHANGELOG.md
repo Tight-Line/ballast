@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Raised the default `readiness.cvMeanFloor` for CPU from `10m` to `25m` and for ephemeral storage from `100Ki` to `2Mi`.** The 0.3.10 floors proved too conservative in practice: workloads idling just above them (e.g. a few m of CPU or a few hundred Ki of scratch disk) still produce CVs dominated by quantization noise and startup spikes, pinning profiles at `Accruing`. Usage below the new floors remains far too small for a mis-sized recommendation to matter. The memory floor is unchanged at `25Mi`. As with 0.3.10, the defaults apply through CRD defaulting, so policies that don't set the field pick up the new floors after a CRD upgrade; policies that set `cvMeanFloor` explicitly are unaffected.
+
 ## [0.3.11] - 2026-07-03
 
 ### Fixed

@@ -143,9 +143,9 @@ spec:
     maxCV: 1.5                    # default: 1.5 — permissive; CPU is inherently spiky.
                                   # coefficient of variation (stddev/mean); lower = more stable
     cvMeanFloor:                  # skip the maxCV check when mean usage is below the floor.
-      cpu: "10m"                  # CV divides by the mean, so near-idle workloads get huge CVs
+      cpu: "25m"                  # CV divides by the mean, so near-idle workloads get huge CVs
       memory: "25Mi"              # from quantization noise and rare startup spikes alone; one
-      ephemeral-storage: "100Ki"  # stuck resource would otherwise pin the profile at Accruing.
+      ephemeral-storage: "2Mi"    # stuck resource would otherwise pin the profile at Accruing.
                                   # Usage below the floor is too small to mis-size dangerously.
                                   # Resources without an entry (or "0") always get the CV check.
 

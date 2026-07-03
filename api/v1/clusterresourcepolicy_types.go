@@ -123,7 +123,7 @@ type ReadinessConfig struct {
 	// floors are deliberately tiny; resources without an entry (or set to "0")
 	// always get the CV check.
 	// +optional
-	// +kubebuilder:default={"cpu": "10m", "memory": "25Mi", "ephemeral-storage": "100Ki"}
+	// +kubebuilder:default={"cpu": "25m", "memory": "25Mi", "ephemeral-storage": "2Mi"}
 	CVMeanFloor map[string]string `json:"cvMeanFloor,omitempty"`
 }
 

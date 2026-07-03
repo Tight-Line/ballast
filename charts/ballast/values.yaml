@@ -247,9 +247,9 @@ defaultClusterResourcePolicy:
     # would keep the whole profile Accruing forever. The floors are deliberately
     # tiny. Set a resource to "0" to always apply the CV check.
     cvMeanFloor:
-      cpu: "10m"
+      cpu: "25m"
       memory: "25Mi"
-      ephemeral-storage: "100Ki"
+      ephemeral-storage: "2Mi"
   behaviors:
     thresholds:
       # default is the minimum drift from the recommendation before a resize fires.

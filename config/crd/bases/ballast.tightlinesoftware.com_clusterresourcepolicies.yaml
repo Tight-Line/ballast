@@ -168,8 +168,8 @@ spec:
                     additionalProperties:
                       type: string
                     default:
-                      cpu: 10m
-                      ephemeral-storage: 100Ki
+                      cpu: 25m
+                      ephemeral-storage: 2Mi
                       memory: 25Mi
                     description: |-
                       CVMeanFloor exempts a resource from the MaxCV check when its observed
