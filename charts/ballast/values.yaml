@@ -167,10 +167,10 @@ telemetry:
 
 # defaultClusterResourcePolicy installs a catch-all policy that applies to all
 # opted-in pods. The values below are the "homogeneous-large-fleet" preset: it
-# sizes CPU and memory requests at avg * 1.25 (= mean / 0.80 target utilization),
-# sets a memory limit at p99 + 20% headroom, and sizes ephemeral storage
-# requests/limits from the kubelet Summary API. It requires 250 samples over 24
-# hours before acting.
+# sizes CPU requests at avg * 1.25 (= mean / 0.80 target utilization), memory
+# requests at p50 * 1.05, sets a memory limit at p99 + 20% headroom, and sizes
+# ephemeral storage requests/limits from the kubelet Summary API. It requires
+# 250 samples over 24 hours before acting.
 #
 # This is the built-in default preset. Other presets ship as values overlays under
 # charts/ballast/presets/ (see presets/README.md) and are selected at install time
@@ -194,14 +194,29 @@ defaultClusterResourcePolicy:
   metricsSource: kubernetes-metrics
   # metrics defines what to measure and which resource fields to set.
   #
-  # Requests are sized at avg * 1.25: for a large homogeneous fleet the aggregate
-  # pressure is predictable, so sizing at 80% of mean keeps nodes dense while
-  # leaving headroom for normal variation. The memory limit is set at p99 * 1.2:
-  # p99 is the highest usage seen in production, and the 20% headroom absorbs a
-  # normal rare spike while still OOMKilling a pod that runs well past its observed
-  # peak (a likely leak). This yields Burstable QoS (limit > request), the right
-  # class for most production workloads. CPU limits are intentionally omitted:
-  # they cause throttling rather than reclaiming waste.
+  # The CPU request is sized at avg * 1.25: CPU usage is spiky and idles far
+  # below its bursts, so for a large homogeneous fleet (where aggregate
+  # pressure is predictable) sizing at 80% of mean (= mean / 0.80 target
+  # utilization) keeps nodes dense while leaving headroom for normal variation.
+  #
+  # The memory request is sized at p50 * 1.05, deliberately NOT the CPU formula.
+  # Memory working set is occupancy, not utilization: it is nearly flat per
+  # container (p99 typically sits within ~15-30% of the mean), so a
+  # utilization-target formula like avg * 1.25 would put every request above the
+  # container's all-time observed p99 and pin the fleet's aggregate reservation
+  # at 125% of aggregate usage, all of it reserved-but-unusable capacity. Spike
+  # protection is the limit's job, not the request's; the request only needs to
+  # state typical occupancy so the scheduler's claim matches reality. p50 is
+  # robust to startup transients, and the 5% cushion keeps a typical pod just
+  # under its request (outside the "using more than requested" eviction class)
+  # without normal wobble re-tripping the 20% drift threshold.
+  #
+  # The memory limit is set at p99 * 1.2: p99 is the highest usage seen in
+  # production, and the 20% headroom absorbs a normal rare spike while still
+  # OOMKilling a pod that runs well past its observed peak (a likely leak). This
+  # yields Burstable QoS (limit > request), the right class for most production
+  # workloads. CPU limits are intentionally omitted: they cause throttling
+  # rather than reclaiming waste.
   metrics:
     - resource: cpu
       field: request
@@ -209,8 +224,8 @@ defaultClusterResourcePolicy:
       headroom: "1.25"
     - resource: memory
       field: request
-      aggregation: avg
-      headroom: "1.25"
+      aggregation: p50
+      headroom: "1.05"
     - resource: memory
       field: limit
       aggregation: p99

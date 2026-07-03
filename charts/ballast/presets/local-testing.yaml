@@ -33,8 +33,8 @@ defaultClusterResourcePolicy:
       headroom: "1.25"
     - resource: memory
       field: request
-      aggregation: avg
-      headroom: "1.25"
+      aggregation: p50
+      headroom: "1.05"
     - resource: memory
       field: limit
       aggregation: p99
