@@ -10,6 +10,18 @@
 
 Ballast is a Kubernetes operator that automatically right-sizes workload resource requests and limits based on real operational history. It is a more active alternative to [Fairwinds Goldilocks](https://github.com/FairwindsOps/goldilocks): rather than suggesting changes, it applies them — at admission time and on running pods via in-place resize (Kubernetes 1.35+).
 
+## What it does
+
+<p align="center">
+  <img src="docs/images/cpu-requests-vs-usage.png" alt="A cluster's CPU requests pinned against allocatable capacity, then dropping to track real usage once Ballast takes over" width="820">
+</p>
+
+This is one cluster's CPU over three days. The purple line is allocatable capacity; the blue line is the sum of pod requests — what the scheduler believes is claimed; the red line is what those pods actually burn.
+
+For the first two days requests ride right up against the ceiling. On paper the cluster is full and can't schedule another pod, yet real usage runs at less than half the reservation. That gap is pure waste: capacity paid for, reserved, and never used.
+
+Partway through 7/3 the workloads are enrolled in Ballast. Requests drop to track observed usage, freeing roughly half the cluster's schedulable CPU without touching a single running workload. That reclaimed headroom is the point: the same nodes now fit far more work, or you run the same work on fewer nodes.
+
 ## How it works
 
 Workloads opt in with annotations on their pod templates. Ballast observes real CPU, memory, and ephemeral-storage utilization, accumulates a rolling history keyed to a *workload identity tuple* (a set of pod labels you configure), and uses that history to right-size all three resources:
