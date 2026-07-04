@@ -168,7 +168,7 @@ telemetry:
 # defaultClusterResourcePolicy installs a catch-all policy that applies to all
 # opted-in pods. The values below are the "homogeneous-large-fleet" preset: it
 # sizes CPU requests at avg * 1.25 (= mean / 0.80 target utilization), memory
-# requests at p50 * 1.05, sets a memory limit at p99 + 20% headroom, and sizes
+# requests at p75, sets a memory limit at p99 + 20% headroom, and sizes
 # ephemeral storage requests/limits from the kubelet Summary API. It requires
 # 250 samples over 24 hours before acting.
 #
@@ -199,17 +199,22 @@ defaultClusterResourcePolicy:
   # pressure is predictable) sizing at 80% of mean (= mean / 0.80 target
   # utilization) keeps nodes dense while leaving headroom for normal variation.
   #
-  # The memory request is sized at p50 * 1.05, deliberately NOT the CPU formula.
+  # The memory request is sized at p75, deliberately NOT the CPU formula.
   # Memory working set is occupancy, not utilization: it is nearly flat per
   # container (p99 typically sits within ~15-30% of the mean), so a
   # utilization-target formula like avg * 1.25 would put every request above the
   # container's all-time observed p99 and pin the fleet's aggregate reservation
   # at 125% of aggregate usage, all of it reserved-but-unusable capacity. Spike
   # protection is the limit's job, not the request's; the request only needs to
-  # state typical occupancy so the scheduler's claim matches reality. p50 is
-  # robust to startup transients, and the 5% cushion keeps a typical pod just
-  # under its request (outside the "using more than requested" eviction class)
-  # without normal wobble re-tripping the 10% drift threshold.
+  # state typical occupancy so the scheduler's claim matches reality. p75 states
+  # that occupancy directly: the request covers actual usage ~75% of the time,
+  # so the scheduler's claim sits at or just above real usage rather than under
+  # it. It also self-adjusts to each workload's spread instead of a fixed
+  # cushion on the median: for a flat container p75 is within a few percent of
+  # p50 (no new waste), while a container with real variation gets proportionally
+  # more room exactly where it needs it. p75 stays clear of the tail (p95/p99)
+  # where brief startup spikes live, so it remains stable enough not to re-trip
+  # the 10% drift threshold; no headroom multiplier is applied.
   #
   # The memory limit is set at p99 * 1.2: p99 is the highest usage seen in
   # production, and the 20% headroom absorbs a normal rare spike while still
@@ -224,8 +229,8 @@ defaultClusterResourcePolicy:
       headroom: "1.25"
     - resource: memory
       field: request
-      aggregation: p50
-      headroom: "1.05"
+      aggregation: p75
+      headroom: "1.0"
     - resource: memory
       field: limit
       aggregation: p99
