@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.16] - 2026-07-04
+
 ### Changed
 
 - **The default policy's memory request is now sized at `p75` instead of `p50 * 1.05`.** In practice the `p50 * 1.05` request rode just below aggregate usage: each container's usage exceeds its own p50 half the time and memory working set is mildly right-skewed (mean > median), so the sum of `p50 * 1.05` across the fleet landed under the sum of current usage. For non-compressible memory that is the wrong side to sit on; the scheduler bin-packs against a claim that understates real occupancy. `p75` states occupancy directly (the request covers actual usage ~75% of the time), so the claim sits at or just above real usage, and it self-adjusts to each workload's spread instead of a fixed cushion on the median: a flat container's p75 is within a few percent of its p50 (no new waste, so this does not reintroduce the over-reservation the `avg * 1.25` formula caused), while a container with real variation gets proportionally more room. p75 stays clear of the tail (p95/p99) where brief startup spikes live, so it remains stable enough not to re-trip the 10% drift threshold; no headroom multiplier is applied. The `local-testing` preset's memory request entry changes the same way. Policies that state their own memory metric entries are unaffected; re-apply your policy manifests if you want existing custom policies to pick up the new shape.
