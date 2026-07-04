@@ -175,6 +175,7 @@ status:
           samples: 288
           mean: "180Mi"
           p50: "176Mi"
+          p75: "192Mi"
           p95: "210Mi"
           p99: "240Mi"
           cv: "0.21"
@@ -187,7 +188,7 @@ status:
         cpu:
           request: "288m"     # avg * 1.25 headroom
         memory:
-          request: "185Mi"    # p50 * 1.05 headroom
+          request: "192Mi"    # p75
           limit: "288Mi"      # p99 * 1.2
         ephemeral-storage:
           request: "1200Mi"   # p90
@@ -331,7 +332,7 @@ spec:
 This catch-all policy applies to every opted-in pod in the cluster. Key design decisions:
 
 - **CPU request at `avg * 1.25`.** CPU usage is spiky and idles far below its bursts, so sizing the request at 80% of mean (= mean / 0.80 target utilization) keeps nodes dense while leaving headroom for normal variation. For a large homogeneous fleet the aggregate pressure is predictable, so the mean is a reliable basis.
-- **Memory request at `p50 * 1.05`, deliberately not the CPU formula.** Memory working set is occupancy, not utilization: it is nearly flat per container (p99 typically sits within ~15-30% of the mean), so a utilization-target formula like `avg * 1.25` would put every request above the container's all-time observed p99 and pin the fleet's aggregate reservation at 125% of aggregate usage, all of it reserved-but-unusable capacity. Spike protection is the limit's job, not the request's; the request only needs to state typical occupancy so the scheduler's claim matches reality. p50 is robust to startup transients, and the 5% cushion keeps a typical pod just under its request (outside the "using more than requested" eviction class) without normal wobble re-tripping the drift threshold.
+- **Memory request at `p75`, deliberately not the CPU formula.** Memory working set is occupancy, not utilization: it is nearly flat per container (p99 typically sits within ~15-30% of the mean), so a utilization-target formula like `avg * 1.25` would put every request above the container's all-time observed p99 and pin the fleet's aggregate reservation at 125% of aggregate usage, all of it reserved-but-unusable capacity. Spike protection is the limit's job, not the request's; the request only needs to state typical occupancy so the scheduler's claim matches reality. p75 states that occupancy directly: the request covers actual usage ~75% of the time, so the scheduler's claim sits at or just above real usage rather than under it, and it self-adjusts to each workload's spread (a flat container's p75 is within a few percent of its p50, while a variable one gets proportionally more room). p75 stays clear of the tail where brief startup spikes live, so it remains stable enough not to re-trip the drift threshold.
 - **Memory limit at `p99 * 1.2`.** p99 is the highest usage the workload has shown in production; the 20% headroom absorbs a normal rare spike while still OOMKilling a pod that runs well past its observed peak (a likely leak). This yields Burstable QoS (limit > request), the right class for most production workloads. **CPU limits are intentionally omitted** — they cause throttling rather than reclaiming waste.
 - **Ephemeral storage from the kubelet Summary API.** The request is sized at p90 (the growth-skewed distribution) and the limit at `p99 * 1.2` so the kubelet evicts a genuine runaway pod before the node hits disk pressure while tolerating a normal spike above the observed peak.
 - **250 samples over 24 hours before acting.** At the 5-minute poll interval a single long-running pod accrues ~288 samples in 24h, so the 24h window — not the sample count — is the binding constraint. A high coefficient of variation (CV > 1.5) also blocks action — it means the workload is too spiky to size reliably. The CV check is skipped when mean usage sits below a tiny per-resource floor (`cvMeanFloor`, defaults: 25m CPU, 25Mi memory, 2Mi ephemeral-storage): CV divides by the mean, so near-idle workloads produce huge CVs from quantization noise and rare startup spikes alone, and without the floor a single near-idle resource would pin the whole profile at `Accruing` forever — blocking recommendations for every other resource. Usage below the floor is too small for a mis-sized recommendation to matter.
