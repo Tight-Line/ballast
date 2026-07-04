@@ -199,7 +199,7 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 	recsByName := containerRecsByName(profile)
 	adjustments, notResizable := computeAdjustments(pod, recsByName, behaviors)
 	if len(notResizable) > 0 {
-		log.Info("excluding drifted resources the resize subresource cannot mutate",
+		log.V(1).Info("excluding drifted resources the resize subresource cannot mutate",
 			"pod", pod.Name, "namespace", pod.Namespace, "resources", notResizable)
 	}
 	if len(adjustments) == 0 {
