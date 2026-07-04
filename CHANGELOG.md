@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Demoted the "excluding drifted resources the resize subresource cannot mutate" log line from info to debug (`V(1)`).** This fires on every reconcile of a pod whose only drift is on a resource in-place resize cannot touch, which is expected steady-state behavior, not something an operator needs to see at info level. It was dominating operator logs. The message is unchanged and still emitted; raise log verbosity to `1` to see it.
+
 ## [0.3.13] - 2026-07-03
 
 ### Changed
