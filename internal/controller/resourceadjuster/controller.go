@@ -20,7 +20,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
@@ -83,8 +86,40 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("resourceadjuster").
 		WithLogConstructor(logger.ControllerLogConstructor(mgr.GetLogger(), "resourceadjuster")).
-		For(&ballastv1.WorkloadProfile{}).
+		For(&ballastv1.WorkloadProfile{}, builder.WithPredicates(resizeRelevantChange())).
 		Complete(r)
+}
+
+// resizeRelevantChange filters the WorkloadProfile update stream down to the
+// events the adjuster actually acts on. The metricscollector rewrites profile
+// status every poll (~60s) as recommendation percentiles drift with fresh
+// samples; without a predicate, every one of those status writes wakes the
+// adjuster, so it re-lists pods and recomputes drift ~15x more often than its
+// resize interval implies. That churn pins CPU on large clusters and does no
+// useful work: the adjuster reads whatever recommendations are current when it
+// runs, so it loses nothing by ignoring the intermediate writes and relying on
+// its own RequeueAfter for pacing.
+//
+// An update passes only when the spec changed (Generation) or the profile
+// crossed the readiness boundary (Status.MeetsThreshold flipped) so the first
+// resize after a profile becomes ready is not delayed a full interval. Create,
+// delete, and generic events pass by default (predicate.Funcs treats nil funcs
+// as true): new profiles must be evaluated, and Reconcile handles a deleted
+// profile as a no-op NotFound.
+func resizeRelevantChange() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldP, ok1 := e.ObjectOld.(*ballastv1.WorkloadProfile)
+			newP, ok2 := e.ObjectNew.(*ballastv1.WorkloadProfile)
+			if !ok1 || !ok2 {
+				// The manager only delivers typed WorkloadProfiles here; admit
+				// anything unexpected rather than silently dropping it.
+				return true
+			}
+			return oldP.Generation != newP.Generation ||
+				oldP.Status.MeetsThreshold != newP.Status.MeetsThreshold
+		},
+	}
 }
 
 // Reconcile evaluates drift for each pod associated with the profile and issues
@@ -584,7 +619,7 @@ func truncate(s string, n int) string {
 func (r *Reconciler) emitEvent(ctx context.Context, pod *corev1.Pod, eventType, reason, message string) {
 	log := ctrl.LoggerFrom(ctx)
 	now := metav1.Now()
-	event := &corev1.Event{
+	evt := &corev1.Event{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s.%s.%d", pod.Name, strings.ToLower(reason), now.UnixNano()),
 			Namespace: pod.Namespace,
@@ -604,7 +639,7 @@ func (r *Reconciler) emitEvent(ctx context.Context, pod *corev1.Pod, eventType, 
 		Count:          1,
 		Source:         corev1.EventSource{Component: "ballast"},
 	}
-	if err := r.client.Create(ctx, event); err != nil { // coverage:ignore - non-fatal; requires a broken client to trigger
+	if err := r.client.Create(ctx, evt); err != nil { // coverage:ignore - non-fatal; requires a broken client to trigger
 		log.Error(err, "failed to emit event", "reason", reason)
 	}
 }
