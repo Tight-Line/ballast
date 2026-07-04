@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.15] - 2026-07-04
+
 - **The ResourceAdjuster no longer re-evaluates every WorkloadProfile on each metrics poll.** Its watch previously had no predicate, so every status write the MetricsCollector makes (~once per poll, ~60s, as recommendation percentiles drift with fresh samples) woke the adjuster and made it re-list pods and recompute drift for that profile, roughly 15x more often than its resize interval implies. On large clusters that churn pinned operator CPU while doing no useful work (the adjuster reads whatever recommendations are current when it runs). The watch now filters updates to those the adjuster acts on: spec (`generation`) changes and `status.meetsThreshold` transitions still pass, so a profile that becomes ready is resized promptly, while the intermediate recommendation churn is ignored and pacing falls to the resize interval as intended. This also stops the `excluding drifted resources...` debug line from being emitted on every poll.
 
 ## [0.3.14] - 2026-07-04
