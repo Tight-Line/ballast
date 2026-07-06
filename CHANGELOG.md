@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.17] - 2026-07-06
+
 ### Fixed
 
 - **The bundled Valkey sample store now persists to a PersistentVolumeClaim and is memory-bounded, so accrued history survives pod reschedules.** Previously the bundled Valkey ran with the subchart defaults: an `emptyDir` for `/data` and `resources: {}` (BestEffort QoS). That combination is the worst case for a sample store. BestEffort is the first thing the kubelet evicts under node memory pressure, and every eviction or reschedule wiped all samples and every first-seen marker. Because readiness gates on `minTimeSpan` (default 24h of observed history), a wipe silently reset the entire fleet to `Accruing` for 24h, and any further restart in that window restarted the clock, so on a busy cluster the fleet could stay perpetually `Accruing` without ever reaching `Sufficient`. The chart now enables `dataStorage` (a PVC on the cluster's default StorageClass; `valkey.dataStorage.className` pins a specific one) with `deploymentStrategy: Recreate` (a single-replica Deployment cannot roll onto a ReadWriteOnce PVC otherwise), sets `maxmemory 64mb` with `maxmemory-policy noeviction` (never evict first-seen markers; refuse writes loudly instead of being OOM-killed), and sets Valkey's memory request equal to its limit (`96Mi`) to lift it out of BestEffort. Valkey reloads its RDB snapshot from the PVC on start, so history is preserved across reschedules.
