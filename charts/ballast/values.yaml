@@ -96,8 +96,82 @@ ballastConfig:
 
 # Official Valkey subchart (valkey-io/valkey-helm, BSD-licensed). Set enabled: false
 # and provide store.endpoint to use an external Redis/Valkey instance instead.
+#
+# ############################################################################
+# #                                                                          #
+# #   !!!  READ THIS BEFORE CHANGING ANY VALKEY MEMORY OR STORAGE VALUE  !!!  #
+# #                                                                          #
+# #   The four sizing knobs below are LINKED. They ship small on purpose     #
+# #   (fine for dev and modest fleets) and you MUST move them together when  #
+# #   you scale up. The relationship is:                                     #
+# #                                                                          #
+# #       maxmemory  <  memory limit  <=  memory request                     #
+# #       PVC size   ~=  2 x memory limit                                    #
+# #                                                                          #
+# #   WHY each one:                                                          #
+# #     * maxmemory (valkeyConfig) is where valkey stops accepting writes.   #
+# #       Set it BELOW the container limit so valkey refuses new samples     #
+# #       gracefully instead of being OOM-killed. Keep policy noeviction:    #
+# #       samples and their first-seen markers have no TTL, and evicting a   #
+# #       first-seen key silently resets that workload to Accruing.          #
+# #     * memory request == limit keeps the pod out of BestEffort QoS. The   #
+# #       subchart default (resources: {}) is BestEffort, the FIRST thing    #
+# #       the kubelet evicts under node memory pressure, and an evicted      #
+# #       valkey loses its store. This is the failure that motivated these   #
+# #       defaults.                                                          #
+# #     * PVC size ~= 2x the limit: a background save writes a fresh temp    #
+# #       RDB next to the live dump.rdb before renaming, so two snapshots    #
+# #       must fit at once. RDB compresses, so 2x is generous.               #
+# #                                                                          #
+# #   The independent variable is the dataset size, roughly                  #
+# #   reservoirSize x (containers x metrics per container). If you raise     #
+# #   maxmemory to fit a bigger fleet, raise the limit, the request, AND     #
+# #   the PVC in lockstep. Bump ONE in isolation and you get either an       #
+# #   OOM-killed store or a full PVC that cannot snapshot.                   #
+# #                                                                          #
+# ############################################################################
 valkey:
   enabled: true
+
+  # A ReadWriteOnce PVC (below) cannot be mounted by a new pod while the old
+  # pod still holds it, so a RollingUpdate deadlocks. Recreate terminates the
+  # old pod first. Single replica, so there is no availability cost.
+  deploymentStrategy: Recreate
+
+  # request == limit lifts the pod out of BestEffort (see banner). No CPU limit:
+  # a cache should not be CPU-throttled.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      memory: 96Mi
+
+  # maxmemory sits below the 96Mi container limit so valkey refuses writes
+  # gracefully rather than getting OOM-killed; noeviction protects first-seen
+  # markers (see banner). If valkey hits maxmemory, collection stalls with a
+  # loud error: raise maxmemory, the limit, the request, and the PVC together.
+  valkeyConfig: |
+    maxmemory 64mb
+    maxmemory-policy noeviction
+
+  # Persist the sample store to a PersistentVolumeClaim so accrued history
+  # survives valkey pod reschedules (node drains, evictions, upgrades). Without
+  # this the subchart backs /data with an emptyDir, so any reschedule wipes
+  # every sample and every first-seen marker; because readiness gates on
+  # minTimeSpan (default 24h of observed history), a wipe resets the whole fleet
+  # to Accruing until 24h re-accrues, and any further restart in that window
+  # restarts the clock. With a PVC, valkey reloads /data on start and the
+  # accrued history is preserved.
+  dataStorage:
+    enabled: true
+    # requestedSize MUST be non-empty or the subchart silently falls back to
+    # emptyDir (the exact failure above). Sized at ~2x the memory limit; scale
+    # it with the memory knobs (see banner).
+    requestedSize: 192Mi
+    # className empty ("") uses the cluster's default StorageClass. Set it to
+    # pin a specific class (e.g. a faster or retained one).
+    className: ""
 
 store:
   # endpoint is used when valkey.enabled is false.

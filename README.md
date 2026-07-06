@@ -39,7 +39,7 @@ Pod eviction for cluster rebalancing is handled by [Kubernetes Descheduler](http
 - Kubernetes 1.35+ (required for in-place pod resize; earlier versions support measure and apply but not resize)
 - [metrics-server](https://github.com/kubernetes-sigs/metrics-server) installed in the cluster (source for CPU and memory; ephemeral-storage usage comes from the kubelet Summary API and needs no extra component)
 - TLS certificate for the admission webhook (see [Webhook TLS](#webhook-tls) below)
-- A Redis-compatible store (Ballast ships with a bundled Valkey via Helm; an existing Redis or Valkey instance works too)
+- A Redis-compatible store (Ballast ships with a bundled Valkey via Helm; an existing Redis or Valkey instance works too). The bundled Valkey persists to a PersistentVolumeClaim on the cluster's default StorageClass by default, so accrued history survives pod reschedules; its memory and storage defaults are small and linked, so scale them together (see the annotated `valkey:` block in `values.yaml`).
 
 ## Installation
 
