@@ -22,6 +22,16 @@ For the first two days requests ride right up against the ceiling. On paper the 
 
 Partway through 7/3 the workloads are enrolled in Ballast. Requests drop to track observed usage, freeing roughly half the cluster's schedulable CPU without touching a single running workload. That reclaimed headroom is the point: the same nodes now fit far more work, or you run the same work on fewer nodes.
 
+## Why not just use VPA?
+
+The [Vertical Pod Autoscaler](https://kubernetes.io/docs/concepts/workloads/autoscaling/vertical-pod-autoscale/) is the obvious tool for this job, and for a single stable, long-lived workload it works well. Ballast exists because VPA ties a workload's usage history to that one workload's identity in one namespace, and three everyday situations throw that history away and drop you back to guessing:
+
+- **Cold start.** VPA learns from nothing. Its recommender aggregates usage into decaying histograms (memory in 24-hour peak windows over an 8-day default history), so a freshly deployed workload has no samples and gets a low-confidence, deliberately padded recommendation until days of real traffic accrue.
+- **No cross-namespace memory.** VPA keys its history on the tuple `(namespace, container name, pod labels)`, and that key is not adjustable — it is derived automatically, and a VPA object is itself namespaced, so it physically cannot aggregate pods from another namespace. Deploy the same app (`service: billing`, `component: backend-api`, `profile: dev`) into a second namespace, say a different developer's own test namespace, and the namespace in that key changes, so VPA sees a brand-new workload and starts from zero. Every namespace relearns the same app independently. Cold start, again.
+- **Redeploy gap.** A workload's history lives in its VPA object's checkpoints (`VerticalPodAutoscalerCheckpoint` resources owned by the VPA object). Delete the workload and its VPA object, as any GitOps teardown or `helm uninstall` does, and Kubernetes garbage-collects the checkpoints along with it. Redeploy a minute later and there is no history left to recover. Cold start, a third time.
+
+Ballast fixes all three by decoupling history from the workload object. It keys usage on a **workload identity tuple** you choose (a set of pod labels; see [WorkloadProfile Identity](#workloadprofile-identity)) and stores it cluster-wide in Redis/Valkey, independent of namespace and independent of any single workload's lifecycle. Forty dev namespaces running the same app all feed one well-sampled profile, so a brand-new deployment — in a fresh namespace, or right after a teardown — inherits the fleet's accumulated history and is sized correctly from its very first admission instead of relearning from scratch.
+
 ## How it works
 
 Workloads opt in with annotations on their pod templates. Ballast observes real CPU, memory, and ephemeral-storage utilization, accumulates a rolling history keyed to a *workload identity tuple* (a set of pod labels you configure), and uses that history to right-size all three resources:
