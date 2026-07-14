@@ -514,6 +514,51 @@ func TestPodMutator_ApplyAppliedMetric(t *testing.T) {
 	}
 }
 
+// TestPodMutator_AppliesRestartableInitSidecar asserts the webhook patches a
+// restartable-init (native sidecar) container on spec.initContainers. The only
+// container matching the profile is the sidecar, so a recorded apply proves the
+// init-container path ran (#30).
+func TestPodMutator_AppliesRestartableInitSidecar(t *testing.T) {
+	restartAlways := corev1.ContainerRestartPolicyAlways
+	profile := &ballastv1.WorkloadProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: "web"},
+		Status: ballastv1.WorkloadProfileStatus{
+			MeetsThreshold: true,
+			Containers: []ballastv1.ContainerProfile{{
+				Name: "otc",
+				Recommendations: map[string]ballastv1.ResourceRecommendation{
+					"cpu": {Request: "200m", Limit: "400m"},
+				},
+			}},
+		},
+	}
+	policy := &ballastv1.ClusterResourcePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "default-policy"},
+		Spec:       ballastv1.ClusterResourcePolicySpec{},
+	}
+	fc := newFakeClient(defaultBallastConfig(), profile, policy)
+	rec, reg := newMetricsRecorder(t)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, rec)
+
+	pod := testPod("p", map[string]string{
+		validation.AnnotationMeasure: "true",
+		validation.AnnotationApply:   "true",
+	})
+	// The regular "app" container has no recommendation; the profile's "otc"
+	// recommendation matches only the restartable-init sidecar.
+	pod.Spec.InitContainers = []corev1.Container{
+		{Name: "otc", Image: "otc", RestartPolicy: &restartAlways},
+	}
+
+	resp := m.Handle(context.Background(), makeRequest(pod))
+	if !resp.Allowed {
+		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
+	}
+	if got, _ := counterSeries(t, reg, "ballast_apply_applied_total"); got != 1 {
+		t.Fatalf("ballast_apply_applied_total = %v, want 1 (restartable-init sidecar patched)", got)
+	}
+}
+
 // TestPodMutator_ApplyAppliedMetric_AnnotationOnlyMutation asserts a mutation whose
 // patch touches no container resources (no container matches the profile) reports
 // result=mutated but does not record ballast.apply.applied.

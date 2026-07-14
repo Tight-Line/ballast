@@ -28,6 +28,7 @@ import (
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
 	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/kube"
 	"github.com/tight-line/ballast/internal/logger"
 	"github.com/tight-line/ballast/internal/metrics"
 	"github.com/tight-line/ballast/internal/policy"
@@ -254,7 +255,7 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 	// creation). Detect that before patching: attempting it would fail every
 	// evaluation forever, since the class can only change on pod recreation.
 	all := append(slices.Clone(pod.Spec.InitContainers), pod.Spec.Containers...)
-	adjusted := append(slices.Clone(pod.Spec.InitContainers), adjustedContainers(pod.Spec.Containers, adjustments)...)
+	adjusted := append(adjustedContainers(pod.Spec.InitContainers, adjustments), adjustedContainers(pod.Spec.Containers, adjustments)...)
 	if cur, next := PodQOS(all), PodQOS(adjusted); cur != next {
 		log.Info("resize would change pod QoS class, which Kubernetes forbids; skipping",
 			append(logFields, "qos_current", string(cur), "qos_after", string(next))...)
@@ -316,6 +317,25 @@ func computeAdjustments(
 	maxChange := ResolveMaxChangePercent(behaviors)
 
 	for _, c := range pod.Spec.Containers {
+		recs, ok := recsByName[c.Name]
+		if !ok || len(recs) == 0 {
+			continue
+		}
+		adj, drifted, skipped := computeContainerAdjustment(c, recs, behaviors, maxChange)
+		if drifted {
+			result = append(result, adj)
+		}
+		notResizable = append(notResizable, skipped...)
+	}
+
+	// Restartable-init "native sidecars" are resized in place too (#30); the
+	// resize subresource accepts spec.initContainers[*].resources for them.
+	// Run-to-completion init containers are skipped (they hold no profile recs
+	// and the subresource cannot resize them).
+	for _, c := range pod.Spec.InitContainers {
+		if !kube.IsRestartableInit(c) {
+			continue
+		}
 		recs, ok := recsByName[c.Name]
 		if !ok || len(recs) == 0 {
 			continue
@@ -589,6 +609,10 @@ func addQuantity(list corev1.ResourceList, name corev1.ResourceName, q resource.
 // applyResize patches the pod via the resize subresource.
 func (r *Reconciler) applyResize(ctx context.Context, pod *corev1.Pod, adjustments []ContainerAdjustment) error {
 	modified := pod.DeepCopy()
+	// Adjustments are keyed by container name; adjustedContainers only touches
+	// matching entries, so restartable-init sidecars are resized on
+	// spec.initContainers and everything else passes through unchanged (#30).
+	modified.Spec.InitContainers = adjustedContainers(pod.Spec.InitContainers, adjustments)
 	modified.Spec.Containers = adjustedContainers(pod.Spec.Containers, adjustments)
 	return r.client.SubResource("resize").Patch(ctx, modified, client.MergeFrom(pod))
 }

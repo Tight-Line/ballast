@@ -379,6 +379,7 @@ func TestReconcile_ExcludesInitAndEphemeralContainers(t *testing.T) {
 	ctx := context.Background()
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
+	restartAlways := corev1.ContainerRestartPolicyAlways
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "web-abc",
@@ -387,9 +388,13 @@ func TestReconcile_ExcludesInitAndEphemeralContainers(t *testing.T) {
 		},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{Name: "app"}},
-			// "init-db" is a run-to-completion init container; "sidecar" is a
-			// restartable-init (native sidecar) that reports live metrics.
-			InitContainers: []corev1.Container{{Name: "init-db"}, {Name: "sidecar"}},
+			// "init-db" is a run-to-completion init container (excluded).
+			// "sidecar" is a restartable-init native sidecar (restartPolicy:
+			// Always): it runs the whole pod lifetime and IS measured (#30).
+			InitContainers: []corev1.Container{
+				{Name: "init-db"},
+				{Name: "sidecar", RestartPolicy: &restartAlways},
+			},
 			EphemeralContainers: []corev1.EphemeralContainer{
 				{EphemeralContainerCommon: corev1.EphemeralContainerCommon{Name: "debugger"}},
 			},
@@ -402,16 +407,19 @@ func TestReconcile_ExcludesInitAndEphemeralContainers(t *testing.T) {
 
 	_, sc := newMiniredisClient(t)
 	now := time.Now()
-	// The plugin reports samples for every container the metrics API sees, including
-	// the init, sidecar, and ephemeral containers — the collector must drop those.
+	// The plugin reports samples for every container the metrics API sees. The
+	// collector must drop the run-once init and ephemeral containers but keep the
+	// app container and the restartable-init sidecar.
 	p := &mockPlugin{
 		typeName: "kubernetesMetrics",
 		samples: []plugin.ContainerStats{
 			cpuSample("app", 100, now.Add(-2*time.Second)),
 			cpuSample("app", 200, now.Add(-time.Second)),
 			cpuSample("app", 300, now),
+			cpuSample("sidecar", 110, now.Add(-2*time.Second)),
+			cpuSample("sidecar", 210, now.Add(-time.Second)),
+			cpuSample("sidecar", 310, now),
 			cpuSample("init-db", 500, now),
-			cpuSample("sidecar", 500, now),
 			cpuSample("debugger", 500, now),
 		},
 	}
@@ -422,14 +430,16 @@ func TestReconcile_ExcludesInitAndEphemeralContainers(t *testing.T) {
 	}
 
 	tupleHash := store.TupleHash(tupleLabels)
-	appKey := store.MetricKey(tupleHash, "app", "cpu")
-	if count, err := store.SampleCount(ctx, sc, appKey); err != nil {
-		t.Fatalf("SampleCount(app): %v", err)
-	} else if count != 3 {
-		t.Errorf("app sample count: got %d, want 3", count)
+	for _, name := range []string{"app", "sidecar"} {
+		key := store.MetricKey(tupleHash, name, "cpu")
+		if count, err := store.SampleCount(ctx, sc, key); err != nil {
+			t.Fatalf("SampleCount(%s): %v", name, err)
+		} else if count != 3 {
+			t.Errorf("%s sample count: got %d, want 3 (should be measured)", name, count)
+		}
 	}
 
-	for _, name := range []string{"init-db", "sidecar", "debugger"} {
+	for _, name := range []string{"init-db", "debugger"} {
 		key := store.MetricKey(tupleHash, name, "cpu")
 		count, err := store.SampleCount(ctx, sc, key)
 		if err != nil {
@@ -444,11 +454,12 @@ func TestReconcile_ExcludesInitAndEphemeralContainers(t *testing.T) {
 	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
 		t.Fatalf("Get profile: %v", err)
 	}
-	if len(got.Status.Containers) != 1 {
-		t.Fatalf("status containers: got %d, want 1 (only the app container)", len(got.Status.Containers))
+	gotNames := map[string]bool{}
+	for _, cp := range got.Status.Containers {
+		gotNames[cp.Name] = true
 	}
-	if got.Status.Containers[0].Name != "app" {
-		t.Errorf("status container name: got %q, want %q", got.Status.Containers[0].Name, "app")
+	if len(got.Status.Containers) != 2 || !gotNames["app"] || !gotNames["sidecar"] {
+		t.Fatalf("status containers: got %d %v, want [app sidecar]", len(got.Status.Containers), gotNames)
 	}
 }
 

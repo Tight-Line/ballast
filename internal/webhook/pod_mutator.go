@@ -23,6 +23,7 @@ import (
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
 	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/kube"
 	"github.com/tight-line/ballast/internal/metrics"
 	"github.com/tight-line/ballast/internal/policy"
 	"github.com/tight-line/ballast/internal/validation"
@@ -198,6 +199,14 @@ func applyRecommendations(pod *corev1.Pod, profile *ballastv1.WorkloadProfile) [
 	for i := range pod.Spec.Containers {
 		if patchContainerResources(&pod.Spec.Containers[i], byName, pod.Annotations) {
 			applied = append(applied, pod.Spec.Containers[i].Name)
+		}
+	}
+	// Restartable-init "native sidecars" are first-class right-sizing targets and
+	// are patched on spec.initContainers just like regular containers (#30).
+	for i := range pod.Spec.InitContainers {
+		if kube.IsRestartableInit(pod.Spec.InitContainers[i]) &&
+			patchContainerResources(&pod.Spec.InitContainers[i], byName, pod.Annotations) {
+			applied = append(applied, pod.Spec.InitContainers[i].Name)
 		}
 	}
 	return applied

@@ -304,6 +304,41 @@ func TestReconcile_DriftExceedsThreshold_ResizeCalled(t *testing.T) {
 	}
 }
 
+// TestReconcile_RestartableInitSidecar_Resized asserts a restartable-init
+// (native sidecar) container is resized in place, while a run-to-completion init
+// container is not — even when both carry a drifting recommendation (#30).
+func TestReconcile_RestartableInitSidecar_Resized(t *testing.T) {
+	restartAlways := corev1.ContainerRestartPolicyAlways
+	profile := readyProfile("200m", "400m")
+	profile.Status.Containers = []ballastv1.ContainerProfile{
+		{Name: "otc", Recommendations: map[string]ballastv1.ResourceRecommendation{"cpu": {Request: "200m", Limit: "400m"}}},
+		{Name: "init-db", Recommendations: map[string]ballastv1.ResourceRecommendation{"cpu": {Request: "200m", Limit: "400m"}}},
+	}
+	pod := resizePod("100m", "200m") // regular "app" container is absent from the profile, so it never drifts
+	drift := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("200m")},
+	}
+	pod.Spec.InitContainers = []corev1.Container{
+		{Name: "init-db", Resources: drift},                                  // run-once init: excluded from resize
+		{Name: "otc", RestartPolicy: &restartAlways, Resources: drift},       // native sidecar with a rec: resized
+		{Name: "otc-norec", RestartPolicy: &restartAlways, Resources: drift}, // native sidecar, no profile rec: skipped
+	}
+	fc := newFakeClient(profile, noResizePolicy(), pod)
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+	var gotAdjs []resourceadjuster.ContainerAdjustment
+	r.ResizePod = func(_ context.Context, _ *corev1.Pod, adjs []resourceadjuster.ContainerAdjustment) error {
+		gotAdjs = adjs
+		return nil
+	}
+	if _, err := doReconcile(t, r, profile.Name); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(gotAdjs) != 1 || gotAdjs[0].Name != "otc" {
+		t.Fatalf("adjustments = %+v, want exactly one for the restartable-init container 'otc'", gotAdjs)
+	}
+}
+
 func TestReconcile_AutoresizeAnnotation_ResizeCalled(t *testing.T) {
 	// autoresize annotation should behave the same as resize once MeetsThreshold is true.
 	profile := readyProfile("200m", "400m")

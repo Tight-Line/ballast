@@ -29,6 +29,7 @@ import (
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/kube"
 	"github.com/tight-line/ballast/internal/logger"
 	"github.com/tight-line/ballast/internal/metrics"
 	"github.com/tight-line/ballast/internal/plugin"
@@ -310,18 +311,16 @@ func (r *Reconciler) writeSample(
 }
 
 // excludedContainerNames returns the set of container names that must never be
-// measured for this profile: all init containers and ephemeral (debug)
-// containers. These names come from the pod spec because the metrics API reports
-// a flat container list that does not mark them, and Ballast's apply/resize paths
-// only ever touch spec.containers — so measuring them yields recommendations that
-// can never be applied.
+// measured for this profile: run-to-completion init containers and ephemeral
+// (debug) containers. These names come from the pod spec because the metrics API
+// reports a flat container list that does not mark them, and Ballast's
+// apply/resize paths only touch containers they can patch — so measuring the
+// excluded ones yields recommendations that can never be applied.
 //
-// TODO(#30): restartable-init "native sidecar" containers (restartPolicy:
-// Always) are long-running and are legitimate right-sizing targets, but are
-// excluded here for now because the apply and resize lanes only patch
-// spec.containers. Supporting them means measuring restartable-init containers
-// AND extending the webhook and resourceadjuster to patch spec.initContainers.
-// Until then, all init containers are excluded.
+// Restartable-init "native sidecar" containers (restartPolicy: Always) are NOT
+// excluded: they run for the pod's whole lifetime and are first-class
+// right-sizing targets, measured here and patched by the webhook and
+// resourceadjuster on spec.initContainers (#30).
 //
 // Pods are matched with the profile's selector labels. A List failure is
 // non-fatal: it returns an empty set and logs, leaving measurement unchanged for
@@ -351,7 +350,11 @@ func (r *Reconciler) excludedContainerNames(ctx context.Context, selectorLabels 
 			continue
 		}
 		for j := range pod.Spec.InitContainers {
-			excluded[pod.Spec.InitContainers[j].Name] = struct{}{}
+			// Restartable-init "native sidecars" are first-class targets and stay
+			// measured; only run-to-completion init containers are excluded.
+			if !kube.IsRestartableInit(pod.Spec.InitContainers[j]) {
+				excluded[pod.Spec.InitContainers[j].Name] = struct{}{}
+			}
 		}
 		for j := range pod.Spec.EphemeralContainers {
 			excluded[pod.Spec.EphemeralContainers[j].Name] = struct{}{}
