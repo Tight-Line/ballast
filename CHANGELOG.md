@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Restartable-init "native sidecar" containers are now right-sized.** Init containers with `restartPolicy: Always` (KEP-753 native sidecars) run for the pod's whole lifetime and are legitimate right-sizing targets, but were previously excluded from measurement along with run-to-completion init containers. Ballast now measures them, applies recommendations to `spec.initContainers` at admission, and resizes them in place — in-place resize of restartable-init containers rides the same `pods/resize` subresource as regular containers (supported on Kubernetes 1.33+, GA in 1.35). Run-to-completion init containers and ephemeral debug containers remain excluded; the axis is run-to-completion vs long-running, not init vs regular. This unblocks profiles that a long-lived injected sidecar (e.g. an OTel collector) could pin in `Accruing` indefinitely: the sidecar was measured just enough to be tracked but never accrued its own history, so the whole profile never reached `Sufficient` and its recommendations were never applied. (#30)
+
 ## [0.3.17] - 2026-07-06
 
 ### Fixed
