@@ -34,15 +34,15 @@ Ballast fixes all three by decoupling history from the workload object. It keys 
 
 ## How it works
 
-Workloads opt in with annotations on their pod templates. Ballast observes real CPU, memory, and ephemeral-storage utilization, accumulates a rolling history keyed to a *workload identity tuple* (a set of pod labels you configure), and uses that history to right-size all three resources:
+Workloads opt in with a single label on their pod templates. Ballast observes real CPU, memory, and ephemeral-storage utilization, accumulates a rolling history keyed to a *workload identity tuple* (a set of pod labels you configure), and uses that history to right-size all three resources across an escalating ladder of behaviors:
 
-1. **Measure** — collect per-container usage samples into a time-series store (Redis/Valkey).
-2. **Apply** — patch resource requests and limits at admission time when a pod is created.
-3. **Resize** — adjust resources on running pods via the Kubernetes in-place resize API (1.35+).
+1. **measure** — collect per-container usage samples into a time-series store (Redis/Valkey).
+2. **apply** — also patch resource requests and limits at admission time when a pod is created (implies measure).
+3. **resize** — also adjust resources on running pods via the Kubernetes in-place resize API (1.35+) (implies apply).
 
-`autoresize` is shorthand for all three: it enables measure, apply, and resize with a single annotation. Nothing is applied or resized until the `WorkloadProfile` meets its readiness threshold — that is normal behavior for any resize-enabled workload.
+You choose a rung with the `ballast.tightlinesoftware.com/mode` label; each rung includes everything below it. Nothing is applied or resized until the `WorkloadProfile` meets its readiness threshold — that is normal behavior for any resize-enabled workload.
 
-Pod eviction for cluster rebalancing is handled by [Kubernetes Descheduler](https://github.com/kubernetes-sigs/descheduler) — see the Annotation Contract section for details.
+Pod eviction for cluster rebalancing is handled by [Kubernetes Descheduler](https://github.com/kubernetes-sigs/descheduler) — see the Enrollment section for details.
 
 ## Prerequisites
 
@@ -110,16 +110,19 @@ Now `(billing, api, prod)` and `(billing, api, dev)` are measured independently.
 
 > **Changing `identityLabels` wipes your operational history.** It redefines what constitutes a workload identity, so all existing `WorkloadProfile` objects are renamed and their accumulated Redis history is orphaned. Ballast starts fresh from zero samples. Plan your tuple before enrolling workloads.
 
-## Annotation Contract
+## Enrollment
 
-Add these annotations to your pod template specs to enroll workloads. Ballast never acts on a workload without explicit opt-in.
+Enroll a workload by setting the `ballast.tightlinesoftware.com/mode` label on its pod template. Ballast never acts on a workload without explicit opt-in. The value is a single rung on an escalating ladder; each rung includes everything below it.
 
-| Annotation | Meaning |
+| `ballast.tightlinesoftware.com/mode` | Behavior |
 |---|---|
-| `ballast.tightlinesoftware.com/measure: "true"` | Collect metrics; required for any other behavior |
-| `ballast.tightlinesoftware.com/apply: "true"` | Patch requests/limits at admission time; requires `measure` |
-| `ballast.tightlinesoftware.com/resize: "true"` | Adjust resources on running pods via in-place resize; requires `apply` |
-| `ballast.tightlinesoftware.com/autoresize: "true"` | Shorthand for `measure` + `apply` + `resize`; mutually exclusive with `apply` and `resize` |
+| `measure` | Collect metrics only |
+| `apply` | measure, plus patch requests/limits at admission time |
+| `resize` | apply, plus adjust resources on running pods via in-place resize |
+
+Enrollment is a **label**, not an annotation, so the API server can filter on it server-side. Ballast's controllers watch and its admission webhook fires only for pods that carry the label, which keeps the operator's footprint proportional to the number of enrolled pods rather than the total pod count; this matters on very large clusters ([#55](https://github.com/Tight-Line/ballast/issues/55)). A pod that carries the label with any other value is rejected by the webhook.
+
+Ballast's own outputs stay annotations, since they carry values a label cannot hold (timestamps, slash-separated refs): `profile-ref`, `policy-ref`, `resize-blocked`, and `resize-blocked-at`.
 
 **`apply` and `resize` do not cover the same resources.** At admission time the webhook can set *any* recommended resource — cpu, memory, ephemeral-storage — because it patches the pod spec before the pod exists. In-place resize is narrower by Kubernetes design: the pod resize subresource ([KEP-1287](https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/1287-in-place-update-pod-resources)) permits mutating only `cpu` and `memory` on a running pod, and rejects a patch that touches anything else. Ballast therefore excludes all other resources from resize patches. In practice this means an `ephemeral-storage` recommendation takes effect only when a pod is recreated (via `apply`), never in place; a running pod whose ephemeral-storage drifts will keep its current value until its next restart. Ballast logs every exclusion; when non-resizable drift is the *only* drift on a pod (so no resize is issued at all), it also records `ballast.resize.skipped{reason="not_resizable"}` — skip reasons always describe the whole pod, never a single resource axis.
 
@@ -136,8 +139,7 @@ spec:
       labels:
         app.kubernetes.io/name: billing
         ballast.tightlinesoftware.com/resource-profile: prod
-      annotations:
-        ballast.tightlinesoftware.com/autoresize: "true"
+        ballast.tightlinesoftware.com/mode: resize
 ```
 
 **Example — measure only (safe first step):**
@@ -146,22 +148,22 @@ spec:
 spec:
   template:
     metadata:
-      annotations:
-        ballast.tightlinesoftware.com/measure: "true"
+      labels:
+        ballast.tightlinesoftware.com/mode: measure
 ```
 
 ### Which workloads to enroll
 
 Ballast right-sizes **long-running** workloads by learning their steady-state usage over hours or days (default readiness: 250 samples over 24 hours). Enroll Deployments, StatefulSets, DaemonSets, and similar controllers whose pods run continuously.
 
-- **Job pods: you almost certainly do not want to annotate them.** A Job runs to completion, often in seconds or minutes, so it never accumulates enough steady-state history to cross the readiness threshold. Annotating a Job's pod template only creates a `WorkloadProfile` that never produces a recommendation. Ballast will not stop you (opt-in is entirely under your control), but there is nothing to gain and it clutters your profiles.
-- **CronJob pods: think hard before annotating them.** A CronJob creates Jobs, and those Jobs create the pods (`CronJob → Job → Pod`), so CronJob pods carry the same run-to-completion caveat as any other Job pod. Annotate them only if each run is genuinely long-lived and resource-stable enough to measure meaningfully — for example, a multi-hour nightly batch job. A short or spiky periodic task is a poor fit and will mostly generate noise.
+- **Job pods: you almost certainly do not want to enroll them.** A Job runs to completion, often in seconds or minutes, so it never accumulates enough steady-state history to cross the readiness threshold. Enrolling a Job's pod template only creates a `WorkloadProfile` that never produces a recommendation. Ballast will not stop you (opt-in is entirely under your control), but there is nothing to gain and it clutters your profiles.
+- **CronJob pods: think hard before enrolling them.** A CronJob creates Jobs, and those Jobs create the pods (`CronJob → Job → Pod`), so CronJob pods carry the same run-to-completion caveat as any other Job pod. Enroll them only if each run is genuinely long-lived and resource-stable enough to measure meaningfully — for example, a multi-hour nightly batch job. A short or spiky periodic task is a poor fit and will mostly generate noise.
 
 **Regular containers and restartable-init sidecars are right-sized.** On an enrolled pod, Ballast measures and resizes the pod's regular `spec.containers` **and** its restartable-init "native sidecar" containers (`restartPolicy: Always`, KEP-753) — these run for the pod's whole lifetime and are patched on `spec.initContainers` just like regular containers. It excludes **run-to-completion init containers and ephemeral debug containers** from measurement — there is no per-container knob to configure; the exclusion is automatic. The distinction is run-to-completion vs long-running, not init vs regular. In-place resize of restartable-init containers rides the same `pods/resize` subresource as regular containers (supported on Kubernetes 1.33+, GA in 1.35).
 
 ## Verifying a WorkloadProfile
 
-Once a pod with the `measure` annotation is running, Ballast creates a `WorkloadProfile` for its identity tuple. Check it with:
+Once a pod carrying the `ballast.tightlinesoftware.com/mode` label is running, Ballast creates a `WorkloadProfile` for its identity tuple. Check it with:
 
 ```bash
 kubectl get workloadprofiles

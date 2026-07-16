@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -72,11 +71,11 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 		return admission.Errored(http.StatusBadRequest, fmt.Errorf("decoding pod: %w", err))
 	}
 
-	if err := validation.ValidateAnnotations(pod.Annotations); err != nil {
+	if err := validation.ValidateMode(pod.Labels); err != nil {
 		return admission.Denied(err.Error())
 	}
 
-	if !wantsApply(pod.Annotations) {
+	if !validation.WantsApply(pod.Labels) {
 		m.rec.WebhookMutation(ctx, "skipped", req.Namespace, metrics.ProfileID{})
 		return admission.Allowed("apply not requested")
 	}
@@ -102,24 +101,17 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 	return m.mutate(ctx, &pod, profile)
 }
 
-// wantsApply reports whether the pod carries any annotation that requests resource application.
-func wantsApply(ann map[string]string) bool {
-	for _, key := range []string{
-		validation.AnnotationApply,
-		validation.AnnotationAutoresize,
-	} {
-		if v, ok := ann[key]; ok && strings.EqualFold(v, "true") {
-			return true
-		}
-	}
-	return false
-}
-
 // mutate builds the patched pod and returns a JSON-patch admission response.
 func (m *PodMutator) mutate(ctx context.Context, pod *corev1.Pod, profile *ballastv1.WorkloadProfile) admission.Response {
 	log := ctrl.Log.WithName("webhook")
 
 	modifiedPod := pod.DeepCopy()
+	// Enrollment lives in a label, so an enrolled pod may carry no annotations.
+	// The apply and policy-ref paths below write annotations, so ensure the map
+	// exists before they run.
+	if modifiedPod.Annotations == nil {
+		modifiedPod.Annotations = make(map[string]string)
+	}
 	policyRef := m.stampPolicyRef(ctx, pod, modifiedPod)
 
 	applied := applyRecommendations(modifiedPod, profile)

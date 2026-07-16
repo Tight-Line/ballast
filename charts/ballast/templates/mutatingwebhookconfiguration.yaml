@@ -23,6 +23,13 @@ webhooks:
       operator: NotIn
       values:
       - {{ .Release.Namespace }}
+  # Only enrolled pods carry the mode label, so the API server skips the webhook
+  # call entirely for everything else. This keeps admission overhead proportional
+  # to the number of Ballast-managed pods rather than total pod churn.
+  objectSelector:
+    matchExpressions:
+    - key: ballast.tightlinesoftware.com/mode
+      operator: Exists
   rules:
   - apiGroups: [""]
     apiVersions: ["v1"]

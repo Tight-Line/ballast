@@ -29,13 +29,12 @@ import (
 	"github.com/tight-line/ballast/internal/metrics"
 	"github.com/tight-line/ballast/internal/plugin"
 	"github.com/tight-line/ballast/internal/store"
+	"github.com/tight-line/ballast/internal/validation"
 )
 
 const (
-	AnnotationMeasure    = "ballast.tightlinesoftware.com/measure"
-	AnnotationApply      = "ballast.tightlinesoftware.com/apply"
-	AnnotationResize     = "ballast.tightlinesoftware.com/resize"
-	AnnotationAutoresize = "ballast.tightlinesoftware.com/autoresize"
+	// AnnotationProfileRef records the WorkloadProfile a pod is bound to. Enrollment
+	// itself is driven by the validation.LabelMode label; this is operator output.
 	AnnotationProfileRef = "ballast.tightlinesoftware.com/profile-ref"
 
 	FinalizerName = "ballast.tightlinesoftware.com/workloadwatcher"
@@ -72,13 +71,6 @@ const (
 // (its finalizer is still purging Redis). The pod reconciler translates this into
 // a short requeue rather than binding a live pod to a profile about to disappear.
 var errProfileTerminating = errors.New("workload profile is terminating")
-
-var behaviorAnnotations = []string{
-	AnnotationMeasure,
-	AnnotationApply,
-	AnnotationResize,
-	AnnotationAutoresize,
-}
 
 // Controller bundles the PodReconciler and ProfileReconciler.
 type Controller struct {
@@ -152,11 +144,11 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 
 	currentRef := pod.Annotations[AnnotationProfileRef]
 
-	// Desired enrollment is derived from the pod's live annotations, not from the
-	// stamp. A pod that no longer carries any behavior annotation must be
+	// Desired enrollment is derived from the pod's live mode label, not from the
+	// stamp. A pod that no longer carries a Ballast mode label must be
 	// un-enrolled: drop its profile-ref, remove the finalizer, and recount the
 	// profile it is leaving.
-	if !hasBehaviorAnnotation(pod) {
+	if !isEnrolled(pod) {
 		if currentRef != "" || controllerutil.ContainsFinalizer(pod, FinalizerName) {
 			return ctrl.Result{}, r.unenroll(ctx, pod, currentRef)
 		}
@@ -343,15 +335,10 @@ type podEnrollment struct {
 	ref       string
 }
 
-// hasBehaviorAnnotation reports whether the pod carries at least one Ballast
-// behavior annotation, i.e. whether it wants to be enrolled.
-func hasBehaviorAnnotation(pod *corev1.Pod) bool {
-	for _, ann := range behaviorAnnotations {
-		if _, ok := pod.Annotations[ann]; ok {
-			return true
-		}
-	}
-	return false
+// isEnrolled reports whether the pod carries a recognized Ballast mode label,
+// i.e. whether it wants to be enrolled.
+func isEnrolled(pod *corev1.Pod) bool {
+	return validation.IsEnrolled(pod.Labels)
 }
 
 // countActiveWorkloads counts pods that hold our finalizer, carry a profileRef
@@ -432,25 +419,22 @@ func (r *PodReconciler) setActiveWorkloads(ctx context.Context, profName string,
 
 func (r *PodReconciler) stampProfileRef(ctx context.Context, pod *corev1.Pod, profName string) error {
 	base := pod.DeepCopy()
-	if pod.Annotations == nil { // coverage:ignore - predicate guarantees ≥1 annotation
+	if pod.Annotations == nil {
 		pod.Annotations = make(map[string]string)
 	}
 	pod.Annotations[AnnotationProfileRef] = profName
 	return r.client.Patch(ctx, pod, client.MergeFrom(base))
 }
 
-// HasBallastAnnotationOrFinalizer reports whether obj carries a Ballast behavior
-// annotation or holds the workloadwatcher finalizer. Exported so it can be unit-tested
+// HasBallastModeOrFinalizer reports whether obj carries a Ballast mode label or
+// holds the workloadwatcher finalizer. Exported so it can be unit-tested
 // independently of the controller manager.
-func HasBallastAnnotationOrFinalizer(obj client.Object) bool {
-	anns := obj.GetAnnotations()
-	for _, ann := range behaviorAnnotations {
-		if _, ok := anns[ann]; ok {
-			return true
-		}
+func HasBallastModeOrFinalizer(obj client.Object) bool {
+	if validation.IsEnrolled(obj.GetLabels()) {
+		return true
 	}
 	// Admit pods that already hold our finalizer so deletions are processed
-	// even after behavior annotations have been removed.
+	// even after the mode label has been removed.
 	return slices.Contains(obj.GetFinalizers(), FinalizerName)
 }
 
@@ -491,7 +475,7 @@ func (r *PodReconciler) podsForConfig(ctx context.Context, _ client.Object) []ct
 	var reqs []ctrl.Request
 	for i := range podList.Items {
 		p := &podList.Items[i]
-		if hasBehaviorAnnotation(p) || controllerutil.ContainsFinalizer(p, FinalizerName) {
+		if isEnrolled(p) || controllerutil.ContainsFinalizer(p, FinalizerName) {
 			reqs = append(reqs, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: p.Namespace, Name: p.Name}})
 		}
 	}
@@ -549,7 +533,7 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("workloadwatcher-pod").
 		WithLogConstructor(logger.ControllerLogConstructor(mgr.GetLogger(), "workloadwatcher-pod")).
-		For(&corev1.Pod{}, builder.WithPredicates(predicate.NewPredicateFuncs(HasBallastAnnotationOrFinalizer))).
+		For(&corev1.Pod{}, builder.WithPredicates(predicate.NewPredicateFuncs(HasBallastModeOrFinalizer))).
 		Watches(&ballastv1.WorkloadProfile{},
 			handler.EnqueueRequestsFromMapFunc(r.podsForProfile),
 			builder.WithPredicates(profileDeleted())).

@@ -123,14 +123,18 @@ func makeRequest(pod *corev1.Pod) admission.Request {
 	}
 }
 
-// testPod returns a minimal pod with the given annotations and label app=web.
-func testPod(name string, anns map[string]string) *corev1.Pod {
+// testPod returns a minimal pod enrolled at the given mode (unenrolled when mode
+// is "") with identity label app=web.
+func testPod(name, mode string) *corev1.Pod {
+	labels := map[string]string{"app": "web"}
+	if mode != "" {
+		labels[validation.LabelMode] = mode
+	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   "default",
-			Annotations: anns,
-			Labels:      map[string]string{"app": "web"},
+			Name:      name,
+			Namespace: "default",
+			Labels:    labels,
 		},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
@@ -190,16 +194,36 @@ func hasResourcePatch(resp admission.Response) bool {
 	return false
 }
 
+// policyRefValue extracts the stamped policy-ref from an admission response. It
+// handles both patch shapes: a per-key add when the pod already had annotations,
+// and a whole-object add of /metadata/annotations when it did not (the common
+// case now that enrollment is a label and a minimal pod carries no annotations).
+func policyRefValue(resp admission.Response) string {
+	const key = "ballast.tightlinesoftware.com/policy-ref"
+	for _, p := range resp.Patches {
+		switch {
+		case strings.Contains(p.Path, "policy-ref"):
+			if s, ok := p.Value.(string); ok {
+				return s
+			}
+		case p.Path == "/metadata/annotations":
+			if m, ok := p.Value.(map[string]any); ok {
+				if s, ok := m[key].(string); ok {
+					return s
+				}
+			}
+		}
+	}
+	return ""
+}
+
 // -- unit tests (fake client) --
 
 func TestPodMutator_KillSwitch(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), readyProfile())
 	m := webhook.NewPodMutator(fc, activeKS(t), false, nil)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed, got denied: %s", resp.Result.Message)
@@ -209,26 +233,22 @@ func TestPodMutator_KillSwitch(t *testing.T) {
 	}
 }
 
-func TestPodMutator_InvalidAnnotations(t *testing.T) {
+func TestPodMutator_InvalidMode(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig())
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationApply: "true", // missing measure
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", "frobnicate")))
 
 	if resp.Allowed {
-		t.Error("expected Denied for invalid annotations, got Allowed")
+		t.Error("expected Denied for invalid mode label, got Allowed")
 	}
 }
 
-func TestPodMutator_NoApplyAnnotation(t *testing.T) {
+func TestPodMutator_NoApplyMode(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig())
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeMeasure)))
 
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed for measure-only pod, got: %s", resp.Result.Message)
@@ -242,10 +262,7 @@ func TestPodMutator_DryRunApply(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), readyProfile())
 	m := webhook.NewPodMutator(fc, inactiveKS(t), true /* dryRunApply */, nil)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed in dry-run, got: %s", resp.Result.Message)
@@ -259,10 +276,7 @@ func TestPodMutator_SuccessfulPatch(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), readyProfile())
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
@@ -276,10 +290,7 @@ func TestPodMutator_ProfileNotReady(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), notReadyProfile())
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed when profile not ready, got: %s", resp.Result.Message)
@@ -293,10 +304,7 @@ func TestPodMutator_ProfileNotFound(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig()) // no profile object
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed when profile not found, got: %s", resp.Result.Message)
@@ -310,9 +318,7 @@ func TestPodMutator_Autoresize_BelowThreshold(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), notReadyProfile())
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationAutoresize: "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeResize)))
 
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed (measure-only) for autoresize below threshold, got: %s", resp.Result.Message)
@@ -326,9 +332,7 @@ func TestPodMutator_Autoresize_AboveThreshold(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), readyProfile())
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationAutoresize: "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeResize)))
 
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed with patch for autoresize above threshold, got: %s", resp.Result.Message)
@@ -359,10 +363,7 @@ func TestPodMutator_BallastConfigMissing(t *testing.T) {
 	fc := newFakeClient() // no BallastConfig
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed when BallastConfig missing, got: %s", resp.Result.Message)
@@ -381,10 +382,7 @@ func TestPodMutator_MissingIdentityLabel(t *testing.T) {
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	// pod only has "app", missing "env"
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed when identity label missing, got: %s", resp.Result.Message)
@@ -403,24 +401,13 @@ func TestPodMutator_PolicyRefStamped(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), readyProfile(), policy)
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
 	}
-	var policyRefValue string
-	for _, p := range resp.Patches {
-		if strings.Contains(p.Path, "policy-ref") {
-			if s, ok := p.Value.(string); ok {
-				policyRefValue = s
-			}
-		}
-	}
-	if policyRefValue != "default-policy" {
-		t.Errorf("policy-ref: got %q, want %q", policyRefValue, "default-policy")
+	if got := policyRefValue(resp); got != "default-policy" {
+		t.Errorf("policy-ref: got %q, want %q", got, "default-policy")
 	}
 }
 
@@ -434,24 +421,13 @@ func TestPodMutator_PolicyRefNamespaced(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), readyProfile(), policy)
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
 	}
-	var policyRefValue string
-	for _, p := range resp.Patches {
-		if strings.Contains(p.Path, "policy-ref") {
-			if s, ok := p.Value.(string); ok {
-				policyRefValue = s
-			}
-		}
-	}
-	if policyRefValue != "default/team-policy" {
-		t.Errorf("policy-ref: got %q, want %q", policyRefValue, "default/team-policy")
+	if got := policyRefValue(resp); got != "default/team-policy" {
+		t.Errorf("policy-ref: got %q, want %q", got, "default/team-policy")
 	}
 }
 
@@ -462,10 +438,9 @@ func TestPodMutator_UnmatchedContainer(t *testing.T) {
 	// pod has an extra "sidecar" container not in the profile
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "p",
-			Namespace:   "default",
-			Annotations: map[string]string{validation.AnnotationMeasure: "true", validation.AnnotationApply: "true"},
-			Labels:      map[string]string{"app": "web"},
+			Name:      "p",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "web", validation.LabelMode: validation.ModeApply},
 		},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
@@ -496,10 +471,7 @@ func TestPodMutator_ApplyAppliedMetric(t *testing.T) {
 	rec, reg := newMetricsRecorder(t)
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, rec)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
 	}
@@ -540,10 +512,7 @@ func TestPodMutator_AppliesRestartableInitSidecar(t *testing.T) {
 	rec, reg := newMetricsRecorder(t)
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, rec)
 
-	pod := testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})
+	pod := testPod("p", validation.ModeApply)
 	// The regular "app" container has no recommendation; the profile's "otc"
 	// recommendation matches only the restartable-init sidecar.
 	pod.Spec.InitContainers = []corev1.Container{
@@ -569,10 +538,7 @@ func TestPodMutator_ApplyAppliedMetric_AnnotationOnlyMutation(t *testing.T) {
 
 	// The pod's only container is absent from the profile, so the patch carries
 	// no resource changes.
-	pod := testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})
+	pod := testPod("p", validation.ModeApply)
 	pod.Spec.Containers = []corev1.Container{{Name: "sidecar", Image: "envoy"}}
 
 	resp := m.Handle(context.Background(), makeRequest(pod))
@@ -604,10 +570,7 @@ func TestPodMutator_ApplySkippedMetric_NotReady(t *testing.T) {
 	rec, reg := newMetricsRecorder(t)
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, rec)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
 	}
@@ -630,10 +593,7 @@ func TestPodMutator_ApplySkippedMetric_NoProfile(t *testing.T) {
 	rec, reg := newMetricsRecorder(t)
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, rec)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
 	}
@@ -655,10 +615,7 @@ func TestPodMutator_ApplySkippedMetric_DryRun(t *testing.T) {
 	rec, reg := newMetricsRecorder(t)
 	m := webhook.NewPodMutator(fc, inactiveKS(t), true /* dryRunApply */, rec)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
 	}
@@ -691,10 +648,7 @@ func TestPodMutator_EmptyRecommendationField(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), profile)
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 
 	if !resp.Allowed {
 		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
@@ -722,10 +676,7 @@ func TestPodMutator_InvalidQuantity(t *testing.T) {
 	fc := newFakeClient(defaultBallastConfig(), profile)
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
-	resp := m.Handle(context.Background(), makeRequest(testPod("p", map[string]string{
-		validation.AnnotationMeasure: "true",
-		validation.AnnotationApply:   "true",
-	})))
+	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
 
 	// webhook allows the pod even when recommendations can't be parsed
 	if !resp.Allowed {
@@ -742,11 +693,7 @@ func TestPodMutator_OwnerReference(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "p",
 			Namespace: "default",
-			Annotations: map[string]string{
-				validation.AnnotationMeasure: "true",
-				validation.AnnotationApply:   "true",
-			},
-			Labels: map[string]string{"app": "web"},
+			Labels:    map[string]string{"app": "web", validation.LabelMode: validation.ModeApply},
 			OwnerReferences: []metav1.OwnerReference{
 				{Kind: "ReplicaSet", Name: "web-rs", Controller: &isController},
 			},
