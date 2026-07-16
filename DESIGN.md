@@ -12,29 +12,30 @@ Ballast is intentionally decoupled from any specific deployment tool. That tool'
 
 ---
 
-## Annotation Contract
+## Enrollment Contract
 
-The deployment tool sets these annotations on pod template specs. They are the opt-in surface; Ballast never acts on a workload that has not been explicitly enrolled.
+The deployment tool sets a single label on pod template specs. It is the opt-in surface; Ballast never acts on a workload that has not been explicitly enrolled.
 
-| Annotation | Meaning |
+| `ballast.tightlinesoftware.com/mode` | Meaning |
 |---|---|
-| `ballast.tightlinesoftware.com/measure: "true"` | Collect metrics for this workload; required for any other behavior |
-| `ballast.tightlinesoftware.com/apply: "true"` | Patch resource requests/limits at admission time; requires `measure` |
-| `ballast.tightlinesoftware.com/resize: "true"` | Adjust resources on running pods via in-place resize; requires `apply` |
-| `ballast.tightlinesoftware.com/autoresize: "true"` | Progressive mode: behaves as `measure` only until the WorkloadProfile meets its history threshold, then automatically behaves as `apply` + `resize` |
+| `measure` | Collect metrics for this workload only |
+| `apply` | measure, plus patch resource requests/limits at admission time |
+| `resize` | apply, plus adjust resources on running pods via in-place resize |
 
-The dependency chain for the explicit annotations is `measure` -> `apply` -> `resize`. Invalid combinations are rejected by the admission webhook with a clear error message. `autoresize` is mutually exclusive with `apply` and `resize`.
+The values form an escalating ladder, `measure` -> `apply` -> `resize`, where each rung includes the ones below it. `resize` is the full behavior set (what an earlier design called `autoresize`); there is deliberately no resize-without-apply rung. A pod carrying the label with any other value is rejected by the admission webhook with a clear error message.
 
-The following annotation is set by Ballast itself (not by the deployment tool):
+Enrollment is a **label** rather than an annotation specifically so the API server can filter on it. The operator scopes its pod informer cache with a `mode` label selector and the `MutatingWebhookConfiguration` carries a matching `objectSelector`, so Ballast's watch and admission load track the number of enrolled pods, not the cluster's total pod count ([#55](https://github.com/Tight-Line/ballast/issues/55)).
+
+The following annotations are set by Ballast itself (not by the deployment tool). They stay annotations because their values (slash-separated refs, timestamps) cannot be label values:
 
 | Annotation | Set by | Meaning |
 |---|---|---|
 | `ballast.tightlinesoftware.com/profile-ref: <name>` | WorkloadWatcher | Records which `WorkloadProfile` this pod was assigned to at creation time; used for correct decrement on deletion |
 | `ballast.tightlinesoftware.com/policy-ref: <name>` | Admission webhook; WorkloadWatcher (on policy change) | Records the effective policy for this pod; re-resolved when policies are created, updated, or deleted; empty string means no policy matched |
 
-The deployment tool also sets the identity tuple labels (see WorkloadProfile below). These are distinct from the behavior annotations.
+The deployment tool also sets the identity tuple labels (see WorkloadProfile below). These are distinct from the enrollment mode label.
 
-**Scope of measurement.** Enrollment is a whole-pod, opt-in decision, so deciding *which* workloads to enroll stays with the deployment tool — Ballast does not second-guess it with workload-kind heuristics. In particular there is no built-in Job/CronJob carve-out: a long-running Job may legitimately want right-sizing, so the tool simply should not annotate short-lived Job (or CronJob) pod templates that run to completion.
+**Scope of measurement.** Enrollment is a whole-pod, opt-in decision, so deciding *which* workloads to enroll stays with the deployment tool — Ballast does not second-guess it with workload-kind heuristics. In particular there is no built-in Job/CronJob carve-out: a long-running Job may legitimately want right-sizing, so the tool simply should not enroll short-lived Job (or CronJob) pod templates that run to completion.
 
 Within an enrolled pod, Ballast measures and resizes the regular `spec.containers` **and** restartable-init "native sidecar" containers (`restartPolicy: Always`): these run for the pod's whole lifetime and are legitimate right-sizing targets, so the axis is run-to-completion vs long-running rather than init vs regular. The collector excludes run-to-completion init containers and ephemeral debug containers from measurement, because the apply and resize paths patch only `spec.containers` and the restartable-init entries of `spec.initContainers` — sampling anything else would produce recommendations that could never be applied. In-place resize of restartable-init containers rides the same `pods/resize` subresource as regular containers (supported on Kubernetes 1.33+, GA in 1.35). The `kube.IsRestartableInit` helper is the single source of truth for this classification across the measure, apply, and resize lanes.
 
@@ -189,7 +190,7 @@ The set of labels that constitute an identity tuple is defined in the Ballast gl
 
 The deployment tool is responsible for setting whatever labels the operator has configured on pod templates. The `WorkloadProfile` name is derived deterministically from the sorted label values, e.g. `billing--prod`.
 
-The profile for `(billing, prod)` aggregates metrics from every workload in any namespace that carries those label values and has a `measure` annotation. All contributing instances are treated as equivalent samples of the same workload in the same environment type.
+The profile for `(billing, prod)` aggregates metrics from every workload in any namespace that carries those label values and is enrolled (any `mode`). All contributing instances are treated as equivalent samples of the same workload in the same environment type.
 
 ```yaml
 apiVersion: ballast.tightlinesoftware.com/v1
@@ -337,7 +338,7 @@ profile from its *current* labels and the *current* `identityLabels`, then recon
 toward it, rather than trusting the stamped `profile-ref`. The stamp is a cache used
 only on the DELETE path.
 
-- On create/update: if the pod carries a behavior annotation, computes the target profile name, creates the `WorkloadProfile` if absent (recreating it if it was deleted), stamps `ballast.tightlinesoftware.com/profile-ref`, and recomputes `activeWorkloads` from live pods. If the computed name differs from the stamp (a pod-label or `identityLabels` change), the pod **migrates**: it is re-stamped and both the new and old profiles are recounted. If all behavior annotations have been removed, the pod is **un-enrolled**: profile-ref and finalizer removed, old profile decremented.
+- On create/update: if the pod carries the mode label, computes the target profile name, creates the `WorkloadProfile` if absent (recreating it if it was deleted), stamps `ballast.tightlinesoftware.com/profile-ref`, and recomputes `activeWorkloads` from live pods. If the computed name differs from the stamp (a pod-label or `identityLabels` change), the pod **migrates**: it is re-stamped and both the new and old profiles are recounted. If the mode label has been removed, the pod is **un-enrolled**: profile-ref and finalizer removed, old profile decremented.
 - On pod deletion: reads the stamped `profile-ref` (does not recompute — the pod is leaving) to identify which `WorkloadProfile` to recount; sets `Orphaned` when `activeWorkloads` reaches 0.
 - On any profile deletion (orphan-TTL sweep **or** manual `kubectl delete`): a cleanup finalizer purges the profile's Redis keys before the object is removed. Deleting a profile that still has matching live pods is a history reset — the pod watch promptly recreates a fresh profile and re-associates only matching pods.
 
@@ -457,7 +458,7 @@ Ballast has no knowledge of any specific deployment tool's internals. The annota
 
 A deployment tool that wants to integrate with Ballast needs only to:
 
-- Maintain per-environment toggles for the behaviors (measure, apply, resize, autoresize) at whatever granularity makes sense (per-service, per-environment-type, per-specific-environment)
+- Maintain a per-environment `mode` value (measure, apply, or resize) at whatever granularity makes sense (per-service, per-environment-type, per-specific-environment)
 - Emit the corresponding `ballast.tightlinesoftware.com/*` annotations on pod template specs at manifest generation time
 - Set whatever pod labels constitute the configured identity tuple on pod templates
 

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: enrollment moved from four annotations to a single `ballast.tightlinesoftware.com/mode` label.** Workloads used to opt in with `ballast.tightlinesoftware.com/measure`, `/apply`, `/resize`, and `/autoresize` annotations. They now set one label, `ballast.tightlinesoftware.com/mode`, whose value names a rung on an escalating ladder: `measure` (collect only), `apply` (measure + admission-time patching), or `resize` (apply + in-place resize). Each rung implies the ones below it, so `resize` is exactly what `autoresize` used to mean; the `autoresize` name is gone, and there is no longer a resize-without-apply combination (there was never a use for one). A pod carrying the label with any other value is rejected by the webhook.
+
+  The driver is scale. Annotations cannot be used in label selectors, so the operator's pod informer and the admission webhook previously had to consider every pod in the cluster and filter in-process. With enrollment as a label, the API server filters server-side: the manager's pod cache is scoped to enrolled pods, and the `MutatingWebhookConfiguration` carries an `objectSelector` so the API server never calls the webhook for unenrolled pods. On a large cluster (the motivating case was ~100k pods) Ballast's footprint is now proportional to the number of enrolled pods rather than the total pod count. ([#55](https://github.com/Tight-Line/ballast/issues/55))
+
+  Ballast's own outputs are unchanged and remain annotations, because they carry values a label cannot hold: `profile-ref`, `policy-ref`, `resize-blocked`, and `resize-blocked-at`.
+
+  **Migration (breaking, no automatic fallback):** update every enrolled pod template to drop the old annotations and add the `mode` label. `measure` → `mode: measure`; `apply` (with `measure`) → `mode: apply`; `resize`/`autoresize` → `mode: resize`. Because enrollment is now a pod *label*, changing it re-rolls the workload as any other pod-template change does. This is a pre-v1 breaking change shipped in a minor bump; there is no dual-read window, so workloads still carrying only the old annotations are treated as unenrolled after upgrade.
+
 ## [0.3.18] - 2026-07-14
 
 ### Added

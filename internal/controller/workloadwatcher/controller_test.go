@@ -30,6 +30,7 @@ import (
 	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/plugin"
 	"github.com/tight-line/ballast/internal/store"
+	"github.com/tight-line/ballast/internal/validation"
 )
 
 // -- scheme & client helpers --
@@ -120,10 +121,9 @@ func TestPodReconciler_NewPod(t *testing.T) {
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "web-abc",
-			Namespace:   "default",
-			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
-			Labels:      map[string]string{"app": "web"},
+			Name:      "web-abc",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 		},
 	}
 	fc := newFakeClient(defaultBallastConfig(), pod)
@@ -187,10 +187,9 @@ func TestPodReconciler_AlreadyProcessed(t *testing.T) {
 			Name:      "web-abc",
 			Namespace: "default",
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationMeasure:    "true",
 				workloadwatcher.AnnotationProfileRef: profName,
 			},
-			Labels:     map[string]string{"app": "web"},
+			Labels:     map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 			Finalizers: []string{workloadwatcher.FinalizerName},
 		},
 	}
@@ -221,10 +220,9 @@ func TestPodReconciler_AbsentIdentityLabelUsesPlaceholder(t *testing.T) {
 	// The reconciler should create a profile using the "noapp" placeholder.
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "web-abc",
-			Namespace:   "default",
-			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
-			Labels:      map[string]string{"tier": "backend"},
+			Name:      "web-abc",
+			Namespace: "default",
+			Labels:    map[string]string{"tier": "backend", validation.LabelMode: validation.ModeMeasure},
 		},
 	}
 	fc := newFakeClient(defaultBallastConfig(), pod)
@@ -249,10 +247,9 @@ func TestPodReconciler_KillSwitchSuppresses(t *testing.T) {
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "web-abc",
-			Namespace:   "default",
-			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
-			Labels:      map[string]string{"app": "web"},
+			Name:      "web-abc",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 		},
 	}
 	fc := newFakeClient(defaultBallastConfig(), pod)
@@ -293,10 +290,9 @@ func TestPodReconciler_DeleteDecrement(t *testing.T) {
 			Name:      "web-abc",
 			Namespace: "default",
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationMeasure:    "true",
 				workloadwatcher.AnnotationProfileRef: profName,
 			},
-			Labels:     map[string]string{"app": "web"},
+			Labels:     map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 			Finalizers: []string{workloadwatcher.FinalizerName},
 		},
 	}
@@ -305,10 +301,9 @@ func TestPodReconciler_DeleteDecrement(t *testing.T) {
 			Name:      "web-def",
 			Namespace: "default",
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationMeasure:    "true",
 				workloadwatcher.AnnotationProfileRef: profName,
 			},
-			Labels:     map[string]string{"app": "web"},
+			Labels:     map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 			Finalizers: []string{workloadwatcher.FinalizerName},
 		},
 	}
@@ -373,10 +368,9 @@ func TestPodReconciler_RolloutRestart(t *testing.T) {
 			Name:      "web-old-a",
 			Namespace: "default",
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationMeasure:    "true",
 				workloadwatcher.AnnotationProfileRef: profName,
 			},
-			Labels:     map[string]string{"app": "web"},
+			Labels:     map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 			Finalizers: []string{workloadwatcher.FinalizerName},
 		},
 	}
@@ -385,10 +379,9 @@ func TestPodReconciler_RolloutRestart(t *testing.T) {
 			Name:      "web-old-b",
 			Namespace: "default",
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationMeasure:    "true",
 				workloadwatcher.AnnotationProfileRef: profName,
 			},
-			Labels:     map[string]string{"app": "web"},
+			Labels:     map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 			Finalizers: []string{workloadwatcher.FinalizerName},
 		},
 	}
@@ -403,18 +396,16 @@ func TestPodReconciler_RolloutRestart(t *testing.T) {
 	// Rollout restart: create 2 new pods.
 	podC := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "web-new-c",
-			Namespace:   "default",
-			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
-			Labels:      map[string]string{"app": "web"},
+			Name:      "web-new-c",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 		},
 	}
 	podD := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "web-new-d",
-			Namespace:   "default",
-			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
-			Labels:      map[string]string{"app": "web"},
+			Name:      "web-new-d",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 		},
 	}
 	if err := fc.Create(ctx, podC); err != nil {
@@ -461,10 +452,9 @@ func TestPodReconciler_DeleteOrphanTransition(t *testing.T) {
 			Name:      "web-abc",
 			Namespace: "default",
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationMeasure:    "true",
 				workloadwatcher.AnnotationProfileRef: profName,
 			},
-			Labels:     map[string]string{"app": "web"},
+			Labels:     map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 			Finalizers: []string{workloadwatcher.FinalizerName},
 		},
 	}
@@ -510,10 +500,9 @@ func TestPodReconciler_DeleteKillSwitchAllowsDecrement(t *testing.T) {
 			Name:      "web-abc",
 			Namespace: "default",
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationMeasure:    "true",
 				workloadwatcher.AnnotationProfileRef: profName,
 			},
-			Labels:     map[string]string{"app": "web"},
+			Labels:     map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 			Finalizers: []string{workloadwatcher.FinalizerName},
 		},
 	}
@@ -550,10 +539,9 @@ func TestPodReconciler_NewPodClearsOrphan(t *testing.T) {
 	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "web-xyz",
-			Namespace:   "default",
-			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
-			Labels:      map[string]string{"app": "web"},
+			Name:      "web-xyz",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 		},
 	}
 	fc := newFakeClient(defaultBallastConfig(), profile, pod)
@@ -591,10 +579,9 @@ func TestPodReconciler_BallastConfigNotFound(t *testing.T) {
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "web-abc",
-			Namespace:   "default",
-			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
-			Labels:      map[string]string{"app": "web"},
+			Name:      "web-abc",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 		},
 	}
 	// No BallastConfig in the fake store.
@@ -623,10 +610,9 @@ func TestPodReconciler_RecoveryAddFinalizer(t *testing.T) {
 			Name:      "web-abc",
 			Namespace: "default",
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationMeasure:    "true",
 				workloadwatcher.AnnotationProfileRef: profName,
 			},
-			Labels: map[string]string{"app": "web"},
+			Labels: map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 			// No finalizer — simulates a partial failure on a prior reconcile.
 		},
 	}
@@ -679,10 +665,9 @@ func TestPodReconciler_DeleteNoFinalizer(t *testing.T) {
 			Name:      "web-abc",
 			Namespace: "default",
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationMeasure:    "true",
 				workloadwatcher.AnnotationProfileRef: profName,
 			},
-			Labels:     map[string]string{"app": "web"},
+			Labels:     map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 			Finalizers: []string{"other-controller.io/cleanup"}, // foreign finalizer keeps pod alive
 		},
 	}
@@ -717,10 +702,9 @@ func TestPodReconciler_SpecialLabelChars(t *testing.T) {
 	// Label values with underscores and dots must be sanitized in the profile name.
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "web-abc",
-			Namespace:   "default",
-			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
-			Labels:      map[string]string{"app": "my_app.v2"},
+			Name:      "web-abc",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "my_app.v2", validation.LabelMode: validation.ModeMeasure},
 		},
 	}
 	cfg := &ballastv1.BallastConfig{
@@ -855,10 +839,9 @@ func TestPodReconciler_MigrateOnLabelChange(t *testing.T) {
 			Name:      "web-abc",
 			Namespace: "default",
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationMeasure:    "true",
 				workloadwatcher.AnnotationProfileRef: oldName,
 			},
-			Labels:     map[string]string{"app": "web"},
+			Labels:     map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 			Finalizers: []string{workloadwatcher.FinalizerName},
 		},
 	}
@@ -913,10 +896,9 @@ func TestPodReconciler_MigrateOnIdentityLabelsChange(t *testing.T) {
 			Name:      "web-abc",
 			Namespace: "default",
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationMeasure:    "true",
 				workloadwatcher.AnnotationProfileRef: "web",
 			},
-			Labels:     map[string]string{"app": "web", "tier": "api"},
+			Labels:     map[string]string{"app": "web", "tier": "api", validation.LabelMode: validation.ModeMeasure},
 			Finalizers: []string{workloadwatcher.FinalizerName},
 		},
 	}
@@ -955,10 +937,9 @@ func TestPodReconciler_HealsMissingStatusLabels(t *testing.T) {
 			Name:      "web-abc",
 			Namespace: "default",
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationMeasure:    "true",
 				workloadwatcher.AnnotationProfileRef: profName,
 			},
-			Labels:     map[string]string{"app": "web"},
+			Labels:     map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 			Finalizers: []string{workloadwatcher.FinalizerName},
 		},
 	}
@@ -987,10 +968,9 @@ func TestPodReconciler_CreateRaceRequeues(t *testing.T) {
 	ctx := context.Background()
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "web-pod",
-			Namespace:   "default",
-			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
-			Labels:      map[string]string{"app": "web"},
+			Name:      "web-pod",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 		},
 	}
 	fc := fake.NewClientBuilder().
@@ -1150,10 +1130,9 @@ func TestProfileReconciler_NotOrphaned(t *testing.T) {
 			Name:      "web-abc",
 			Namespace: "default",
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationMeasure:    "true",
 				workloadwatcher.AnnotationProfileRef: profName,
 			},
-			Labels:     map[string]string{"app": "web"},
+			Labels:     map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 			Finalizers: []string{workloadwatcher.FinalizerName},
 		},
 	}
@@ -1382,26 +1361,26 @@ func TestProfileReconciler_OrphanTTLExpired(t *testing.T) {
 
 // -- predicate / helper unit tests --
 
-func TestHasBallastAnnotationOrFinalizer(t *testing.T) {
-	// No annotations, no finalizer → false.
+func TestHasBallastModeOrFinalizer(t *testing.T) {
+	// No mode label, no finalizer → false.
 	obj := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "plain"}}
-	if workloadwatcher.HasBallastAnnotationOrFinalizer(obj) {
-		t.Error("expected false for pod with no annotations or finalizer")
+	if workloadwatcher.HasBallastModeOrFinalizer(obj) {
+		t.Error("expected false for pod with no mode label or finalizer")
 	}
 
-	// Has a behavior annotation → true (loop returns before reaching slices.Contains).
-	obj.Annotations = map[string]string{workloadwatcher.AnnotationMeasure: "true"}
-	if !workloadwatcher.HasBallastAnnotationOrFinalizer(obj) {
-		t.Error("expected true for pod with behavior annotation")
+	// Has a mode label → true (returns before reaching slices.Contains).
+	obj.Labels = map[string]string{validation.LabelMode: validation.ModeMeasure}
+	if !workloadwatcher.HasBallastModeOrFinalizer(obj) {
+		t.Error("expected true for pod with mode label")
 	}
 
-	// No behavior annotations but has our finalizer → true.
-	// This is the path that keeps deletion reconciliation firing after annotations
-	// have been stripped from a previously-processed pod.
-	obj.Annotations = nil
+	// No mode label but has our finalizer → true.
+	// This is the path that keeps deletion reconciliation firing after the mode
+	// label has been stripped from a previously-processed pod.
+	obj.Labels = nil
 	obj.Finalizers = []string{workloadwatcher.FinalizerName}
-	if !workloadwatcher.HasBallastAnnotationOrFinalizer(obj) {
-		t.Error("expected true for pod with finalizer but no behavior annotations")
+	if !workloadwatcher.HasBallastModeOrFinalizer(obj) {
+		t.Error("expected true for pod with finalizer but no mode label")
 	}
 }
 
@@ -1412,10 +1391,9 @@ func TestProfileName_LongLabel(t *testing.T) {
 	longValue := strings.Repeat("a", 260)
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "web-abc",
-			Namespace:   "default",
-			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
-			Labels:      map[string]string{"app": longValue},
+			Name:      "web-abc",
+			Namespace: "default",
+			Labels:    map[string]string{"app": longValue, validation.LabelMode: validation.ModeMeasure},
 		},
 	}
 	fc := newFakeClient(defaultBallastConfig(), pod)
@@ -1591,10 +1569,9 @@ func TestPodReconciler_ProfileTerminatingRequeues(t *testing.T) {
 	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "web-pod",
-			Namespace:   "default",
-			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
-			Labels:      map[string]string{"app": "web"},
+			Name:      "web-pod",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 		},
 	}
 	fc := newFakeClient(defaultBallastConfig(), profile, pod)
@@ -1681,13 +1658,12 @@ func TestController_SetupWithManager(t *testing.T) {
 		t.Fatalf("create BallastConfig: %v", err)
 	}
 
-	// Create a pod with the measure annotation — the controller should create a WorkloadProfile.
+	// Create a pod with the measure mode label; the controller should create a WorkloadProfile.
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "web-pod",
-			Namespace:   "default",
-			Annotations: map[string]string{workloadwatcher.AnnotationMeasure: "true"},
-			Labels:      map[string]string{"app": "web"},
+			Name:      "web-pod",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "web", validation.LabelMode: validation.ModeMeasure},
 		},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{Name: "app", Image: "nginx"}},

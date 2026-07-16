@@ -13,6 +13,7 @@ import (
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/validation"
 )
 
 // These tests live in the internal package so they can exercise the unexported
@@ -113,18 +114,18 @@ func TestPodsForConfig(t *testing.T) {
 		Name: "m", Namespace: "default",
 		Finalizers: []string{FinalizerName},
 	}}
-	annotated := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+	enrolled := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Name: "a", Namespace: "default",
-		Annotations: map[string]string{AnnotationMeasure: "true"},
+		Labels: map[string]string{validation.LabelMode: validation.ModeMeasure},
 	}}
 	unmanaged := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "u", Namespace: "default"}}
 	fc := fake.NewClientBuilder().WithScheme(internalScheme()).
-		WithObjects(managed, annotated, unmanaged).Build()
+		WithObjects(managed, enrolled, unmanaged).Build()
 	r := &PodReconciler{client: fc}
 
 	reqs := r.podsForConfig(context.Background(), &ballastv1.BallastConfig{})
 	if len(reqs) != 2 {
-		t.Errorf("podsForConfig: got %d requests, want 2 (managed + annotated)", len(reqs))
+		t.Errorf("podsForConfig: got %d requests, want 2 (managed + enrolled)", len(reqs))
 	}
 }
 

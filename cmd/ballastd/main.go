@@ -19,10 +19,14 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	promclient "github.com/prometheus/client_golang/prometheus"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/selection"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -45,6 +49,7 @@ import (
 	kubeletplugin "github.com/tight-line/ballast/internal/plugin/kubelet"
 	k8splugin "github.com/tight-line/ballast/internal/plugin/kubernetes"
 	"github.com/tight-line/ballast/internal/store"
+	"github.com/tight-line/ballast/internal/validation"
 	ballastwebhook "github.com/tight-line/ballast/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
@@ -265,6 +270,18 @@ func run() int {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
+	// Scope the shared pod informer to enrolled pods only. The API server filters
+	// on the mode label server-side, so the operator's cache holds and reacts to
+	// just the pods Ballast manages, no matter how large the cluster is. Reads that
+	// need unenrolled pods (metricscollector's container-exclusion list) use the
+	// uncached APIReader instead.
+	modeExists, err := labels.NewRequirement(validation.LabelMode, selection.Exists, nil)
+	if err != nil {
+		setupLog.Error(err, "Failed to build enrolled-pod label selector")
+		return 1
+	}
+	enrolledPods := labels.NewSelector().Add(*modeExists)
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
@@ -272,6 +289,11 @@ func run() int {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "910c37cf.tightlinesoftware.com",
+		Cache: cache.Options{
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.Pod{}: {Label: enrolledPods},
+			},
+		},
 	})
 	if err != nil {
 		setupLog.Error(err, "Failed to start manager")

@@ -32,6 +32,7 @@ import (
 	"github.com/tight-line/ballast/internal/logger"
 	"github.com/tight-line/ballast/internal/metrics"
 	"github.com/tight-line/ballast/internal/policy"
+	"github.com/tight-line/ballast/internal/validation"
 )
 
 const (
@@ -177,8 +178,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{RequeueAfter: interval}, nil
 }
 
-// listResizePods returns all pods that reference this profile and have the
-// resize or autoresize annotation.
+// listResizePods returns all pods that reference this profile and have opted
+// into in-place resize via their mode label.
 func (r *Reconciler) listResizePods(ctx context.Context, profileName string) ([]corev1.Pod, error) {
 	var allPods corev1.PodList
 	if err := r.client.List(ctx, &allPods); err != nil { // coverage:ignore - transient API error
@@ -190,7 +191,7 @@ func (r *Reconciler) listResizePods(ctx context.Context, profileName string) ([]
 		if pod.Annotations[workloadwatcher.AnnotationProfileRef] != profileName {
 			continue
 		}
-		if !wantsResize(pod.Annotations) {
+		if !validation.WantsResize(pod.Labels) {
 			continue
 		}
 		if pod.DeletionTimestamp != nil {
@@ -199,12 +200,6 @@ func (r *Reconciler) listResizePods(ctx context.Context, profileName string) ([]
 		result = append(result, pod)
 	}
 	return result, nil
-}
-
-// wantsResize reports whether a pod has opted into in-place resize.
-func wantsResize(ann map[string]string) bool {
-	return ann[workloadwatcher.AnnotationResize] == "true" ||
-		ann[workloadwatcher.AnnotationAutoresize] == "true"
 }
 
 // reconcilePod evaluates drift for one pod and issues a resize if needed.

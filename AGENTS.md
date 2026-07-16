@@ -11,14 +11,14 @@
 
 ## Project Overview
 
-Ballast is a Kubernetes operator that automatically right-sizes workload resource requests and limits based on real operational history. Workloads opt in via pod template annotations; Ballast never touches a workload without explicit `ballast.tightlinesoftware.com/measure: "true"`.
+Ballast is a Kubernetes operator that automatically right-sizes workload resource requests and limits based on real operational history. Workloads opt in via a single pod-template label, `ballast.tightlinesoftware.com/mode`; Ballast never touches a workload without it.
 
 The operator has three main behaviors:
 1. **Measure** — collect per-container CPU/memory usage samples into Redis time-series keys
 2. **Apply** — patch resource requests/limits at admission time when a pod is admitted
 3. **Resize** — adjust resources on running pods via the Kubernetes in-place resize API (1.35+)
 
-Nothing is applied or resized until the matching `WorkloadProfile` has accumulated enough history and its `meetsThreshold` field is true. `autoresize` is simply shorthand for `measure + apply + resize` as a single annotation.
+Nothing is applied or resized until the matching `WorkloadProfile` has accumulated enough history and its `meetsThreshold` field is true. The `mode` label value picks a rung on an escalating ladder (`measure`, `apply`, or `resize`); each rung implies the ones below it, so `mode: resize` enables all three.
 
 ## Quick Start
 
@@ -53,7 +53,7 @@ make generate     # Regenerate DeepCopy methods
 | `internal/plugin/registry.go` | `Register(p)`, `Get(typeName)` — global plugin registry; plugins self-register via `init()` |
 | `internal/plugin/kubernetes/plugin.go` | `kubernetesMetrics` plugin — calls in-cluster metrics API; token-bucket rate limiting; exponential backoff on errors |
 | `internal/stats/aggregator.go` | `EvaluateReadiness(Stats, firstMs, lastMs, ReadinessConfig, resourceName) bool`; `ComputeRecommendation(Stats, MetricConfig) (resource.Quantity, error)` |
-| `internal/validation/annotations.go` | `ValidateAnnotations(map[string]string) error` — enforces annotation combination rules |
+| `internal/validation/enrollment.go` | `LabelMode` + `Mode`/`IsEnrolled`/`WantsApply`/`WantsResize`/`ValidateMode` — the mode-label enrollment model |
 | `internal/controller/workloadwatcher/controller.go` | Watches pods; creates/updates `WorkloadProfile`; `ProfileName(tupleLabels, identityLabels)` and `ExtractTupleLabels(podLabels, identityLabels)` exported for webhook use |
 | `internal/controller/metricscollector/controller.go` | Reconciles `WorkloadProfile` on timer; polls plugins; writes to Redis lists; updates status with stats and recommendations |
 | `internal/controller/resourceadjuster/controller.go` | Watches `WorkloadProfile` status changes; detects drift; issues in-place pod resize patches; exports `ExceedsDrift`, `CapChange`, `ResolveFieldThreshold`, `ParseResizeInterval` |
@@ -69,7 +69,7 @@ make generate     # Regenerate DeepCopy methods
 
 ```
 Pod CREATE ──► PodMutator (admission webhook)
-                  │  validates annotations
+                  │  validates the mode label
                   │  applies recommendations if profile ready (meetsThreshold)
                   │
                   ▼
@@ -130,7 +130,7 @@ identity), not the source of truth; it is trusted verbatim only on the DELETE pa
 
 Two reconcilers share the package:
 
-- `PodReconciler` — watches pods carrying any Ballast behavior annotation (also watches WorkloadProfile deletions and BallastConfig `identityLabels` changes to converge promptly). On CREATE/UPDATE: if enrolled, computes the target profile, creates the `WorkloadProfile` if absent (recreating it if deleted), stamps `profile-ref`, and recomputes `activeWorkloads` from live pods. If the computed name differs from the stamp → **migrate** (re-stamp, recount new and old). If no behavior annotation remains → **un-enroll** (remove `profile-ref` + finalizer, decrement old). On DELETE: reads the stamp (no recompute), recounts, sets `Orphaned` at zero. Kill switch suppresses the CREATE path only; DELETE/decrement always runs. Counts are recomputed from live pods (never `++/--`), so they self-heal.
+- `PodReconciler` — watches pods carrying the Ballast mode label (also watches WorkloadProfile deletions and BallastConfig `identityLabels` changes to converge promptly). On CREATE/UPDATE: if enrolled, computes the target profile, creates the `WorkloadProfile` if absent (recreating it if deleted), stamps `profile-ref`, and recomputes `activeWorkloads` from live pods. If the computed name differs from the stamp → **migrate** (re-stamp, recount new and old). If the mode label is gone → **un-enroll** (remove `profile-ref` + finalizer, decrement old). On DELETE: reads the stamp (no recompute), recounts, sets `Orphaned` at zero. Kill switch suppresses the CREATE path only; DELETE/decrement always runs. Counts are recomputed from live pods (never `++/--`), so they self-heal. The manager's pod cache is scoped to enrolled pods (a `mode` label selector), so all cached pod reads see only enrolled pods.
 - `ProfileReconciler` — watches `WorkloadProfile` objects. Owns the cleanup finalizer (`ballast.tightlinesoftware.com/profile-cleanup`): on any deletion it purges Redis keys via `AllKeysForHash`/`DeleteKey` before releasing the object, so manual `kubectl delete` clears history just like the orphan-TTL sweep. Orphan-TTL expiry issues the `Delete`; the finalizer does the purge.
 
 Exported helpers used by the webhook: `ExtractTupleLabels(podLabels, identityLabels)` and `ProfileName(tupleLabels, identityLabels)`. `ProfileName` joins label values in `identityLabels` order (not alphabetically) so the name reads naturally, e.g., `nginx--nocomponent` when `identityLabels = ["name", "component"]`.
@@ -153,7 +153,7 @@ Dry-run (`--dry-run-measure`) skips steps 5 and 10. Kill switch skips both.
 
 ### ResourceAdjuster (`internal/controller/resourceadjuster/`)
 
-Triggered by `WorkloadProfile` status changes and a periodic requeue timer (`behaviors.resize.interval`, default 15 minutes). For each pod with `resize` (or `autoresize`) annotation and a ready profile:
+Triggered by `WorkloadProfile` status changes and a periodic requeue timer (`behaviors.resize.interval`, default 15 minutes). For each pod at `mode: resize` and a ready profile:
 1. Calls `ExceedsDrift(current, recommended, thresholdPct)` per container/resource/field
 2. If drift exceeded, calls `CapChange(current, recommended, maxChangePct, thresholdPct)` to bound the adjustment to `maxChangePct`% of the current→recommended gap; a capped step landing within the drift threshold applies the recommendation exactly (no Zeno tail)
 3. Issues the resize patch via the pod resize subresource
@@ -167,9 +167,9 @@ Threshold lookup follows a coalesce chain: per-resource field override → resiz
 
 Flow:
 1. Kill switch active → allow without mutation; log `warn`
-2. `ValidateAnnotations` fails → deny with descriptive message
+2. `ValidateMode` fails (mode label present with an unrecognized value) → deny with descriptive message
 3. Profile not ready (`meetsThreshold` false) → allow without mutation
-4. `apply` or `autoresize` annotation present + profile ready → patch container `resources.requests` and `resources.limits` per profile recommendations; stamp `policy-ref` annotation
+4. `mode: apply` or `mode: resize` + profile ready → patch container `resources.requests` and `resources.limits` per profile recommendations; stamp `policy-ref` annotation
 5. Dry-run (`--dry-run-apply`) → log the patch, admit without mutation
 
 TLS: the Helm chart creates a cert-manager `Issuer` + `Certificate` (self-signed). cert-manager injects the `caBundle` into `MutatingWebhookConfiguration` automatically.
@@ -299,7 +299,7 @@ image:
 - **Coverage first.** Write a test before reaching for `// coverage:ignore - <reason>`. Use the ignore comment only when testing is genuinely impossible (live Redis, transient API errors, `json.Marshal` on a struct that cannot fail).
 - **Logging.** Use `ctrl.LoggerFrom(ctx)` inside reconcile loops. Use `logger.New(component, level, format)` at startup. Suppressed-by-kill-switch actions log at `warn` with `kill_switch: true`. Dry-run actions log at `info` with `dry_run: true`.
 - **No direct API calls from controllers.** Read from the controller-runtime cache. Only the `store` and `plugin` packages call external services directly.
-- **Annotation validation.** Call `validation.ValidateAnnotations` before acting on any annotation combination.
+- **Mode validation.** Call `validation.ValidateMode` before acting on the enrollment label, and read enrollment via `validation.Mode`/`WantsApply`/`WantsResize` rather than reading the label key directly.
 - **Imports.** `goimports` with local prefix `github.com/tight-line/ballast` (see `.golangci.yml`). Run `make fmt` before committing.
 
 ## Important: Never Edit These (Auto-Generated)

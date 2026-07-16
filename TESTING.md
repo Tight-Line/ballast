@@ -32,10 +32,10 @@ polls every 15s and lets the default policy act after 5 samples over 1 minute wi
 ```sh
 helm install nginx bitnami/nginx \
   --namespace nginx --create-namespace \
-  --set commonAnnotations."ballast\.tightlinesoftware\.com/autoresize"=true
+  --set commonLabels."ballast\.tightlinesoftware\.com/mode"=resize
 ```
 
-The `autoresize` annotation opts the workload into measure + apply + resize. The
+The `mode: resize` label opts the workload into measure + apply + resize. The
 rest of this guide assumes the `nginx` namespace from `--namespace nginx` above.
 
 ## 3. Watch the profile become eligible

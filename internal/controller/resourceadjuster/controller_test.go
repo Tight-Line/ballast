@@ -26,6 +26,7 @@ import (
 	"github.com/tight-line/ballast/internal/controller/resourceadjuster"
 	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
 	"github.com/tight-line/ballast/internal/killswitch"
+	"github.com/tight-line/ballast/internal/validation"
 )
 
 // -- helpers --
@@ -154,14 +155,15 @@ func readyProfile(cpuRequest, cpuLimit string) *ballastv1.WorkloadProfile {
 	}
 }
 
-// resizePod returns a pod with the resize annotation, profile-ref, and given CPU resources.
+// resizePod returns a pod enrolled at resize mode, carrying a profile-ref, with
+// the given CPU resources.
 func resizePod(cpuRequest, cpuLimit string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "web-abc",
 			Namespace: "default",
+			Labels:    map[string]string{validation.LabelMode: validation.ModeResize},
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationResize:     "true",
 				workloadwatcher.AnnotationProfileRef: "prod",
 			},
 		},
@@ -339,33 +341,11 @@ func TestReconcile_RestartableInitSidecar_Resized(t *testing.T) {
 	}
 }
 
-func TestReconcile_AutoresizeAnnotation_ResizeCalled(t *testing.T) {
-	// autoresize annotation should behave the same as resize once MeetsThreshold is true.
+func TestReconcile_MeasureMode_NoResize(t *testing.T) {
+	// A pod enrolled at measure mode must never be resized.
 	profile := readyProfile("200m", "400m")
 	pod := resizePod("100m", "200m")
-	pod.Annotations[workloadwatcher.AnnotationResize] = ""
-	pod.Annotations[workloadwatcher.AnnotationAutoresize] = "true"
-	fc := newFakeClient(profile, noResizePolicy(), pod)
-	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
-	resizeCalled := false
-	r.ResizePod = func(_ context.Context, _ *corev1.Pod, _ []resourceadjuster.ContainerAdjustment) error {
-		resizeCalled = true
-		return nil
-	}
-	if _, err := doReconcile(t, r, profile.Name); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resizeCalled {
-		t.Error("resize should have been called for autoresize pod with sufficient drift")
-	}
-}
-
-func TestReconcile_NoResizeAnnotation_NoResize(t *testing.T) {
-	// Pod only has measure annotation — no resize should be issued.
-	profile := readyProfile("200m", "400m")
-	pod := resizePod("100m", "200m")
-	delete(pod.Annotations, workloadwatcher.AnnotationResize)
-	pod.Annotations[workloadwatcher.AnnotationMeasure] = "true"
+	pod.Labels[validation.LabelMode] = validation.ModeMeasure
 	fc := newFakeClient(profile, noResizePolicy(), pod)
 	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
 	resizeCalled := false
@@ -920,8 +900,8 @@ func TestReconcile_BestEffortPod_QOSPinned_NoResizeNoBlock(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "web-nil",
 			Namespace: "default",
+			Labels:    map[string]string{validation.LabelMode: validation.ModeResize},
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationResize:     "true",
 				workloadwatcher.AnnotationProfileRef: "prod",
 			},
 		},
@@ -1018,8 +998,8 @@ func TestReconcile_NilContainerLimits_HandledGracefully(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "web-nil",
 			Namespace: "default",
+			Labels:    map[string]string{validation.LabelMode: validation.ModeResize},
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationResize:     "true",
 				workloadwatcher.AnnotationProfileRef: "prod",
 			},
 		},
@@ -1084,8 +1064,8 @@ func TestReconcile_PodNilAnnotations_BlockedAnnotationStamped(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "web-noanns",
 			Namespace: "default",
+			Labels:    map[string]string{validation.LabelMode: validation.ModeResize},
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationResize:     "true",
 				workloadwatcher.AnnotationProfileRef: "prod",
 			},
 		},
@@ -1194,8 +1174,8 @@ func TestReconcile_ApplyResize_NilLimits_InitializedCorrectly(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "web-nil-res",
 			Namespace: "default",
+			Labels:    map[string]string{validation.LabelMode: validation.ModeResize},
 			Annotations: map[string]string{
-				workloadwatcher.AnnotationResize:     "true",
 				workloadwatcher.AnnotationProfileRef: "prod",
 			},
 		},
