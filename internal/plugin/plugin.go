@@ -26,19 +26,33 @@ type MetricsPlugin interface {
 // incorrectly matching a profile whose pod had no component label.
 const LabelAbsent = "--missing--"
 
+// LabelPresent is a sentinel value stored in a selector for keys that must exist
+// on the pod with any value. The metricscollector uses it to require the Ballast
+// enrollment (mode) label, so only opted-in pods are measured even when unenrolled
+// pods share the identity-tuple labels (common with the default tuple).
+const LabelPresent = "--present--"
+
 // MatchesSelector reports whether podLabels satisfies every requirement in
-// selectorLabels. A value equal to LabelAbsent requires the key to be absent
-// from podLabels; any other value requires an exact match. An empty selector
-// matches every pod. This client-side filter is used because the metrics.k8s.io
-// API ignores label selectors server-side.
+// selectorLabels. A value equal to LabelAbsent requires the key to be absent from
+// podLabels; a value equal to LabelPresent requires the key to be present with any
+// value; any other value requires an exact match. An empty selector matches every
+// pod. This client-side filter is used because the metrics.k8s.io API ignores label
+// selectors server-side.
 func MatchesSelector(podLabels, selectorLabels map[string]string) bool {
 	for k, v := range selectorLabels {
-		if v == LabelAbsent {
+		switch v {
+		case LabelAbsent:
 			if _, present := podLabels[k]; present {
 				return false
 			}
-		} else if podLabels[k] != v {
-			return false
+		case LabelPresent:
+			if _, present := podLabels[k]; !present {
+				return false
+			}
+		default:
+			if podLabels[k] != v {
+				return false
+			}
 		}
 	}
 	return true

@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   **Migration (breaking, no automatic fallback):** update every enrolled pod template to drop the old annotations and add the `mode` label. `measure` → `mode: measure`; `apply` (with `measure`) → `mode: apply`; `resize`/`autoresize` → `mode: resize`. Because enrollment is now a pod *label*, changing it re-rolls the workload as any other pod-template change does. This is a pre-v1 breaking change shipped in a minor bump; there is no dual-read window, so workloads still carrying only the old annotations are treated as unenrolled after upgrade.
 
+### Fixed
+
+- **Only opted-in pods are measured into a `WorkloadProfile`.** Measurement matched pods by the identity-tuple labels alone, so an unenrolled pod that happened to share those labels was folded into the profile. This was easy to hit with the default identity tuple (`app.kubernetes.io/name` + `app.kubernetes.io/component`), whose keys many pods carry. Collection now also requires the enrollment (`mode`) label, so a pod must both match the identity tuple and be opted in (to at least `measure`) to contribute samples.
+
 ## [0.3.18] - 2026-07-14
 
 ### Added
