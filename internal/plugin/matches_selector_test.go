@@ -49,6 +49,18 @@ func TestMatchesSelector(t *testing.T) {
 			selector:  map[string]string{"app": "web", "component": plugin.LabelAbsent},
 			want:      false,
 		},
+		{
+			name:      "LabelPresent matches when key is present with any value",
+			podLabels: map[string]string{"app": "web", "mode": "resize"},
+			selector:  map[string]string{"app": "web", "mode": plugin.LabelPresent},
+			want:      true,
+		},
+		{
+			name:      "LabelPresent fails when key is absent",
+			podLabels: map[string]string{"app": "web"},
+			selector:  map[string]string{"app": "web", "mode": plugin.LabelPresent},
+			want:      false,
+		},
 	}
 
 	for _, tc := range tests {

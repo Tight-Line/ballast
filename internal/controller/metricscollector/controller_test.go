@@ -30,6 +30,7 @@ import (
 	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/plugin"
 	"github.com/tight-line/ballast/internal/store"
+	"github.com/tight-line/ballast/internal/validation"
 )
 
 // -- scheme & client helpers --
@@ -81,15 +82,18 @@ func newMiniredisClient(t *testing.T) (*miniredis.Miniredis, store.Client) {
 	return mr, rc
 }
 
-// mockPlugin is a test-only MetricsPlugin that returns pre-configured samples.
+// mockPlugin is a test-only MetricsPlugin that returns pre-configured samples and
+// records the identity of the most recent FetchStats call.
 type mockPlugin struct {
 	typeName string
 	samples  []plugin.ContainerStats
 	err      error
+	lastID   plugin.WorkloadIdentity
 }
 
 func (m *mockPlugin) Type() string { return m.typeName }
-func (m *mockPlugin) FetchStats(_ context.Context, _ plugin.WorkloadIdentity, _ plugin.TimeWindow) ([]plugin.ContainerStats, error) {
+func (m *mockPlugin) FetchStats(_ context.Context, id plugin.WorkloadIdentity, _ plugin.TimeWindow) ([]plugin.ContainerStats, error) {
+	m.lastID = id
 	return m.samples, m.err
 }
 
@@ -372,6 +376,34 @@ func TestReconcile_CollectAndUpdate(t *testing.T) {
 	}
 	if appContainer.UsageStats[0].Samples != 3 {
 		t.Errorf("samples: got %d, want 3", appContainer.UsageStats[0].Samples)
+	}
+}
+
+func TestReconcile_MeasuresOnlyEnrolledPods(t *testing.T) {
+	// Collection must require the enrollment (mode) label in addition to the
+	// identity tuple, so unenrolled pods that share the tuple are not measured.
+	ctx := context.Background()
+	tupleLabels := map[string]string{"app": "web"}
+	profile := defaultProfile(tupleLabels)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile)
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	_, sc := newMiniredisClient(t)
+	p := &mockPlugin{typeName: "kubernetesMetrics"}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+
+	if _, err := reconcileProfile(t, r, "web"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if got := p.lastID.Labels["app"]; got != "web" {
+		t.Errorf("FetchStats identity label app = %q, want web", got)
+	}
+	if got := p.lastID.Labels[validation.LabelMode]; got != plugin.LabelPresent {
+		t.Errorf("FetchStats identity must require the mode label: %s = %q, want %q",
+			validation.LabelMode, got, plugin.LabelPresent)
 	}
 }
 

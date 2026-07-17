@@ -36,6 +36,7 @@ import (
 	"github.com/tight-line/ballast/internal/policy"
 	"github.com/tight-line/ballast/internal/stats"
 	"github.com/tight-line/ballast/internal/store"
+	"github.com/tight-line/ballast/internal/validation"
 )
 
 const (
@@ -151,7 +152,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	excluded := r.excludedContainerNames(ctx, profile.Status.SelectorLabels)
 
-	observed, err := r.collectAllSamples(ctx, tupleHash, pid, profile.Status.SelectorLabels, now, sources, excluded)
+	// Measure only opted-in pods: require the enrollment label in addition to the
+	// identity tuple. Without it, unenrolled pods that share the identity labels
+	// (common with the default tuple, whose keys many pods carry) would be folded
+	// into the profile. excludedContainerNames needs no such requirement; it reads
+	// the manager's pod cache, which is already scoped to enrolled pods.
+	measureSelector := enrolledSelector(profile.Status.SelectorLabels)
+
+	observed, err := r.collectAllSamples(ctx, tupleHash, pid, measureSelector, now, sources, excluded)
 	if err != nil { // coverage:ignore - Redis error
 		return ctrl.Result{}, err
 	}
@@ -322,6 +330,16 @@ func (r *Reconciler) writeSample(
 // right-sizing targets, measured here and patched by the webhook and
 // resourceadjuster on spec.initContainers (#30).
 //
+// enrolledSelector returns the identity-tuple selector plus a requirement that the
+// enrollment (mode) label be present, so a measurement query matches only opted-in
+// pods. It copies the input rather than mutating the profile's stored SelectorLabels.
+func enrolledSelector(selectorLabels map[string]string) map[string]string {
+	out := make(map[string]string, len(selectorLabels)+1)
+	maps.Copy(out, selectorLabels)
+	out[validation.LabelMode] = plugin.LabelPresent
+	return out
+}
+
 // Pods are matched with the profile's selector labels. A List failure is
 // non-fatal: it returns an empty set and logs, leaving measurement unchanged for
 // this cycle rather than failing the reconcile.
