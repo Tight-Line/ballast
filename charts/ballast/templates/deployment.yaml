@@ -19,6 +19,10 @@ spec:
         {{- include "ballast.labels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "ballast.serviceAccountName" . }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         seccompProfile:

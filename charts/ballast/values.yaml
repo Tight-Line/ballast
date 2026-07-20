@@ -38,6 +38,18 @@ resources:
     memory: 64Mi
     ephemeral-storage: 64Mi
 
+# tolerations for the operator pods. Applied to both the operator Deployment and
+# the pre-install/pre-upgrade crd-upgrade-hook Job — a taint that keeps Ballast
+# off a node should keep its bootstrap Job off it too, otherwise the hook fails
+# to schedule and blocks the whole install/upgrade before the operator starts.
+# Empty by default. To schedule Ballast onto tainted nodes, e.g.:
+#   tolerations:
+#     - key: dedicated
+#       operator: Equal
+#       value: platform
+#       effect: NoSchedule
+tolerations: []
+
 logging:
   level: info
   # Per-component overrides. Leave empty to inherit the global level.
@@ -137,6 +149,13 @@ valkey:
   # pod still holds it, so a RollingUpdate deadlocks. Recreate terminates the
   # old pod first. Single replica, so there is no availability cost.
   deploymentStrategy: Recreate
+
+  # tolerations for the Valkey pod. Passed straight through to the upstream
+  # valkey subchart's top-level `tolerations`. Empty by default; set it (same
+  # shape as the operator `tolerations` above) to schedule the store onto
+  # tainted nodes. Note the store holds a ReadWriteOnce PVC, so keep it able to
+  # schedule wherever that volume can attach.
+  tolerations: []
 
   # request == limit lifts the pod out of BestEffort (see banner). No CPU limit:
   # a cache should not be CPU-throttled.
