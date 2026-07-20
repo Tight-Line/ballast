@@ -161,6 +161,49 @@ Ballast right-sizes **long-running** workloads by learning their steady-state us
 
 **Regular containers and restartable-init sidecars are right-sized.** On an enrolled pod, Ballast measures and resizes the pod's regular `spec.containers` **and** its restartable-init "native sidecar" containers (`restartPolicy: Always`, KEP-753) — these run for the pod's whole lifetime and are patched on `spec.initContainers` just like regular containers. It excludes **run-to-completion init containers and ephemeral debug containers** from measurement — there is no per-container knob to configure; the exclusion is automatic. The distinction is run-to-completion vs long-running, not init vs regular. In-place resize of restartable-init containers rides the same `pods/resize` subresource as regular containers (supported on Kubernetes 1.33+, GA in 1.35).
 
+### Bulk enrollment with `scripts/enroll.sh`
+
+Setting the `mode` label by hand across an existing cluster is tedious. `scripts/enroll.sh` does it in bulk: it labels every Deployment, StatefulSet, and DaemonSet whose pod template already carries the full identity tuple and is not yet enrolled. The tuple is read from the `BallastConfig` named `ballast` in the target context (falling back to `--identity-labels`, then the chart default), so the script enrolls exactly the workloads the operator will key on.
+
+It is dry-run by default; pass `--apply` to make changes. `--mode` (one of `measure`, `apply`, `resize`) is required.
+
+```bash
+# See what would be enrolled at measure, cluster-wide (no changes)
+scripts/enroll.sh --mode measure
+
+# Enroll the 'web' namespace at measure
+scripts/enroll.sh --mode measure -n web --apply
+```
+
+How each workload is handled depends on whether a restart is safe:
+
+- **More than one replica:** the label is added to the template and the workload is rolling-restarted (`kubectl rollout restart` semantics), so its pods pick the label up while staying available. The script waits on `kubectl rollout status` (see `--timeout`).
+- **A single replica, or an `OnDelete` update strategy:** restarting would mean downtime, so the label is added to the template durably *without* a restart, and the live pods are labeled in place. The `mode` label is not part of any selector, so this is a pure metadata edit; the operator picks the pods up and enrolls them the same as if they had been recreated.
+
+No workloads are skipped by default; the no-restart route makes it safe to sweep everything. Pass `--ignore` a workload-name regex to carve some out (e.g. `--ignore 'consul|vault'`). Run with `--help` for the full option list.
+
+Enrollment is idempotent, so it is safe to re-run: a workload that already carries the `mode` label is never re-patched or restarted. Those already at the requested mode are reported as a no-op count; one already at a *different* mode is flagged with a warning and left unchanged (unless `--remode` is set; see below).
+
+> On the no-restart path a pod is enrolled and counted immediately; *when* it gets sized then depends on the mode. `apply` patches resources only at admission, so a pod labeled in place keeps its current resources until it is next recreated. `resize` also adjusts running pods in place, so a pod labeled in place is resized at runtime once its profile is ready — no restart needed. (`measure` never sizes.)
+
+#### Fast first-enroll, fast mode-upgrade
+
+Two flags make rolling out enrollment across a large cluster quick, in two stages:
+
+- **`--no-restart` (hotfix in place):** enroll *without* recreating any pods, even multi-replica ones. The label is added to each workload's template durably (via the same pause/adopt, partition, and OnDelete techniques used for single-replica workloads) and the live pods are labeled in place. This is much faster than rolling every workload, at the cost of one caveat: at `--mode apply`, in-place pods keep their current resources until they next restart (`measure` collects either way, and `resize` adjusts running pods in place regardless). A great first pass:
+
+  ```bash
+  scripts/enroll.sh --mode measure --no-restart --apply    # enroll the whole cluster at measure, no restarts
+  ```
+
+- **`--remode`:** by default a workload already enrolled at a *different* mode is left alone (warned). `--remode` changes it to `--mode` instead, so you can promote the fleet up the ladder once profiles are ready. Combine with `--no-restart` to do it in place:
+
+  ```bash
+  scripts/enroll.sh --mode resize --remode --no-restart --apply   # upgrade measure/apply workloads to resize, in place
+  ```
+
+  A workload already at the requested mode stays a no-op. Because `resize` adjusts running pods in place, upgrading to `resize` with `--no-restart` starts right-sizing the live pods without a single restart.
+
 ## Verifying a WorkloadProfile
 
 Once a pod carrying the `ballast.tightlinesoftware.com/mode` label is running, Ballast creates a `WorkloadProfile` for its identity tuple. Check it with:
