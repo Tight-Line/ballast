@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Helm: `tolerations` support for the operator and Valkey pods.** A new top-level `tolerations` value is applied to both the operator Deployment and the pre-install/pre-upgrade `crd-upgrade-hook` Job (a taint that keeps Ballast off a node should keep its bootstrap Job off it too, otherwise the hook fails to schedule and blocks the install/upgrade before the operator starts). The Valkey store's tolerations are set via `valkey.tolerations`, which passes straight through to the upstream subchart. All default to empty, so this is additive. ([#62](https://github.com/Tight-Line/ballast/issues/62))
+
 ## [0.4.0] - 2026-07-20
 
 > ⚠️ **BREAKING RELEASE.** This release changes the enrollment API. **Every enrolled
