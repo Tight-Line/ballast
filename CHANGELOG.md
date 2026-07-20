@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-20
+
 ### Added
 
 - **`scripts/enroll.sh`: bulk opt-in helper.** Adds the `ballast.tightlinesoftware.com/mode` label (`measure`, `apply`, or `resize`, chosen with the required `--mode`) to every Deployment/StatefulSet/DaemonSet whose pod template already carries the full identity tuple and is not yet enrolled. The tuple is resolved from the live `BallastConfig` named `ballast` in the target context (`.spec.identityLabels`, the same tuple the operator keys on), overridable with `--identity-labels`, and falls back to the chart default (`app.kubernetes.io/name` + `app.kubernetes.io/component`). Multi-replica workloads are rolling-restarted so their pods pick the label up; single-replica and `OnDelete` workloads are enrolled without any restart by patching the template durably and labeling the live pods in place (the `mode` label is not in any selector, so this never triggers a restart). `--no-restart` forces the no-restart route for every workload (a fast in-place first enrollment; at `--mode apply` in-place pods keep their resources until they next restart, while `measure`/`resize` are unaffected), and `--remode` changes workloads already enrolled at a different mode to `--mode` instead of leaving them alone (a fast mode-upgrade, in place when combined with `--no-restart`). Dry-run by default (`--apply` to execute), with `-n/--namespace`, `--context`, `--ignore` (workload-name regex, default none — enrolls everything; the no-restart route makes a full sweep safe), `--timeout`, and `--settle`. Documented under "Bulk enrollment" in the README.
