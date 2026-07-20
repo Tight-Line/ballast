@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-20
+
 > ⚠️ **BREAKING RELEASE.** This release changes the enrollment API. **Every enrolled
 > workload must be re-labeled or Ballast silently stops managing it.** Read the
 > Changed entry below and migrate before (or at) upgrade. Per the pre-v1 rule this
