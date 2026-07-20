@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> ⚠️ **BREAKING RELEASE.** This release changes the enrollment API. **Every enrolled
+> workload must be re-labeled or Ballast silently stops managing it.** Read the
+> Changed entry below and migrate before (or at) upgrade. Per the pre-v1 rule this
+> is a **minor** version bump (`0.3.x` → `0.4.0`).
+
 ### Changed
 
 - **BREAKING: enrollment moved from four annotations to a single `ballast.tightlinesoftware.com/mode` label.** Workloads used to opt in with `ballast.tightlinesoftware.com/measure`, `/apply`, `/resize`, and `/autoresize` annotations. They now set one label, `ballast.tightlinesoftware.com/mode`, whose value names a rung on an escalating ladder: `measure` (collect only), `apply` (measure + admission-time patching), or `resize` (apply + in-place resize). Each rung implies the ones below it, so `resize` is exactly what `autoresize` used to mean; the `autoresize` name is gone, and there is no longer a resize-without-apply combination (there was never a use for one). A pod carrying the label with any other value is rejected by the webhook.
@@ -15,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Ballast's own outputs are unchanged and remain annotations, because they carry values a label cannot hold: `profile-ref`, `policy-ref`, `resize-blocked`, and `resize-blocked-at`.
 
-  **Migration (breaking, no automatic fallback):** update every enrolled pod template to drop the old annotations and add the `mode` label. `measure` → `mode: measure`; `apply` (with `measure`) → `mode: apply`; `resize`/`autoresize` → `mode: resize`. Because enrollment is now a pod *label*, changing it re-rolls the workload as any other pod-template change does. This is a pre-v1 breaking change shipped in a minor bump; there is no dual-read window, so workloads still carrying only the old annotations are treated as unenrolled after upgrade.
+  **Action required (the operator does not read the old annotations at all).** A workload still carrying only the old annotations after upgrade reads as unenrolled: it is dropped from measurement, its admission patches stop, and its `WorkloadProfile` eventually orphans. There is no dual-read window in the operator. Re-label every enrolled pod template: `measure` → `mode: measure`; `apply` (with `measure`) → `mode: apply`; `resize`/`autoresize` → `mode: resize`. Because enrollment is now a pod *label*, changing it re-rolls the workload like any other pod-template change. A soft rollover is possible at the workload level: set the `mode` label while leaving the old annotations in place, so a workload reads as enrolled to both the old and new operator version across the upgrade, then remove the annotations once the new version is confirmed.
 
 ### Fixed
 
