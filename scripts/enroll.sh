@@ -216,6 +216,10 @@ resolve_identity_labels
 TMP_DIR=$(mktemp -d)
 RESULTS_FILE="$TMP_DIR/results"
 : >"$RESULTS_FILE"
+# Tally of deployments found already fully enrolled (template, ReplicaSet, and all
+# pods at $MODE); reported as a single summary line rather than one row each.
+CONVERGED_FILE="$TMP_DIR/converged"
+: >"$CONVERGED_FILE"
 
 # INFLIGHT holds a recovery breadcrumb while an owner is mid no-restart edit, so
 # an interrupt (Ctrl-C, network drop) tells the user exactly how to recover.
@@ -316,8 +320,9 @@ get_obj() {
   fi
 }
 
-# rs_list_for <ns>: the namespace's ReplicaSets, live in apply mode, from cache in
-# dry-run.
+# rs_list_for <ns>: the namespace's ReplicaSets, live in apply mode so a deploy that
+# lands mid-run is seen (the current ReplicaSet is matched against the live
+# Deployment's revision), from the scan cache in dry-run.
 rs_list_for() {
   if $DO_APPLY; then
     k get replicasets -n "$1" -o json
@@ -334,26 +339,27 @@ snapshot_uids() {
 }
 
 # verify_owner <id> <ns> <selector> <before-uids> <success-detail>: confirms the
-# no-restart route did not disturb the pod set. Caller sleeps $SETTLE first.
+# in-place route did not restart anything, by diffing the set of RUNNING (non-
+# terminating) pod UIDs against the snapshot taken before the edit. Caller sleeps
+# $SETTLE first. This diff is the reliable signal: a real rollout removes a running
+# pod from the set (and adds a new one), whereas a pod that was ALREADY terminating
+# before the edit — e.g. a finalizer-wedged ghost — was never in `before` and so
+# cannot trip a false alarm. (The old check counted any terminating pod as a
+# failure, which misfired precisely on the ghosts this tool exists to clean up.)
 verify_owner() {
   local id=$1 ns=$2 sel=$3 before=$4 okmsg=$5
   if [[ -z "$sel" ]]; then
     record OK "$id" "$okmsg (pod verification skipped: selector uses matchExpressions)"
     return 0
   fi
-  local pj term after
-  pj=$(k get pods -n "$ns" -l "$sel" -o json)
-  term=$(jq -r '[.items[] | select(.metadata.deletionTimestamp != null)] | length' <<<"$pj")
-  after=$(jq -r '[.items[] | select(.metadata.deletionTimestamp == null) | .metadata.uid] | sort | join(",")' <<<"$pj")
-  if [[ "$term" != "0" ]]; then
-    record FAIL "$id" "$term pod(s) terminating right after enrollment; a restart may have been triggered, investigate"
-    return 0
+  local after
+  after=$(k get pods -n "$ns" -l "$sel" -o json \
+    | jq -r '[.items[] | select(.metadata.deletionTimestamp == null) | .metadata.uid] | sort | join(",")')
+  if [[ "$after" == "$before" ]]; then
+    record OK "$id" "$okmsg (running-pod set unchanged)"
+  else
+    record WARN "$id" "$okmsg, but the running-pod set changed during the window (a rollout may have started, or unrelated churn/HPA); verify manually"
   fi
-  if [[ "$after" != "$before" ]]; then
-    record WARN "$id" "$okmsg, but the pod UID set changed during the window (could be unrelated churn/HPA); verify manually"
-    return 0
-  fi
-  record OK "$id" "$okmsg (pod set unchanged)"
 }
 
 wait_until() { # <timeout-secs> <fn> [args...]
@@ -367,28 +373,46 @@ wait_until() { # <timeout-secs> <fn> [args...]
   done
 }
 
-# patch_pods_mode <ns> <selector> <mode> <id>: add the mode label to the live,
-# non-terminating pods of a workload, in place. Pure metadata (the label is not in
-# any selector), so no pod restarts. This is the actual enrollment on the
-# no-restart route; the template patch only makes it durable for future pods.
+# patch_pods_mode <ns> <selector> <mode> <id>: add the mode label to EVERY pod the
+# selector matches, in any phase — running, pending, succeeded (Completed), failed
+# (Error), and even while terminating. Pure metadata (the label is in no selector),
+# so no pod restarts. Two reasons to cover every state: (1) it is the actual
+# enrollment on the no-restart route, the template patch only makes it durable for
+# future pods; (2) a pod that lacks the mode label is invisible to the operator's
+# label-scoped informer cache, so a terminating one stays wedged on its finalizer
+# forever — labeling it is what lets the operator run the finalizer and release it.
+# Pods already at the mode are skipped, so re-runs stay idempotent and cheap.
 patch_pods_mode() {
   local ns=$1 sel=$2 mode=$3 id=$4
   if [[ -z "$sel" ]]; then
-    record WARN "$id" "selector uses matchExpressions; label live pods manually with ${MODE_LABEL}=${mode}"
+    record WARN "$id" "selector uses matchExpressions; label pods manually with ${MODE_LABEL}=${mode}"
     return 0
   fi
   local names pod failed=0 patch
   patch=$(jq -cn --arg l "$MODE_LABEL" --arg v "$mode" '{metadata:{labels:{($l):$v}}}')
   names=$(k get pods -n "$ns" -l "$sel" -o json \
-    | jq -r '.items[] | select(.metadata.deletionTimestamp == null) | .metadata.name')
+    | jq -r --arg l "$MODE_LABEL" --arg v "$mode" \
+        '.items[] | select((.metadata.labels[$l] // "") != $v) | .metadata.name')
   [[ -z "$names" ]] && return 0
   while IFS= read -r pod; do
     [[ -z "$pod" ]] && continue
-    k patch pod -n "$ns" "$pod" --type merge -p "$patch" >/dev/null || failed=$((failed + 1))
+    k patch pod -n "$ns" "$pod" --type merge -p "$patch" >/dev/null 2>&1 || failed=$((failed + 1))
   done <<<"$names"
   if (( failed > 0 )); then
-    warn "$id: failed to label $failed live pod(s) with ${MODE_LABEL}; re-run to converge"
+    warn "$id: failed to label $failed pod(s) with ${MODE_LABEL}=${mode} (some may have already terminated); re-run to converge"
   fi
+}
+
+# pods_missing_mode <ns> <selector> <mode>: count of selector-matched pods (any
+# phase, including terminating) that do NOT yet carry ${MODE_LABEL}=<mode>. Read
+# live so a deploy that lands mid-run is reflected in the decision. Prints 0 for an
+# empty selector (matchExpressions), which is labeled/verified out of band.
+pods_missing_mode() {
+  local ns=$1 sel=$2 mode=$3
+  [[ -z "$sel" ]] && { echo 0; return 0; }
+  k get pods -n "$ns" -l "$sel" -o json 2>/dev/null \
+    | jq -r --arg l "$MODE_LABEL" --arg v "$mode" \
+        '[.items[] | select((.metadata.labels[$l] // "") != $v)] | length'
 }
 
 # enroll_with_restart <kind> <ns> <name> <id> <mode> <act>: the default >1-replica
@@ -425,9 +449,55 @@ current_rs_name() { # <rs-list-json> <deploy-uid> <revision>
     | if length == 1 then .[0].metadata.name else empty end' <<<"$1"
 }
 
-owned_rs_count() { # <rs-list-json> <deploy-uid>
-  jq -r --arg uid "$2" \
-    '[.items[] | select(any(.metadata.ownerReferences[]?; (.controller == true) and (.uid == $uid)))] | length' <<<"$1"
+# sync_deployment_templates_in_place <ns> <name> <id> <rs> <rs-all-json>: add the
+# mode label to BOTH the current ReplicaSet template and the Deployment template
+# while the Deployment is paused, so that on resume the controller re-adopts the
+# existing ReplicaSet (its template now equals the Deployment's, ignoring the
+# pod-template-hash) instead of starting a rollout. Records FAIL and returns 1 on
+# any error; the caller returns on a non-zero.
+#
+# Note: there is deliberately no "did the controller create a different ReplicaSet"
+# check here. That guard keyed on ReplicaSet identity/count, which a benign
+# revision bump or history GC changes without restarting a single pod — so it fired
+# false positives AND, by returning early, skipped the pod labeling. The reliable
+# "did anything restart" signal is the running-pod UID diff in verify_owner, which
+# the caller runs afterward.
+sync_deployment_templates_in_place() {
+  local ns=$1 name=$2 id=$3 rs=$4 rs_all=$5
+  local rs_orig_mode patch
+  # Original RS mode value so a failed Deployment patch can revert the RS before
+  # resuming (a template mismatch on resume would trigger the very rollout we avoid).
+  rs_orig_mode=$(jq -r --arg n "$rs" --arg l "$MODE_LABEL" \
+    '[.items[] | select(.metadata.name == $n)][0].spec.template.metadata.labels[$l] // ""' <<<"$rs_all")
+  patch=$(build_template_patch "$MODE" false)
+
+  INFLIGHT="$id paused; recover with: kubectl -n $ns rollout resume deployment/$name"
+  if ! k rollout pause -n "$ns" "deployment/$name" >/dev/null; then
+    INFLIGHT=""; record FAIL "$id" "failed to pause"; return 1
+  fi
+  if ! k patch replicaset -n "$ns" "$rs" --type merge -p "$patch" >/dev/null; then
+    k rollout resume -n "$ns" "deployment/$name" >/dev/null || true
+    INFLIGHT=""; record FAIL "$id" "failed to patch ReplicaSet ${rs} (deployment resumed unchanged)"; return 1
+  fi
+  INFLIGHT="$id paused with ReplicaSet $rs patched; recover with: revert the ${MODE_LABEL} label on the RS template, then kubectl -n $ns rollout resume deployment/$name"
+  if ! k patch deployment -n "$ns" "$name" --type merge -p "$patch" >/dev/null; then
+    local revert
+    revert=$(jq -cn --arg l "$MODE_LABEL" --arg v "$rs_orig_mode" \
+      '{spec:{template:{metadata:{labels:{($l): (if $v == "" then null else $v end)}}}}}')
+    if ! k patch replicaset -n "$ns" "$rs" --type merge -p "$revert" >/dev/null; then
+      warn "$id: failed to revert ReplicaSet ${rs}; fix its template to match the Deployment before resuming"
+      record FAIL "$id" "Deployment patch failed AND ReplicaSet revert failed; deployment left paused, resolve manually"
+      return 1
+    fi
+    k rollout resume -n "$ns" "deployment/$name" >/dev/null || true
+    INFLIGHT=""; record FAIL "$id" "failed to patch Deployment (ReplicaSet reverted, deployment resumed unchanged)"; return 1
+  fi
+  INFLIGHT="$id fully patched but still paused; recover with: kubectl -n $ns rollout resume deployment/$name"
+  if ! k rollout resume -n "$ns" "deployment/$name" >/dev/null; then
+    INFLIGHT=""; record FAIL "$id" "templates patched but resume failed; run: kubectl -n $ns rollout resume deployment/$name"; return 1
+  fi
+  INFLIGHT=""
+  return 0
 }
 
 process_deployment() {
@@ -436,7 +506,21 @@ process_deployment() {
   local djson
   djson=$(get_obj deployment "$ns" "$name" "$TMP_DIR/deployments.json")
 
-  owner_qualifies "$id" "$djson" || return 0
+  # Candidates are pre-filtered on the identity tuple, but apply mode re-reads live,
+  # so re-check before doing anything.
+  if ! jq -e "${JQ_QUAL_ARGS[@]}" "$QUALIFY_DEFS"' hastuple(.spec.template.metadata.labels // {})' <<<"$djson" >/dev/null; then
+    record SKIP "$id" "no longer carries the full identity tuple"
+    return 0
+  fi
+
+  local dmode
+  dmode=$(jq -r --arg l "$MODE_LABEL" '.spec.template.metadata.labels[$l] // ""' <<<"$djson")
+
+  # Template already enrolled at a *different* mode: only --remode changes it.
+  if [[ -n "$dmode" && "$dmode" != "$MODE" ]] && ! $REMODE; then
+    record WARN "$id" "already enrolled at ${MODE_LABEL}=${dmode}, not ${MODE}; left unchanged (re-run with --remode to change it)"
+    return 0
+  fi
 
   if jq -e '.spec.paused == true' <<<"$djson" >/dev/null; then
     record SKIP "$id" "deployment is paused; resolve, then re-run"
@@ -451,18 +535,10 @@ process_deployment() {
     return 0
   fi
 
-  local replicas act
-  replicas=$(jq -r '.spec.replicas // 1' <<<"$djson")
-  act=$(mode_action "$djson")
-  if ! $FORCE_NO_RESTART && (( replicas > 1 )); then
-    enroll_with_restart deployment "$ns" "$name" "$id" "$MODE" "$act"
-    return 0
-  fi
-
-  # No-restart route (<= 1 replica, or --no-restart): pause -> patch current RS
-  # template -> patch Deployment template -> resume; the controller adopts the
-  # matching RS instead of rolling. Then label the live pod(s) in place.
-  local uid rev rs_all rs rs_count sel
+  # Examine the current ReplicaSet and the pods too, not just the Deployment, so a
+  # workload left half-enrolled by an earlier run (template labeled but its current
+  # ReplicaSet or its pods not) is detected as broken and repaired, not skipped.
+  local uid rev rs_all rs rsmode sel missing
   uid=$(jq -r '.metadata.uid' <<<"$djson")
   rev=$(jq -r '.metadata.annotations["deployment.kubernetes.io/revision"] // empty' <<<"$djson")
   rs_all=$(rs_list_for "$ns")
@@ -471,84 +547,65 @@ process_deployment() {
     record SKIP "$id" "could not identify a unique current ReplicaSet (revision ${rev:-<none>})"
     return 0
   fi
-  rs_count=$(owned_rs_count "$rs_all" "$uid")
+  rsmode=$(jq -r --arg n "$rs" --arg l "$MODE_LABEL" \
+    '[.items[] | select(.metadata.name == $n)][0].spec.template.metadata.labels[$l] // ""' <<<"$rs_all")
   sel=$(selector_of "$djson")
+  missing=$(pods_missing_mode "$ns" "$sel" "$MODE")
+
+  local need_deploy=false need_rs=false
+  [[ "$dmode"  != "$MODE" ]] && need_deploy=true
+  [[ "$rsmode" != "$MODE" ]] && need_rs=true
+
+  # Fully converged: template, current ReplicaSet, and every pod already at $MODE.
+  if ! $need_deploy && ! $need_rs && [[ "${missing:-0}" -eq 0 ]]; then
+    echo x >>"$CONVERGED_FILE"
+    return 0
+  fi
+
+  local replicas act
+  replicas=$(jq -r '.spec.replicas // 1' <<<"$djson")
+  act=$(mode_action "$djson")
 
   if ! $DO_APPLY; then
-    record PLAN "$id" "no restart: pause; ${act} on ReplicaSet ${rs} and Deployment templates; resume (adopt, no rollout); label live pod(s); verify"
+    local plan="label ${missing:-0} unlabeled pod(s)"
+    if $need_deploy || $need_rs; then
+      if ! $FORCE_NO_RESTART && (( replicas > 1 )); then
+        plan="${act} on template + rolling restart; then ${plan}"
+      else
+        plan="${act} on ReplicaSet ${rs} + Deployment templates in place (adopt, no rollout); then ${plan}"
+      fi
+    fi
+    record PLAN "$id" "${plan}; verify the running-pod set is unchanged"
     return 0
   fi
 
-  local before=""
-  if [[ -n "$sel" ]]; then
-    before=$(snapshot_uids "$ns" "$sel")
-  fi
+  # Label the current pods FIRST: it makes them visible to the operator's label-
+  # scoped cache, so if any are deleted next (by the rolling restart below, or later)
+  # the operator can run their finalizer instead of leaking it. No-op when already
+  # labeled.
+  patch_pods_mode "$ns" "$sel" "$MODE" "$id"
 
-  # Original RS mode-label value (empty here, since it qualified), so a failed
-  # Deployment patch can revert the RS before resuming (a template mismatch on
-  # resume would trigger the very rollout this route avoids).
-  local rs_orig_mode
-  rs_orig_mode=$(jq -r --arg n "$rs" --arg l "$MODE_LABEL" \
-    '[.items[] | select(.metadata.name == $n)][0].spec.template.metadata.labels[$l] // ""' <<<"$rs_all")
-
-  local patch
-  patch=$(build_template_patch "$MODE" false)
-
-  INFLIGHT="$id paused; recover with: kubectl -n $ns rollout resume deployment/$name"
-  if ! k rollout pause -n "$ns" "deployment/$name" >/dev/null; then
-    INFLIGHT=""
-    record FAIL "$id" "failed to pause"
-    return 0
-  fi
-
-  if ! k patch replicaset -n "$ns" "$rs" --type merge -p "$patch" >/dev/null; then
-    k rollout resume -n "$ns" "deployment/$name" >/dev/null || true
-    INFLIGHT=""
-    record FAIL "$id" "failed to patch ReplicaSet ${rs} (deployment resumed unchanged)"
-    return 0
-  fi
-
-  INFLIGHT="$id paused with ReplicaSet $rs patched; recover with: revert the ${MODE_LABEL} label on the RS template, then kubectl -n $ns rollout resume deployment/$name"
-  if ! k patch deployment -n "$ns" "$name" --type merge -p "$patch" >/dev/null; then
-    local revert
-    revert=$(jq -cn --arg l "$MODE_LABEL" --arg v "$rs_orig_mode" \
-      '{spec:{template:{metadata:{labels:{($l): (if $v == "" then null else $v end)}}}}}')
-    if ! k patch replicaset -n "$ns" "$rs" --type merge -p "$revert" >/dev/null; then
-      warn "$id: failed to revert ReplicaSet ${rs}; fix its template to match the Deployment before resuming"
-      record FAIL "$id" "Deployment patch failed AND ReplicaSet revert failed; deployment left paused, resolve manually"
+  # Templates need the label: multi-replica without --no-restart takes the clean
+  # rolling-restart route (its new pods are born labeled); everything else syncs the
+  # ReplicaSet + Deployment templates in place with no restart, then confirms no
+  # rollout started — the only case in which the running-pod set can change, so the
+  # only case that warrants the settle-and-verify wait.
+  if $need_deploy || $need_rs; then
+    if ! $FORCE_NO_RESTART && (( replicas > 1 )); then
+      enroll_with_restart deployment "$ns" "$name" "$id" "$MODE" "$act"
       return 0
     fi
-    k rollout resume -n "$ns" "deployment/$name" >/dev/null || true
-    INFLIGHT=""
-    record FAIL "$id" "failed to patch Deployment (ReplicaSet reverted, deployment resumed unchanged)"
+    local before=""
+    [[ -n "$sel" ]] && before=$(snapshot_uids "$ns" "$sel")
+    sync_deployment_templates_in_place "$ns" "$name" "$id" "$rs" "$rs_all" || return 0
+    sleep "$SETTLE"
+    verify_owner "$id" "$ns" "$sel" "$before" "enrolled in place (${act}); ReplicaSet ${rs} adopted, pods labeled"
     return 0
   fi
 
-  INFLIGHT="$id fully patched but still paused; recover with: kubectl -n $ns rollout resume deployment/$name"
-  if ! k rollout resume -n "$ns" "deployment/$name" >/dev/null; then
-    INFLIGHT=""
-    record FAIL "$id" "templates patched but resume failed; run: kubectl -n $ns rollout resume deployment/$name"
-    return 0
-  fi
-  INFLIGHT=""
-
-  sleep "$SETTLE"
-
-  # The controller must still consider $rs current and must not have created a new
-  # ReplicaSet (which would mean a rollout started).
-  local dnow revnow rs_all_now rs_now rs_count_now
-  dnow=$(k get deployment -n "$ns" "$name" -o json)
-  revnow=$(jq -r '.metadata.annotations["deployment.kubernetes.io/revision"] // empty' <<<"$dnow")
-  rs_all_now=$(k get replicasets -n "$ns" -o json)
-  rs_now=$(current_rs_name "$rs_all_now" "$uid" "$revnow")
-  rs_count_now=$(owned_rs_count "$rs_all_now" "$uid")
-  if [[ "$rs_now" != "$rs" || "$rs_count_now" != "$rs_count" ]]; then
-    record FAIL "$id" "controller promoted or created a different ReplicaSet after resume; a rollout may have started, investigate"
-    return 0
-  fi
-
-  patch_pods_mode "$ns" "$sel" "$MODE" "$id"
-  verify_owner "$id" "$ns" "$sel" "$before" "enrolled in place (${act}); ReplicaSet ${rs} adopted, live pod(s) labeled, no restart"
+  # Pods-only repair (templates already at $MODE): labeling is pure metadata — no
+  # restart, nothing to settle or verify.
+  record OK "$id" "repaired in place (${act}); ${missing} pod(s) labeled, template already at ${MODE}, no restart"
 }
 
 # ---------------------------------------------------------------------------
@@ -840,8 +897,13 @@ main() {
   k get replicasets "${NS_ARGS[@]}" -o json >"$TMP_DIR/replicasets.json"
 
   local owner_filter='.items[] | select('"$QUAL_FN"'(.spec.template.metadata.labels // {})) | [.metadata.namespace, .metadata.name] | @tsv'
+  # Deployments are selected on the identity tuple ALONE, not on QUAL_FN, so that a
+  # deployment already carrying the mode label is still handed to process_deployment.
+  # It examines the current ReplicaSet and the pods and repairs a half-enrolled state
+  # (template labeled but pods not); a genuinely fully-enrolled one is a quiet no-op.
+  local deploy_filter='.items[] | select(hastuple(.spec.template.metadata.labels // {})) | [.metadata.namespace, .metadata.name] | @tsv'
   local deploys sts ds
-  deploys=$(jq -r "${JQ_QUAL_ARGS[@]}" "$QUALIFY_DEFS$owner_filter" "$TMP_DIR/deployments.json")
+  deploys=$(jq -r "${JQ_QUAL_ARGS[@]}" "$QUALIFY_DEFS$deploy_filter" "$TMP_DIR/deployments.json")
   sts=$(jq -r "${JQ_QUAL_ARGS[@]}" "$QUALIFY_DEFS$owner_filter" "$TMP_DIR/statefulsets.json")
   ds=$(jq -r "${JQ_QUAL_ARGS[@]}" "$QUALIFY_DEFS$owner_filter" "$TMP_DIR/daemonsets.json")
 
@@ -859,9 +921,11 @@ main() {
     | (.spec.template.metadata.labels // {}) as $l
     | select(hastuple($l) and ne($l; $mlbl))
     | [$kind, .metadata.namespace, .metadata.name, modeval($l)] | @tsv'
+  # Deployments are intentionally omitted here: they are all handed to
+  # process_deployment (see deploy_filter above), which reports their own
+  # already-enrolled / different-mode / fully-converged status.
   local enrolled ekind ens ename ecur same_count=0
   enrolled=$(
-    jq -r "${JQ_QUAL_ARGS[@]}" --arg kind deployment  "$QUALIFY_DEFS$enrolled_filter" "$TMP_DIR/deployments.json"
     jq -r "${JQ_QUAL_ARGS[@]}" --arg kind statefulset "$QUALIFY_DEFS$enrolled_filter" "$TMP_DIR/statefulsets.json"
     jq -r "${JQ_QUAL_ARGS[@]}" --arg kind daemonset   "$QUALIFY_DEFS$enrolled_filter" "$TMP_DIR/daemonsets.json"
   )
@@ -897,6 +961,12 @@ main() {
     if skip_ignored "$name"; then record SKIP "daemonset ${ns}/${name}" "matches --ignore /${IGNORE_REGEX}/"; continue; fi
     process_daemonset "$ns" "$name"
   done <<<"$ds"
+
+  local n_converged
+  n_converged=$(grep -c . "$CONVERGED_FILE" || true)
+  if (( n_converged > 0 )); then
+    record NOTE "already enrolled" "${n_converged} deployment(s) already fully enrolled at ${MODE_LABEL}=${MODE} (template, ReplicaSet, and all pods); nothing to do"
+  fi
 
   local n_ok n_fail n_skip n_warn
   n_ok=$(grep -c $'^OK\t' "$RESULTS_FILE" || true)

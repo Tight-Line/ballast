@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Helm `NOTES.txt`: enroll a workload with the `mode` label, not the removed `enroll` annotation.** The post-install "NEXT STEP" instructions still told users to add `ballast.tightlinesoftware.com/enroll: measure`, an annotation the `0.4.0` enrollment-API change replaced. They now say to add the `ballast.tightlinesoftware.com/mode: measure` label, matching the README and `scripts/enroll.sh`.
 
+- **`scripts/enroll.sh`: the no-restart route left Deployments half-enrolled and could not repair them.** Three related defects, each of which produced a pod carrying the workloadwatcher finalizer but no `mode` label — the exact state the label-scoped informer cache cannot see, so on deletion the pod wedges in `Terminating` forever:
+  - The post-resume guard that flagged "controller promoted or created a different ReplicaSet" keyed on ReplicaSet identity and count. A Deployment template edit legitimately bumps the revision and churns the owned-ReplicaSet set (history GC) **without restarting any pod**, so the guard fired false positives; worse, it `return`ed before the live pods were labeled, leaving the template enrolled but the running pod not. The guard is gone; the reliable "did anything restart" signal is now the running-pod UID diff in `verify_owner`, which also no longer counts a pre-existing terminating pod (a finalizer-wedged ghost) as a failure.
+  - Re-running could not fix a half-enrolled Deployment: candidates were selected on the template label alone, so a Deployment whose template already carried the label (but whose ReplicaSet or pods did not) was treated as "already enrolled" and skipped. Deployments are now selected on the identity tuple alone and `process_deployment` examines the current ReplicaSet and the pods, repairing a half-enrolled state and reporting a genuinely converged one as a quiet no-op.
+  - Pod labeling covered only running, non-terminating pods. It now labels **every** pod the selector matches in any phase — running, pending, succeeded (`Completed`), failed (`Error`), and terminating — which both completes enrollment and lets the operator reap a finalizer-wedged terminating pod once it becomes cache-visible. Pods already at the mode are skipped, so re-runs stay idempotent.
+
 ## [0.4.2] - 2026-07-20
 
 ### Added
