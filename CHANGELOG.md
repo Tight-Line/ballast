@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Helm `NOTES.txt`: enroll a workload with the `mode` label, not the removed `enroll` annotation.** The post-install "NEXT STEP" instructions still told users to add `ballast.tightlinesoftware.com/enroll: measure`, an annotation the `0.4.0` enrollment-API change replaced. They now say to add the `ballast.tightlinesoftware.com/mode: measure` label, matching the README and `scripts/enroll.sh`.
+
 ## [0.4.2] - 2026-07-20
 
 ### Added

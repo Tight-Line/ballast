@@ -12,8 +12,8 @@ CHECK THE SINGLETON CONFIG
   kubectl get ballastconfig ballast -o yaml
 
 NEXT STEP — enroll a workload
-  Add the annotation to a Deployment pod template to start measurement:
-    ballast.tightlinesoftware.com/enroll: measure
+  Add the label to a Deployment pod template to start measurement:
+    ballast.tightlinesoftware.com/mode: measure
 
   After a few minutes a WorkloadProfile will appear:
     kubectl get workloadprofiles -A
