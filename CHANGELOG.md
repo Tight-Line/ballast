@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Bumped `golang.org/x/text` to `v0.39.0`** to clear GO-2026-5970 (infinite loop on invalid input in `golang.org/x/text`), reachable through the kubelet summary fetcher's request path. Fixed in `v0.39.0`.
 - **Raised the Go toolchain floor to `1.26.5`** (the `go` directive in `go.mod`) to clear GO-2026-5856 (Encrypted Client Hello privacy leak in the `crypto/tls` standard library), reachable through the admission webhook's TLS handshake and the Redis/kubelet TLS clients. Fixed in Go `1.26.5`.
+- **Pinned all supply-chain inputs by digest/SHA.** Every GitHub Action in the workflows is now pinned to a full commit SHA (closing the mutable-tag attack surface), and the `Dockerfile` base images are pinned by digest (`golang:1.26.5@sha256:…` for the builder, `gcr.io/distroless/static:nonroot@sha256:…` for the runtime). The builder pin also nails the `crypto/tls`-fixed stdlib into the shipped image deterministically. Dependabot keeps the SHA and digest pins current.
 
 ### Changed
 
