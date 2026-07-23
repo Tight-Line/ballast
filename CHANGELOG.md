@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Bumped `golang.org/x/text` to `v0.39.0`** to clear GO-2026-5970 (infinite loop on invalid input in `golang.org/x/text`), reachable through the kubelet summary fetcher's request path. Fixed in `v0.39.0`.
+- **Raised the Go toolchain floor to `1.26.5`** (the `go` directive in `go.mod`) to clear GO-2026-5856 (Encrypted Client Hello privacy leak in the `crypto/tls` standard library), reachable through the admission webhook's TLS handshake and the Redis/kubelet TLS clients. Fixed in Go `1.26.5`.
+
+### Changed
+
+- **CI: added a tokenless `govulncheck` job** that scans for known vulnerabilities on every run, including Dependabot and fork PRs (which get no access to repository secrets), so dependency bumps still get a real vulnerability gate. The secret-dependent steps (Codecov, Snyk, SonarCloud) now skip cleanly on those runs instead of failing the build, and every job reads the Go version from `go.mod` via `go-version-file` so the toolchain has a single source of truth.
+
 ## [0.4.4] - 2026-07-23
 
 ### Security

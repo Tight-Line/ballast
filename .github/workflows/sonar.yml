@@ -9,6 +9,9 @@ on:
 jobs:
   sonarcloud:
     runs-on: ubuntu-latest
+    env:
+      # Empty on Dependabot/fork runs, which get no access to Actions secrets.
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -17,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
           cache: true
 
       - name: Download dependencies
@@ -26,8 +29,11 @@ jobs:
       - name: Run tests with coverage
         run: make test-coverage-check
 
+      # Skips (job still reports green) when no token is available, e.g. on
+      # Dependabot/fork runs. GITHUB_TOKEN is present even on those runs.
       - name: SonarCloud Scan
+        if: ${{ env.SONAR_TOKEN != '' }}
         uses: sonarsource/sonarcloud-github-action@ba3875ecf642b2129de2b589510c81a8b53dbf4e # master
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
