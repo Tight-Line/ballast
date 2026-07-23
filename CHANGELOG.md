@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-07-23
+
 ### Security
 
 - **Bumped `google.golang.org/grpc` to `v1.82.1`** to clear a high-severity Incorrect Authorization advisory (SNYK-GOLANG-GOOGLEGOLANGORGGRPCINTERNALTRANSPORT-18172578) in `google.golang.org/grpc/internal/transport`, pulled in transitively through the OpenTelemetry OTLP exporters and `controller-runtime`'s metrics filters. Fixed in gRPC `1.82.1`.
