@@ -9,13 +9,16 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # Empty on Dependabot/fork runs, which get no access to Actions secrets.
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
           cache: true
 
       - name: Download dependencies
@@ -24,13 +27,15 @@ jobs:
       - name: Run tests and check coverage
         run: make test-coverage-check
 
+      # The coverage gate above always runs; the upload is telemetry, so it
+      # skips (rather than fails) when no token is available.
       - name: Upload coverage to Codecov
-        if: hashFiles('coverage.filtered.out') != ''
+        if: ${{ env.CODECOV_TOKEN != '' && hashFiles('coverage.filtered.out') != '' }}
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           files: ./coverage.filtered.out
-          fail_ci_if_error: true
-          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+          token: ${{ env.CODECOV_TOKEN }}
 
   lint:
     runs-on: ubuntu-latest
@@ -40,7 +45,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
           cache: true
 
       - name: Run lint
@@ -54,8 +59,28 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
           cache: true
 
       - name: Build binary
         run: make build
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Tokenless, symbol-level vulnerability scan against vuln.go.dev. Runs on
+      # every CI run, including Dependabot/fork PRs that cannot see secrets, so
+      # dependency bumps still get a real vuln gate.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
