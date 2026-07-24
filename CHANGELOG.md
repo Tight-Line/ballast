@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **CI supply-chain hardening.** Every workflow now declares least-privilege `permissions:` (read-only by default, with write scopes granted only to the specific jobs that need them, such as `security-events: write` for SARIF upload and `packages: write` for image push). `step-security/harden-runner` runs in audit mode as the first step of every job to monitor runner egress. The PR image build is restricted to same-repo pull requests (fork PRs get a read-only token and no secrets, so they skip it cleanly instead of failing on the GHCR push), and that job was renamed `build` → `image` to remove its name collision with the CI `build` check.
+
 ## [0.4.5] - 2026-07-24
 
 ### Security
