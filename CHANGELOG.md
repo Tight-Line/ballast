@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **CI: added a tokenless `govulncheck` job** that scans for known vulnerabilities on every run, including Dependabot and fork PRs (which get no access to repository secrets), so dependency bumps still get a real vulnerability gate. The secret-dependent steps (Codecov, Snyk, SonarCloud) now skip cleanly on those runs instead of failing the build, and every job reads the Go version from `go.mod` via `go-version-file` so the toolchain has a single source of truth.
+- **`SECURITY.md`: added a supply-chain hardening checklist** documenting the security controls in place (dependency scanning, SHA/digest pinning, repository protections, non-root runtime) and the planned enhancements (artifact signing/provenance, least-privilege RBAC, admission-time verification), alongside the existing vulnerability-disclosure policy.
 
 ## [0.4.4] - 2026-07-23
 
