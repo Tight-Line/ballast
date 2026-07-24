@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-07-24
+
 ### Security
 
 - **Bumped `golang.org/x/text` to `v0.39.0`** to clear GO-2026-5970 (infinite loop on invalid input in `golang.org/x/text`), reachable through the kubelet summary fetcher's request path. Fixed in `v0.39.0`.
