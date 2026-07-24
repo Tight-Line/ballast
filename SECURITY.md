@@ -66,8 +66,12 @@ via the process above.
 - [x] Secret-dependent CI steps fail safe: they skip rather than run on untrusted
       (Dependabot/fork) runs, so repository secrets are never exposed to builds of
       untrusted dependency code
-- [ ] Least-privilege `permissions:` blocks on every workflow
-- [ ] Egress monitoring on CI runners (e.g. `step-security/harden-runner`)
+- [x] Untrusted (fork) pull requests cannot reach registry credentials: the PR
+      image build is restricted to same-repo pull requests
+- [x] Least-privilege `permissions:` on every workflow (read-only by default;
+      write scopes granted only to the jobs that need them)
+- [x] Egress monitoring on CI runners via `step-security/harden-runner`
+      (audit mode; block-mode enforcement is being rolled out)
 - [ ] OpenSSF Scorecard workflow and badge
 
 ### Published artifacts

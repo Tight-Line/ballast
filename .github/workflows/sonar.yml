@@ -6,13 +6,24 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   sonarcloud:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read  # SonarCloud PR analysis reads PR metadata
     env:
       # Empty on Dependabot/fork runs, which get no access to Actions secrets.
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0  # Full history for accurate blame and new-code detection
