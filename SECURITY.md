@@ -54,8 +54,9 @@ via the process above.
 - [x] Dependabot version updates across every ecosystem the repo ships from
       (`gomod`, `github-actions`, `docker`, `devcontainers`)
 - [x] Dependabot alerts and automated security-update PRs enabled
-- [ ] `dependency-review-action` on pull requests to block newly introduced
+- [x] `dependency-review-action` on pull requests blocks newly introduced
       vulnerable or license-incompatible dependencies before merge
+- [x] CodeQL static analysis (SAST) on pushes, pull requests, and a weekly schedule
 
 ### Build pipeline
 
@@ -70,9 +71,10 @@ via the process above.
       image build is restricted to same-repo pull requests
 - [x] Least-privilege `permissions:` on every workflow (read-only by default;
       write scopes granted only to the jobs that need them)
-- [x] Egress monitoring on CI runners via `step-security/harden-runner`
-      (audit mode; block-mode enforcement is being rolled out)
-- [ ] OpenSSF Scorecard workflow and badge
+- [x] Egress control on CI runners via `step-security/harden-runner`: block-mode
+      enforcement with observed-traffic allowlists on the CI, Snyk, and SonarCloud
+      jobs; audit mode on the remaining workflows until their egress is captured
+- [x] OpenSSF Scorecard workflow
 
 ### Published artifacts
 
@@ -96,3 +98,5 @@ via the process above.
       (`test`, `lint`, `build`, `snyk`, `govulncheck`) must pass and be up to date,
       force-pushes and deletions blocked
 - [x] Secret scanning with push protection enabled
+- [x] Pre-commit hooks (`gitleaks` secret scan, `golangci-lint`, `shellcheck`,
+      end-of-file and trailing-whitespace fixers)
