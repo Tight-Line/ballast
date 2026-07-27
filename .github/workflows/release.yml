@@ -66,24 +66,11 @@ jobs:
           echo "TAG=${TAG}" >> $GITHUB_OUTPUT
           echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_OUTPUT
 
-      # Build amd64 first for fast availability (native build, ~2 min)
-      - name: Build and push ballast (amd64)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          build-args: |
-            VERSION=${{ steps.meta.outputs.VERSION }}
-          tags: |
-            ${{ steps.meta.outputs.IMAGE_PREFIX }}/ballast:${{ steps.meta.outputs.TAG }}
-            ${{ steps.meta.outputs.IMAGE_PREFIX }}/ballast:latest
-          platforms: linux/amd64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # Then build multi-arch (updates tags in-place with manifest)
-      - name: Build and push ballast (multi-arch)
+      # Single multi-arch build. The Dockerfile cross-compiles (builder runs on
+      # the native runner via --platform=$BUILDPLATFORM), so arm64 is fast and
+      # there is no separate amd64-first push — the tags are only ever set once,
+      # by this build, which is the one that gets signed below (no unsigned window).
+      - name: Build and push ballast
         id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
