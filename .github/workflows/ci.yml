@@ -128,9 +128,7 @@ jobs:
 
       # Tokenless, symbol-level vulnerability scan against vuln.go.dev. Runs on
       # every CI run, including Dependabot/fork PRs that cannot see secrets, so
-      # dependency bumps still get a real vuln gate.
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
-
+      # dependency bumps still get a real vuln gate. Pinned via the `tool`
+      # directive in go.mod (kept current by Dependabot) for reproducibility.
       - name: Run govulncheck
-        run: govulncheck ./...
+        run: go tool govulncheck ./...
