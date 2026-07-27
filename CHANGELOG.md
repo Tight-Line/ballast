@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-07-27
+
 ### Fixed
 
 - **Release image SBOM + SLSA provenance attestations now publish.** The syft/SBOM step in the release workflow was blocked by harden-runner because `raw.githubusercontent.com` (used by `anchore/sbom-action` to fetch syft) was missing from the block allowlist; it has been added. 0.4.9 signed the image but skipped the SBOM/provenance because of this.
