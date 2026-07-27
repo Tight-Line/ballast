@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Completed the harden-runner block-mode rollout: the `release` workflow now enforces egress allowlists**, so every workflow runs in block mode. Allowlists were derived from the audit-mode release run: `release-image` allows the container registries (GHCR, Docker Hub, gcr.io) and Go module hosts, wildcarding the volatile GitHub hosted-runner control-plane hosts (`*.githubapp.com`); `release-chart` allows the Helm download host, the Valkey chart-repo, and the GitHub release-upload hosts. Because `release` only runs on a tag, its allowlist cannot be validated on a pull request; the next tagged release is its first block-mode run.
+
 ## [0.4.7] - 2026-07-27
 
 ### Changed
