@@ -106,11 +106,17 @@ jobs:
           format: spdx-json
           output-file: sbom.spdx.json
 
-      - name: Attest SBOM (keyless)
-        env:
-          IMAGE: ${{ steps.meta.outputs.IMAGE_PREFIX }}/ballast
-          DIGEST: ${{ steps.build.outputs.digest }}
-        run: cosign attest --yes --predicate sbom.spdx.json --type spdxjson "${IMAGE}@${DIGEST}"
+      # Attest the SBOM via actions/attest-sbom so it lands in the OCI referrers
+      # store, the same place actions/attest-build-provenance writes, rather than
+      # the legacy cosign `.att` tag. Keeps SBOM + provenance discoverable by the
+      # same `cosign verify-attestation` / `gh attestation verify` commands.
+      - name: Attest SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ${{ steps.meta.outputs.IMAGE_PREFIX }}/ballast
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
 
       - name: Attest SLSA build provenance
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
