@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **Released container images are now signed, with an SBOM and SLSA build provenance.** The release workflow signs the pushed image keylessly with cosign (GitHub OIDC + sigstore, no key to manage), attaches a syft-generated SPDX SBOM as a cosign attestation, and attaches SLSA build provenance (`actions/attest-build-provenance`, also pushed to the registry as an OCI attestation). All three are stored in GHCR alongside the image and verify with `cosign verify` / `cosign verify-attestation` (see `SECURITY.md`). Helm chart signing is coming next.
+- **Released container images are now signed, with an SBOM and SLSA build provenance.** The release workflow signs the pushed image keylessly with cosign (GitHub OIDC + sigstore, no key to manage), attaches a syft-generated SPDX SBOM as a cosign attestation, and attaches SLSA build provenance (`actions/attest-build-provenance`, also pushed to the registry as an OCI attestation). All three are stored in GHCR alongside the image and verify with `cosign verify` / `cosign verify-attestation` (see `SECURITY.md`).
+- **The Helm chart is now also published as a signed OCI artifact** at `ghcr.io/tight-line/charts/ballast` (additive; the existing GitHub Pages `helm repo add` URL keeps working). The chart is keylessly cosign-signed with SLSA build provenance, so consumers can `helm pull oci://ghcr.io/tight-line/charts/ballast` and `cosign verify` it.
 
 ## [0.4.8] - 2026-07-27
 

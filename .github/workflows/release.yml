@@ -135,7 +135,10 @@ jobs:
     name: Package and publish Helm chart
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write       # chart-releaser: GitHub release + gh-pages
+      packages: write       # push the chart as an OCI artifact to GHCR
+      id-token: write       # keyless cosign signing + provenance (GitHub OIDC)
+      attestations: write   # actions/attest-build-provenance
 
     steps:
       - name: Harden the runner
@@ -150,6 +153,12 @@ jobs:
             get.helm.sh:443
             valkey-io.github.io:443
             valkey.io:443
+            ghcr.io:443
+            pkg-containers.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -188,3 +197,45 @@ jobs:
           skip_existing: true
         env:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+
+      # Also publish the chart as a signed OCI artifact to GHCR, alongside the
+      # GitHub Pages repo above (additive; the `helm repo add` URL still works).
+      # Consumers can `helm pull oci://ghcr.io/<owner>/charts/ballast` and
+      # `cosign verify`. Keyless via GitHub OIDC + sigstore.
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Package and push chart (OCI)
+        id: oci
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "$GH_TOKEN" | helm registry login ghcr.io -u "$ACTOR" --password-stdin
+          helm package charts/ballast --destination .cr-oci
+          chart_tgz="$(ls .cr-oci/ballast-*.tgz)"
+          helm push "$chart_tgz" "oci://ghcr.io/${owner}/charts" 2>&1 | tee push.log
+          digest="$(grep -oiE 'sha256:[0-9a-f]{64}' push.log | head -1)"
+          echo "ref=ghcr.io/${owner}/charts/ballast" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Sign chart (keyless)
+        env:
+          REF: ${{ steps.oci.outputs.ref }}
+          DIGEST: ${{ steps.oci.outputs.digest }}
+        run: cosign sign --yes "${REF}@${DIGEST}"
+
+      - name: Attest chart build provenance
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-name: ${{ steps.oci.outputs.ref }}
+          subject-digest: ${{ steps.oci.outputs.digest }}
+          push-to-registry: true

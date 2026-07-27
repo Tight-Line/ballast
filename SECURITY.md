@@ -78,9 +78,10 @@ via the process above.
 ### Published artifacts
 
 - [x] Keyless (cosign/OIDC) signature for the released **container image**
-- [ ] Keyless signature for the **Helm chart** (in progress)
-- [x] SLSA build-provenance attestation for the released image (OCI + GitHub)
-- [x] Software Bill of Materials (SBOM) attached as an attestation
+- [x] Keyless signature for the **Helm chart**, published as an OCI artifact to
+      `ghcr.io/tight-line/charts/ballast` (the GitHub Pages Helm repo still works too)
+- [x] SLSA build-provenance attestation for the released image and chart (OCI + GitHub)
+- [x] Software Bill of Materials (SBOM) attached to the image as an attestation
 
 Verify a released image (all keyless, no public key needed):
 
@@ -96,6 +97,17 @@ cosign verify "$IMAGE" \
 cosign verify-attestation "$IMAGE" --type spdxjson \
   --certificate-identity-regexp "$IDENTITY" \
   --certificate-oidc-issuer "$ISSUER"
+```
+
+The Helm chart is signed the same way (same `$IDENTITY` / `$ISSUER`):
+
+```bash
+cosign verify ghcr.io/tight-line/charts/ballast:0.4.8 \
+  --certificate-identity-regexp "$IDENTITY" \
+  --certificate-oidc-issuer "$ISSUER"
+
+# pull the signed chart via OCI
+helm pull oci://ghcr.io/tight-line/charts/ballast --version 0.4.8
 ```
 
 ### Runtime
