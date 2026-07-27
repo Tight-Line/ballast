@@ -77,9 +77,26 @@ via the process above.
 
 ### Published artifacts
 
-- [ ] Keyless (cosign/OIDC) signatures for the container image and Helm chart
-- [ ] SLSA build-provenance attestation for released images
-- [ ] Software Bill of Materials (SBOM) generated and attached as an attestation
+- [x] Keyless (cosign/OIDC) signature for the released **container image**
+- [ ] Keyless signature for the **Helm chart** (in progress)
+- [x] SLSA build-provenance attestation for the released image (OCI + GitHub)
+- [x] Software Bill of Materials (SBOM) attached as an attestation
+
+Verify a released image (all keyless, no public key needed):
+
+```bash
+IMAGE=ghcr.io/tight-line/ballast:v0.4.8   # use the tag you pulled
+IDENTITY='^https://github\.com/Tight-Line/ballast/\.github/workflows/release\.yml@refs/tags/v'
+ISSUER=https://token.actions.githubusercontent.com
+
+cosign verify "$IMAGE" \
+  --certificate-identity-regexp "$IDENTITY" \
+  --certificate-oidc-issuer "$ISSUER"
+
+cosign verify-attestation "$IMAGE" --type spdxjson \
+  --certificate-identity-regexp "$IDENTITY" \
+  --certificate-oidc-issuer "$ISSUER"
+```
 
 ### Runtime
 
