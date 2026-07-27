@@ -7,12 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release image SBOM + SLSA provenance attestations now publish.** The syft/SBOM step in the release workflow was blocked by harden-runner because `raw.githubusercontent.com` (used by `anchore/sbom-action` to fetch syft) was missing from the block allowlist; it has been added. 0.4.9 signed the image but skipped the SBOM/provenance because of this.
+- **Chart OCI publish now fails loudly instead of masking errors.** The OCI `helm push` was piped through `tee`, so a failed push was swallowed (exit 0) and surfaced later as a confusing empty-digest `cosign` error; added `set -o pipefail` and a digest guard so a push failure fails the step directly. (First-time creation of the `ghcr.io/tight-line/charts/ballast` package also requires a one-time GHCR permission/link step, see the notes on that release.)
+
 ## [0.4.9] - 2026-07-27
 
 ### Security
 
-- **Released container images are now signed, with an SBOM and SLSA build provenance.** The release workflow signs the pushed image keylessly with cosign (GitHub OIDC + sigstore, no key to manage), attaches a syft-generated SPDX SBOM as a cosign attestation, and attaches SLSA build provenance (`actions/attest-build-provenance`, also pushed to the registry as an OCI attestation). All three are stored in GHCR alongside the image and verify with `cosign verify` / `cosign verify-attestation` (see `SECURITY.md`).
-- **The Helm chart is now also published as a signed OCI artifact** at `ghcr.io/tight-line/charts/ballast` (additive; the existing GitHub Pages `helm repo add` URL keeps working). The chart is keylessly cosign-signed with SLSA build provenance, so consumers can `helm pull oci://ghcr.io/tight-line/charts/ballast` and `cosign verify` it.
+- **Released container images are now cosign-signed** (keyless via GitHub OIDC + sigstore, no key to manage), verifiable with `cosign verify` (see `SECURITY.md`). The accompanying SBOM and SLSA-provenance attestations, and the signed OCI Helm chart, were intended for this release but did not publish (a CI egress gap and a GHCR package-permission issue); both are addressed under [Unreleased].
 
 ### Changed
 
