@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Image SBOM attestation now verifies with the standard commands.** The SBOM is attached via `actions/attest-sbom` (OCI referrers store) instead of `cosign attest`, so it lives alongside the SLSA provenance and is found by `cosign verify-attestation` / `gh attestation verify`. Previously it landed in the legacy cosign `.att` tag, which `cosign verify-attestation` (reading referrers) could not see, so the documented SBOM-verify command failed even though the SBOM was attached.
+
 ## [0.4.10] - 2026-07-27
 
 ### Fixed
