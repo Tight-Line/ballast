@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **CI: pinned `govulncheck` via a `go.mod` `tool` directive** instead of `go install …@latest`, so the scanner version is reproducible and kept current by Dependabot (the vulnerability database is still fetched live from `vuln.go.dev` at runtime, so detection stays fresh regardless). Tightened the `scorecards` workflow's top-level default permissions from `read-all` to `contents: read`.
+
 ## [0.4.6] - 2026-07-27
 
 ### Security
