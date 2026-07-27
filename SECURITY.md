@@ -72,8 +72,8 @@ via the process above.
 - [x] Least-privilege `permissions:` on every workflow (read-only by default;
       write scopes granted only to the jobs that need them)
 - [x] Egress control on CI runners via `step-security/harden-runner`: block-mode
-      enforcement with observed-traffic allowlists on the CI, Snyk, SonarCloud, and
-      PR-image jobs; audit mode on the remaining workflows until their egress is captured
+      enforcement with observed-traffic allowlists on every workflow except
+      `release`, which stays in audit until its next tagged run captures its egress
 - [x] OpenSSF Scorecard workflow
 
 ### Published artifacts

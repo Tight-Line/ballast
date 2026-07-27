@@ -35,10 +35,21 @@ jobs:
       checks: read
 
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden the runner (Block egress)
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            api.deps.dev:443
+            api.osv.dev:443
+            api.scorecard.dev:443
+            www.bestpractices.dev:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
+            oss-fuzz-build-logs.storage.googleapis.com:443
 
       - name: "Checkout code"
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
