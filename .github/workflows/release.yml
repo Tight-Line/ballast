@@ -18,6 +18,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write       # keyless cosign signing + provenance (GitHub OIDC)
+      attestations: write   # actions/attest-build-provenance
 
     steps:
       - name: Harden the runner
@@ -26,6 +28,7 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             github.com:443
+            api.github.com:443
             proxy.golang.org:443
             sum.golang.org:443
             storage.googleapis.com:443
@@ -36,6 +39,11 @@ jobs:
             production.cloudfront.docker.com:443
             gcr.io:443
             *.githubapp.com:443
+            release-assets.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -76,6 +84,7 @@ jobs:
 
       # Then build multi-arch (updates tags in-place with manifest)
       - name: Build and push ballast (multi-arch)
+        id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -89,6 +98,38 @@ jobs:
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Sign the pushed image, attest an SBOM, and attach SLSA build provenance —
+      # all keyless via GitHub OIDC + sigstore, written to GHCR as OCI artifacts
+      # so consumers can `cosign verify` / `cosign verify-attestation` the image.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Sign image (keyless)
+        env:
+          IMAGE: ${{ steps.meta.outputs.IMAGE_PREFIX }}/ballast
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ steps.meta.outputs.IMAGE_PREFIX }}/ballast@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Attest SBOM (keyless)
+        env:
+          IMAGE: ${{ steps.meta.outputs.IMAGE_PREFIX }}/ballast
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign attest --yes --predicate sbom.spdx.json --type spdxjson "${IMAGE}@${DIGEST}"
+
+      - name: Attest SLSA build provenance
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-name: ${{ steps.meta.outputs.IMAGE_PREFIX }}/ballast
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   release-chart:
     name: Package and publish Helm chart
