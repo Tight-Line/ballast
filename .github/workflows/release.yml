@@ -41,6 +41,7 @@ jobs:
             *.githubapp.com:443
             release-assets.githubusercontent.com:443
             objects.githubusercontent.com:443
+            raw.githubusercontent.com:443
             fulcio.sigstore.dev:443
             rekor.sigstore.dev:443
             tuf-repo-cdn.sigstore.dev:443
@@ -205,12 +206,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
         run: |
+          set -euo pipefail
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           echo "$GH_TOKEN" | helm registry login ghcr.io -u "$ACTOR" --password-stdin
           helm package charts/ballast --destination .cr-oci
           chart_tgz="$(ls .cr-oci/ballast-*.tgz)"
+          # pipefail makes a failed `helm push` fail this step (instead of the
+          # pipe to tee masking it and leaving an empty digest for cosign).
           helm push "$chart_tgz" "oci://ghcr.io/${owner}/charts" 2>&1 | tee push.log
           digest="$(grep -oiE 'sha256:[0-9a-f]{64}' push.log | head -1)"
+          if [ -z "$digest" ]; then
+            echo "::error::could not determine pushed chart digest"; cat push.log; exit 1
+          fi
           echo "ref=ghcr.io/${owner}/charts/ballast" >> "$GITHUB_OUTPUT"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
