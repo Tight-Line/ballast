@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Tightened the operator's RBAC to least privilege (runtime blast-radius reduction).** The `configmaps` grant moved off the cluster-wide `ClusterRole` and onto a namespaced `Role` in the release namespace: the operator only ever reads one ConfigMap (the `ballast-kill-switch` emergency switch) in its own namespace, so it no longer holds cluster-wide read on every ConfigMap in the cluster. The kill-switch informer is scoped in code to that single object (via the manager cache), and the `get` is pinned with `resourceNames`. Several unused verbs were also dropped from the `ClusterRole`: `pods` no longer grants `update` (pods are only patched; in-place resize uses the `pods/resize` subresource), `nodes` drops `get` (the kubelet source only lists nodes), `events` drops `patch` (events are only created), `workloadprofiles` drops `update`, and `workloadprofiles/status` is narrowed to `patch` alone. No functional change; the operator exercises none of the removed permissions.
+
 ## [0.4.11] - 2026-07-27
 
 ### Fixed
