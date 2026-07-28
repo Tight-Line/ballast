@@ -129,7 +129,7 @@ jobs:
     name: Package and publish Helm chart
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # chart-releaser: GitHub release + gh-pages
+      contents: write       # create the per-tag GitHub release (gh CLI)
       packages: write       # push the chart as an OCI artifact to GHCR
       id-token: write       # keyless cosign signing + provenance (GitHub OIDC)
       attestations: write   # actions/attest-build-provenance
@@ -155,13 +155,6 @@ jobs:
             tuf-repo-cdn.sigstore.dev:443
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Configure Git
-        run: |
-          git config user.name "$GITHUB_ACTOR"
-          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
 
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
@@ -185,17 +178,13 @@ jobs:
           mkdir -p charts/ballast/crds
           cp config/crd/bases/*.yaml charts/ballast/crds/
 
-      - name: Run chart-releaser
-        uses: helm/chart-releaser-action@cae68fefc6b5f367a0275617c9f83181ba54714f # v1.7.0
-        with:
-          skip_existing: true
-        env:
-          CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-
-      # Also publish the chart as a signed OCI artifact to GHCR, alongside the
-      # GitHub Pages repo above (additive; the `helm repo add` URL still works).
-      # Consumers can `helm pull oci://ghcr.io/<owner>/charts/ballast` and
-      # `cosign verify`. Keyless via GitHub OIDC + sigstore.
+      # Publish the chart as a signed OCI artifact to GHCR. This is now the only
+      # published Helm repo: the former GitHub Pages repo
+      # (`helm repo add ballast https://tight-line.github.io/ballast`) is frozen
+      # at its last chart-releaser version and no longer receives new releases
+      # (see the breaking-change note in CHANGELOG). Consumers install via
+      # `helm install oci://ghcr.io/<owner>/charts/ballast` and can `cosign
+      # verify` the chart. Keyless via GitHub OIDC + sigstore.
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
         with:
@@ -226,6 +215,7 @@ jobs:
           fi
           echo "ref=ghcr.io/${owner}/charts/ballast" >> "$GITHUB_OUTPUT"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "tgz=${chart_tgz}" >> "$GITHUB_OUTPUT"
 
       - name: Sign chart (keyless)
         env:
@@ -239,3 +229,26 @@ jobs:
           subject-name: ${{ steps.oci.outputs.ref }}
           subject-digest: ${{ steps.oci.outputs.digest }}
           push-to-registry: true
+
+      # chart-releaser used to create the per-tag GitHub release; recreate it
+      # with the gh CLI (already on the runner, no third-party action) so each
+      # tag still gets a release with auto-generated notes and the packaged
+      # chart attached as a convenience download. The signed OCI chart above is
+      # the canonical artifact; this asset is a courtesy copy.
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TGZ: ${{ steps.oci.outputs.tgz }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          # Idempotent: re-running an existing tag must not fail the job.
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $tag already exists; uploading chart asset"
+            gh release upload "$tag" "$TGZ" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$tag" "$TGZ" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$tag" \
+              --generate-notes
+          fi

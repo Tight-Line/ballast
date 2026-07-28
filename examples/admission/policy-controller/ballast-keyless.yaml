@@ -1,0 +1,49 @@
+# sigstore policy-controller ClusterImagePolicy: admit ghcr.io/tight-line/ballast
+# only if it carries a valid keyless cosign signature from the Ballast release
+# workflow.
+#
+# OPT-IN EXAMPLE. The Ballast Helm chart does NOT install this. Admission-time
+# image verification is a cluster operator's decision: it requires the
+# policy-controller webhook to already be running and can block admission, so
+# review, scope, and roll it out to a non-production namespace first.
+#
+# Prerequisites:
+#   - policy-controller installed (webhook running). See
+#     https://docs.sigstore.dev/policy-controller/installation/
+#   - Each namespace you want gated MUST opt in with the label:
+#       kubectl label namespace <ns> policy.sigstore.dev/include=true
+#     policy-controller ignores pods in unlabeled namespaces entirely.
+#   - Cluster egress to the public sigstore services (Fulcio/Rekor).
+#
+# Verified against https://github.com/sigstore/policy-controller/blob/main/docs/api-types/index.md (v1beta1)
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: ballast-keyless
+spec:
+  # mode defaults to "enforce" (hard rejection). Set mode: warn only for a
+  # deliberate soft rollout.
+  images:
+    # Colon-glob: tags of exactly this repository. Add a second entry
+    # "ghcr.io/tight-line/ballast@sha256:**" if you expect digest-pinned pulls.
+    - glob: "ghcr.io/tight-line/ballast:*"
+  authorities:
+    - keyless:
+        # Public Fulcio. Optional when using the default embedded TUF root.
+        url: https://fulcio.sigstore.dev
+        identities:
+          - issuerRegExp: "^https://token\\.actions\\.githubusercontent\\.com$"
+            subjectRegExp: '^https://github\.com/Tight-Line/ballast/\.github/workflows/release\.yml@refs/tags/v'
+      # NOTE: this field is named `ctlog` but is typed as the Rekor transparency
+      # log (not certificate transparency). Omitting it defaults to public Rekor.
+      ctlog:
+        url: https://rekor.sigstore.dev
+
+# For a fail-closed CLUSTER posture (reject images that match NO policy at all),
+# set `no-match-policy: deny` in the `config-policy-controller` ConfigMap. That
+# is a cluster-wide setting, separate from this per-image policy.
+#
+# To ALSO require the SLSA build-provenance attestation, add an `attestations:`
+# list under this authorities[] entry (sibling to `keyless`), each with a
+# `predicateType`; policy-controller verifies it against the same identity after
+# the signature check succeeds.

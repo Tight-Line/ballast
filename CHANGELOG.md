@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: the Helm chart is now distributed only as a signed OCI artifact.** Installs and upgrades must use `helm install ballast oci://ghcr.io/tight-line/charts/ballast` (see the README). The release workflow no longer runs `chart-releaser`, so the GitHub Pages Helm repo (`helm repo add ballast https://tight-line.github.io/ballast`) receives no new versions. That repo is **frozen, not deleted**: the existing `gh-pages` `index.yaml` is left in place, so already-published versions keep resolving for current `helm repo add` users; only new releases require the OCI flow. Migrate your install to `oci://…` when you next upgrade. The OCI chart has been published (and cosign-signed) alongside the Pages repo since 0.4.9, so the artifact itself is unchanged; only the default/primary distribution path moves.
+- **Per-tag GitHub Releases are now created by the `gh` CLI** instead of `chart-releaser`. Each release is named for its tag (`v<version>`) and still has auto-generated notes plus the packaged `ballast-<version>.tgz` attached as a convenience download; the signed OCI chart remains the canonical artifact.
+
+### Added
+
+- **Admission-time image-verification examples** under [`examples/admission/`](examples/admission/README.md) for both Kyverno and sigstore policy-controller. They are opt-in (the chart does not install them) and configure the cluster to admit only `ghcr.io/tight-line/ballast` images carrying a valid keyless cosign signature from the release workflow.
+- **README "Verifying the release" and "Older releases" sections**: cosign verify commands for the image and chart (run them before installing), and a pointer to where old versions live (the frozen Pages repo) versus new ones (OCI), with the full list on the GitHub Releases page.
+
+### Fixed
+
+- **Corrected the SBOM verification command in `SECURITY.md`.** It used `--type spdxjson`, which does not match the versioned SPDX predicate type that syft emits; the correct invocation is `--type https://spdx.dev/Document/v2.3`. Also added the image SLSA-provenance verify command and a `gh attestation verify` alternative.
+
 ## [0.4.12] - 2026-07-28
 
 ### Security

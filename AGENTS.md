@@ -272,10 +272,11 @@ Run `scripts/make-tag <version>` (e.g. `scripts/make-tag 0.1.0`) to cut a releas
 4. Commits and tags `v<version>`
 
 Then `git push origin main v<version>` triggers `release.yml`, which:
-- Builds and pushes `ghcr.io/tight-line/ballast:v<version>` and `:latest` (multi-arch: amd64 + arm64)
-- Runs `helm dependency update` then `helm/chart-releaser-action` to package `ballast-<version>.tgz`, upload it as a GitHub Release asset, and update `index.yaml` on the `gh-pages` branch
+- Builds and pushes `ghcr.io/tight-line/ballast:v<version>` and `:latest` (multi-arch: amd64 + arm64), then cosign-signs the image and attaches an SBOM + SLSA provenance
+- Runs `helm dependency update`, packages the chart, and pushes it as a signed OCI artifact to `ghcr.io/tight-line/charts/ballast` (cosign signature + SLSA provenance)
+- Creates the GitHub Release for the tag via the `gh` CLI, attaching the packaged `ballast-<version>.tgz` as a convenience asset
 
-The Helm repo (`https://tight-line.github.io/ballast`) is served from the `gh-pages` branch; GitHub Pages must be enabled on the repository pointing to that branch.
+The signed OCI chart at `ghcr.io/tight-line/charts/ballast` is the sole published Helm repo. The old GitHub Pages repo (`https://tight-line.github.io/ballast`, served from `gh-pages`) is **frozen**: `chart-releaser` was removed, so no new versions publish there, but the existing `gh-pages` `index.yaml` is left in place so already-published versions keep resolving for existing `helm repo add` users.
 
 ### PR image workflow
 

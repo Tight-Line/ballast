@@ -1,0 +1,70 @@
+# Kyverno ClusterPolicy: admit ghcr.io/tight-line/ballast only if it carries a
+# valid keyless cosign signature from the Ballast release workflow.
+#
+# OPT-IN EXAMPLE. The Ballast Helm chart does NOT install this. Applying a
+# cluster-wide image-verification policy is a cluster operator's decision, not a
+# workload's: it requires Kyverno to already be running, it can block admission
+# cluster-wide, and a misconfigured policy can lock you out of your own cluster.
+# Review it, scope it, and roll it out to a non-production namespace first.
+#
+# Prerequisites:
+#   - Kyverno installed (v1.11+; fields below are stable through the 1.18 line).
+#   - Cluster egress to the public sigstore services (Fulcio/Rekor) so the
+#     admission webhook can verify signatures.
+#
+# Verified against https://kyverno.io/docs/policy-types/cluster-policy/verify-images/sigstore/
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-ballast-image-keyless
+  annotations:
+    policies.kyverno.io/title: Verify Ballast Image (Keyless Cosign)
+    policies.kyverno.io/category: Software Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Requires ghcr.io/tight-line/ballast images to carry a valid keyless cosign
+      signature produced by the Ballast release.yml GitHub Actions workflow,
+      verified against the public Fulcio/Rekor sigstore instances.
+spec:
+  # Fail closed: if the Kyverno webhook itself is unreachable, block admission
+  # rather than letting an unverified image through.
+  webhookConfiguration:
+    failurePolicy: Fail
+    timeoutSeconds: 30
+  # Image verification is an admission-time check, not a background scan.
+  background: false
+  rules:
+    - name: verify-ballast-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        # Colon-glob: matches tags of exactly this repository. A bare-prefix
+        # glob (ballast*) would also match sibling repos like ballast-foo.
+        - imageReferences:
+            - "ghcr.io/tight-line/ballast:*"
+          failureAction: Enforce   # block on missing/invalid signature (Audit = log only)
+          required: true           # every matching image must verify
+          mutateDigest: true       # pin the verified tag to its immutable digest
+          verifyDigest: true       # if the pod already pins a digest, it must be the signed one
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    # Use subjectRegExp (not subject) for a regexp identity.
+                    subjectRegExp: '^https://github\.com/Tight-Line/ballast/\.github/workflows/release\.yml@refs/tags/v'
+                    issuer: "https://token.actions.githubusercontent.com"
+                    # rekor.url and a ctlog block are optional; omitting them
+                    # defaults to the public sigstore instances. Shown for clarity.
+                    rekor:
+                      url: https://rekor.sigstore.dev
+
+# To ALSO require the SLSA build-provenance attestation (this image publishes one
+# via actions/attest-build-provenance), add an `attestations:` list to the same
+# verifyImages[] entry, each with a `predicateType` (e.g.
+# https://slsa.dev/provenance/v1) and an `attestors` block reusing the same
+# keyless identity above. See
+# https://github.com/kyverno/website/blob/main/src/content/policies/other/verify-image-slsa/verify-image-slsa.md
