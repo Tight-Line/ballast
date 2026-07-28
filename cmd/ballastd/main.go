@@ -20,6 +20,7 @@ import (
 
 	promclient "github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
@@ -292,6 +293,18 @@ func run() int {
 		Cache: cache.Options{
 			ByObject: map[client.Object]cache.ByObject{
 				&corev1.Pod{}: {Label: enrolledPods},
+				// The only ConfigMap the operator reads is the emergency kill
+				// switch in its own namespace. Scope the informer to that single
+				// object so the process never lists or watches ConfigMaps
+				// elsewhere, which lets the chart grant configmaps through a
+				// namespaced Role instead of a cluster-wide ClusterRole.
+				&corev1.ConfigMap{}: {
+					Namespaces: map[string]cache.Config{
+						operatorNamespace: {
+							FieldSelector: fields.OneTermEqualSelector("metadata.name", killswitch.ConfigMapName),
+						},
+					},
+				},
 			},
 		},
 	})

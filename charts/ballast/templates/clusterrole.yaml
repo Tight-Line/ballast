@@ -5,27 +5,29 @@ metadata:
   labels:
     {{- include "ballast.labels" . | nindent 4 }}
 rules:
+# Pods are patched (finalizers, annotations, profile refs), never full-object
+# updated; in-place resize goes through the pods/resize subresource below.
 - apiGroups: [""]
   resources: ["pods"]
-  verbs: ["get", "list", "watch", "update", "patch"]
+  verbs: ["get", "list", "watch", "patch"]
 - apiGroups: [""]
   resources: ["pods/resize"]
   verbs: ["patch"]
 - apiGroups: ["metrics.k8s.io"]
   resources: ["pods"]
   verbs: ["list"]
+# The kubelet MetricsSource lists nodes and reads each node's /stats/summary
+# via the proxy subresource; it never fetches an individual node object.
 - apiGroups: [""]
   resources: ["nodes"]
-  verbs: ["get", "list"]
+  verbs: ["list"]
 - apiGroups: [""]
   resources: ["nodes/proxy"]
   verbs: ["get"]
-- apiGroups: [""]
-  resources: ["configmaps"]
-  verbs: ["get", "list", "watch"]
+# Events are only ever created (uniquely named), never aggregated via patch.
 - apiGroups: [""]
   resources: ["events"]
-  verbs: ["create", "patch"]
+  verbs: ["create"]
 - apiGroups: ["ballast.tightlinesoftware.com"]
   resources:
     - ballastconfigs
@@ -33,9 +35,12 @@ rules:
     - metricssources
     - resourcepolicies
   verbs: ["get", "list", "watch"]
+# WorkloadProfiles are created, patched, and deleted, never full-object updated.
 - apiGroups: ["ballast.tightlinesoftware.com"]
   resources: ["workloadprofiles"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  verbs: ["get", "list", "watch", "create", "patch", "delete"]
+# Status is written exclusively via Status().Patch; it is read through the
+# parent object, never via a /status subresource get.
 - apiGroups: ["ballast.tightlinesoftware.com"]
   resources: ["workloadprofiles/status"]
-  verbs: ["get", "update", "patch"]
+  verbs: ["patch"]

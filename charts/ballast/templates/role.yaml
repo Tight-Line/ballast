@@ -11,3 +11,26 @@ rules:
   resources: ["leases"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 {{- end }}
+---
+# The operator reads exactly one ConfigMap, the emergency kill switch
+# (ballast-kill-switch), in its own namespace. Granting configmaps here as a
+# namespaced Role (rather than cluster-wide in the ClusterRole) keeps the
+# operator from being able to read ConfigMaps anywhere else in the cluster.
+# The informer is scoped to this single object in code (manager cache), so
+# list/watch only ever touch the kill switch; get is pinned by resourceNames
+# (list/watch can't be name-restricted via RBAC).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "ballast.fullname" . }}-killswitch
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ballast.labels" . | nindent 4 }}
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get"]
+  resourceNames: ["ballast-kill-switch"]
