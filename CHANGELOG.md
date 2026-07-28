@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **BREAKING: the Helm chart is now distributed only as a signed OCI artifact.** Installs and upgrades must use `helm install ballast oci://ghcr.io/tight-line/charts/ballast` (see the README). The release workflow no longer runs `chart-releaser`, so the GitHub Pages Helm repo (`helm repo add ballast https://tight-line.github.io/ballast`) receives no new versions. That repo is **frozen, not deleted**: the existing `gh-pages` `index.yaml` is left in place, so already-published versions keep resolving for current `helm repo add` users; only new releases require the OCI flow. Migrate your install to `oci://…` when you next upgrade. The OCI chart has been published (and cosign-signed) alongside the Pages repo since 0.4.9, so the artifact itself is unchanged; only the default/primary distribution path moves.
 - **Per-tag GitHub Releases are now created by the `gh` CLI** instead of `chart-releaser`. Each release is named for its tag (`v<version>`) and still has auto-generated notes plus the packaged `ballast-<version>.tgz` attached as a convenience download; the signed OCI chart remains the canonical artifact.
+- Updated bundled Valkey helm chart from 0.10.0 to 0.11.0 to pick up security fixes in [Valkey 9.1.1](https://github.com/valkey-io/valkey/releases/tag/9.1.1)
 
 ### Added
 
