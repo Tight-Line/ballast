@@ -105,6 +105,13 @@ jobs:
           image: ${{ steps.meta.outputs.IMAGE_PREFIX }}/ballast@${{ steps.build.outputs.digest }}
           format: spdx-json
           output-file: sbom.spdx.json
+          # Do not attach the SBOM as a GitHub release asset. It defaults to true
+          # and now finds the v<tag> release (created by the release-chart job) and
+          # tries to upload, which needs contents: write — this job is deliberately
+          # contents: read. The SBOM is attested into the OCI referrers store below
+          # (actions/attest-sbom) and kept as a workflow artifact, so the release
+          # asset would be redundant anyway.
+          upload-release-assets: false
 
       # Attest the SBOM via actions/attest-sbom so it lands in the OCI referrers
       # store, the same place actions/attest-build-provenance writes, rather than
