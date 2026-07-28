@@ -5,8 +5,13 @@ resources:
 # runtime. Be sure to update RoleBinding and ClusterRoleBinding
 # subjects if changing service account names.
 - service_account.yaml
-- role.yaml
-- role_binding.yaml
+# The operator's ClusterRole is NOT defined here. Ballast is installed
+# exclusively via the Helm chart, and its operator permissions are the
+# hand-maintained ClusterRole in charts/ballast/templates/clusterrole.yaml
+# (the sole source of truth). The former controller-gen `manager-role` stub
+# and its binding were removed: with no `+kubebuilder:rbac` markers in the
+# code, controller-gen never regenerated them, so they were a stale, orphaned
+# copy that drifted from the real policy.
 - leader_election_role.yaml
 - leader_election_role_binding.yaml
 # The following RBAC configurations are used to protect
