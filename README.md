@@ -56,17 +56,43 @@ Pod eviction for cluster rebalancing is handled by [Kubernetes Descheduler](http
 cert-manager must already be installed in the cluster (Ballast does not install it):
 
 ```bash
-helm repo add ballast https://tight-line.github.io/ballast
-helm repo update
-
-helm install ballast ballast/ballast \
+helm install ballast oci://ghcr.io/tight-line/charts/ballast \
   --namespace ballast-system \
   --create-namespace
 ```
 
+This pulls the latest signed chart from the GitHub Container Registry. To pin a version, add `--version <X.Y.Z>` (the [Releases page](https://github.com/Tight-Line/ballast/releases) lists every version). For supply-chain-sensitive clusters, [verify the chart's signature](#verifying-the-release) before installing, and consider enforcing that verification at admission time ([`examples/admission`](examples/admission/README.md)).
+
 The chart ships with a sensible default for `ballastConfig.identityLabels` (`app.kubernetes.io/name` + `app.kubernetes.io/component`). Read the section below before overriding it — the choice has cluster-wide consequences.
 
-Upgrades are `helm upgrade --install` with no extra steps. CRDs are kept in sync automatically: Helm itself never upgrades the `crds/` directory, so the chart runs a pre-install/pre-upgrade hook Job (`ballastd apply-crds`) that server-side-applies the CRD manifests baked into the operator image. Set `crds.upgradeHook.enabled: false` to opt out if external tooling manages CRDs; you are then responsible for applying `config/crd/bases/` on every upgrade.
+Upgrades are `helm upgrade --install ballast oci://ghcr.io/tight-line/charts/ballast` with no extra steps. CRDs are kept in sync automatically: Helm itself never upgrades the `crds/` directory, so the chart runs a pre-install/pre-upgrade hook Job (`ballastd apply-crds`) that server-side-applies the CRD manifests baked into the operator image. Set `crds.upgradeHook.enabled: false` to opt out if external tooling manages CRDs; you are then responsible for applying `config/crd/bases/` on every upgrade.
+
+## Verifying the release
+
+Both the container image (`ghcr.io/tight-line/ballast`) and the Helm chart (`ghcr.io/tight-line/charts/ballast`) are keyless-signed with [cosign](https://docs.sigstore.dev/) via GitHub OIDC and the public sigstore infrastructure. There is no public key to manage; verification checks that the artifact was signed by Ballast's release workflow.
+
+```bash
+IDENTITY='^https://github\.com/Tight-Line/ballast/\.github/workflows/release\.yml@refs/tags/v'
+ISSUER=https://token.actions.githubusercontent.com
+
+# container image
+cosign verify ghcr.io/tight-line/ballast:<tag> \
+  --certificate-identity-regexp "$IDENTITY" \
+  --certificate-oidc-issuer "$ISSUER"
+
+# Helm chart
+cosign verify ghcr.io/tight-line/charts/ballast:<version> \
+  --certificate-identity-regexp "$IDENTITY" \
+  --certificate-oidc-issuer "$ISSUER"
+```
+
+The image also carries a SLSA build-provenance attestation and an SBOM; [SECURITY.md](SECURITY.md#published-artifacts) has the full set of verification commands. To make the cluster admit only images that pass this check, see [`examples/admission`](examples/admission/README.md).
+
+## Older releases
+
+Ballast is distributed as signed OCI artifacts from the GitHub Container Registry: the operator image at `ghcr.io/tight-line/ballast` and the Helm chart at `ghcr.io/tight-line/charts/ballast`. Releases through v0.4.x were also published to a GitHub Pages Helm repo at `https://tight-line.github.io/ballast`. That repo is now **frozen**: existing `helm repo add` users and already-published versions keep resolving, but new versions ship only via the OCI chart above, so migrate to the `helm install oci://…` flow when you upgrade.
+
+Every release, with its notes and the packaged chart attached, is on the [Releases page](https://github.com/Tight-Line/ballast/releases).
 
 ## WorkloadProfile Identity
 
@@ -400,7 +426,7 @@ This catch-all policy applies to every opted-in pod in the cluster. Key design d
 The default above is one entry in a catalog of presets — Helm values overlays under [`charts/ballast/presets/`](charts/ballast/presets/README.md) that retune the policy for a particular operating profile. `homogeneous-large-fleet` is built into `values.yaml`; `local-testing` is a fast-cycle overlay for kind clusters. Select one at install time with `-f`:
 
 ```bash
-helm install ballast ballast/ballast -n ballast-system --create-namespace \
+helm install ballast oci://ghcr.io/tight-line/charts/ballast -n ballast-system --create-namespace \
   -f charts/ballast/presets/local-testing.yaml
 ```
 
