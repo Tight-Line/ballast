@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Corrected the SBOM verification command in `SECURITY.md`.** It used `--type spdxjson`, which does not match the versioned SPDX predicate type that syft emits; the correct invocation is `--type https://spdx.dev/Document/v2.3`. Also added the image SLSA-provenance verify command and a `gh attestation verify` alternative.
+- **Release: the image SBOM and SLSA-provenance attestations now publish again.** The `anchore/sbom-action` step defaults to attaching the SBOM as a GitHub release asset, which needs `contents: write`; the `release-image` job is intentionally `contents: read`. Once the release workflow began creating a release named for the git tag (`v<version>`), the action found it and failed trying to upload, which aborted the job before the `Attest SBOM` and `Attest SLSA build provenance` steps ran. Set `upload-release-assets: false` (the SBOM is already attested into the OCI registry and kept as a workflow artifact, so the release asset was redundant). v0.5.0's image shipped signed but without those two attestations; this restores them for the next release.
 
 ## [0.4.12] - 2026-07-28
 
