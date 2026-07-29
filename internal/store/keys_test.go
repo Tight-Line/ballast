@@ -111,3 +111,71 @@ func TestAllKeysForHash_Empty(t *testing.T) {
 		t.Fatalf("expected empty slice, got %v", keys)
 	}
 }
+
+func TestMeasurementHash_Deterministic(t *testing.T) {
+	labels := map[string]string{"app": "api", "component": "server"}
+	h1 := store.MeasurementHash(labels, "ClusterResourcePolicy//fleet")
+	h2 := store.MeasurementHash(labels, "ClusterResourcePolicy//fleet")
+	if h1 != h2 {
+		t.Fatalf("MeasurementHash not deterministic: %q != %q", h1, h2)
+	}
+}
+
+func TestMeasurementHash_OrderIndependent(t *testing.T) {
+	h1 := store.MeasurementHash(map[string]string{"a": "1", "b": "2"}, "p")
+	h2 := store.MeasurementHash(map[string]string{"b": "2", "a": "1"}, "p")
+	if h1 != h2 {
+		t.Fatalf("MeasurementHash is order-dependent: %q != %q", h1, h2)
+	}
+}
+
+// Two profiles sharing a tuple but governed by different policies must not share a
+// key namespace: samples carry no timestamps, so both appending to one series
+// would inflate the count and distort the distribution.
+func TestMeasurementHash_DiffersByPolicy(t *testing.T) {
+	labels := map[string]string{"app": "api"}
+	h1 := store.MeasurementHash(labels, "ClusterResourcePolicy//fleet")
+	h2 := store.MeasurementHash(labels, "ResourcePolicy/team-a/local")
+	if h1 == h2 {
+		t.Fatal("same measurement hash for different policies")
+	}
+}
+
+func TestMeasurementHash_DiffersByLabels(t *testing.T) {
+	h1 := store.MeasurementHash(map[string]string{"app": "api"}, "p")
+	h2 := store.MeasurementHash(map[string]string{"app": "web"}, "p")
+	if h1 == h2 {
+		t.Fatal("same measurement hash for different tuples")
+	}
+}
+
+// A label key cannot contain a NUL byte, so no real label can forge the policy
+// line and make one policy's series alias another's.
+func TestMeasurementHash_PolicyNotForgeableByLabel(t *testing.T) {
+	h1 := store.MeasurementHash(map[string]string{"policy": "b"}, "")
+	h2 := store.MeasurementHash(nil, "b")
+	if h1 == h2 {
+		t.Fatal("a label named 'policy' aliased the governing policy")
+	}
+}
+
+// The empty policy (no policy matched) is still a distinct namespace from the bare
+// tuple hash used by pre-upgrade profiles.
+func TestMeasurementHash_DiffersFromTupleHash(t *testing.T) {
+	labels := map[string]string{"app": "api"}
+	if store.MeasurementHash(labels, "") == store.TupleHash(labels) {
+		t.Fatal("measurement hash collides with the tuple hash")
+	}
+}
+
+func TestMeasurementHash_Format(t *testing.T) {
+	h := store.MeasurementHash(map[string]string{"k": "v"}, "p")
+	if len(h) != 16 {
+		t.Errorf("MeasurementHash length = %d, want 16", len(h))
+	}
+	for _, r := range h {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			t.Errorf("MeasurementHash %q contains non-hex character %q", h, r)
+		}
+	}
+}

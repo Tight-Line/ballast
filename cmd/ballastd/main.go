@@ -40,6 +40,7 @@ import (
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	crdmanifests "github.com/tight-line/ballast/config/crd/bases"
 	"github.com/tight-line/ballast/internal/controller/metricscollector"
+	"github.com/tight-line/ballast/internal/controller/policystatus"
 	"github.com/tight-line/ballast/internal/controller/resourceadjuster"
 	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
 	"github.com/tight-line/ballast/internal/crdapply"
@@ -396,6 +397,15 @@ func registerComponents(
 
 	if err := metricscollector.Setup(mgr, ks, storeClient, dryRunMeasure, rec); err != nil {
 		return fmt.Errorf("set up metricscollector controller: %w", err)
+	}
+
+	// Publishes each policy's profile discriminator on its status, so the profiles
+	// a policy governs can be found from the policy object.
+	if err := policystatus.NewCluster(mgr.GetClient()).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("set up clusterresourcepolicy status controller: %w", err)
+	}
+	if err := policystatus.NewNamespaced(mgr.GetClient()).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("set up resourcepolicy status controller: %w", err)
 	}
 
 	ballastwebhook.NewPodMutator(mgr.GetClient(), ks, dryRunApply, rec).SetupWithManager(mgr)

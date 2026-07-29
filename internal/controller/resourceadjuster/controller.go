@@ -152,12 +152,27 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{RequeueAfter: ballastv1.DefaultResizeIntervalDuration}, nil
 	}
 
-	resolved, err := r.resolver.Resolve(ctx, policy.Input{Labels: profile.Status.TupleLabels})
-	if err != nil { // coverage:ignore - transient API error
+	// Read the governing policy from the profile rather than re-resolving it here.
+	// A profile carries no namespace and only its identity tuple, so resolving from
+	// it would let any ResourcePolicy in the cluster outrank every
+	// ClusterResourcePolicy, and would miss policies selecting on kinds or
+	// annotations that admission matched. The workloadwatcher resolves per pod and
+	// records the result, so this path resizes toward the same policy the pod was
+	// admitted under.
+	if profile.Status.PolicyRef == nil {
+		log.Info("no policy matches profile, skipping resize", "profile", profile.Name)
+		r.rec.ResizeSkipped(ctx, "no_policy", pid, "", "")
+		return ctrl.Result{RequeueAfter: ballastv1.DefaultResizeIntervalDuration}, nil
+	}
+	resolved, err := r.resolver.Load(ctx, *profile.Status.PolicyRef)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if resolved == nil {
-		log.Info("no policy matches profile, skipping resize", "profile", profile.Name)
+		// The policy was deleted; the workloadwatcher is migrating these pods to a
+		// profile under whichever policy now governs them.
+		log.Info("policy referenced by profile no longer exists, skipping resize",
+			"profile", profile.Name, "policy", profile.Status.PolicyRef.Key())
 		r.rec.ResizeSkipped(ctx, "no_policy", pid, "", "")
 		return ctrl.Result{RequeueAfter: ballastv1.DefaultResizeIntervalDuration}, nil
 	}

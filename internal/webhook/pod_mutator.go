@@ -24,6 +24,7 @@ import (
 	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/kube"
 	"github.com/tight-line/ballast/internal/metrics"
+	"github.com/tight-line/ballast/internal/naming"
 	"github.com/tight-line/ballast/internal/policy"
 	"github.com/tight-line/ballast/internal/validation"
 )
@@ -80,7 +81,18 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 		return admission.Allowed("apply not requested")
 	}
 
-	profile, err := m.lookupProfile(ctx, &pod)
+	// Resolve policy before looking up the profile: a profile's identity includes
+	// the policy governing it, so the policy is part of the profile's name. This
+	// is also the value stamped as policy-ref below, so admission resolves exactly
+	// once and cannot stamp one policy while applying another's recommendations.
+	resolved, err := m.resolver.Resolve(ctx, policy.InputForPod(&pod))
+	if err != nil { // coverage:ignore - transient API error listing policy objects
+		log.V(1).Info("policy resolution error, allowing without mutation", "err", err)
+		m.rec.WebhookMutation(ctx, "not_available", req.Namespace, metrics.ProfileID{})
+		return admission.Allowed("policy not available")
+	}
+
+	profile, err := m.lookupProfile(ctx, &pod, resolved)
 	if err != nil {
 		log.V(1).Info("profile resolution error, allowing without mutation", "err", err)
 		m.rec.WebhookMutation(ctx, "not_available", req.Namespace, metrics.ProfileID{})
@@ -98,11 +110,11 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 		return admission.Allowed("profile not ready")
 	}
 
-	return m.mutate(ctx, &pod, profile)
+	return m.mutate(ctx, &pod, profile, resolved)
 }
 
 // mutate builds the patched pod and returns a JSON-patch admission response.
-func (m *PodMutator) mutate(ctx context.Context, pod *corev1.Pod, profile *ballastv1.WorkloadProfile) admission.Response {
+func (m *PodMutator) mutate(ctx context.Context, pod *corev1.Pod, profile *ballastv1.WorkloadProfile, resolved *policy.ResolvedPolicy) admission.Response {
 	log := ctrl.Log.WithName("webhook")
 
 	modifiedPod := pod.DeepCopy()
@@ -112,7 +124,7 @@ func (m *PodMutator) mutate(ctx context.Context, pod *corev1.Pod, profile *balla
 	if modifiedPod.Annotations == nil {
 		modifiedPod.Annotations = make(map[string]string)
 	}
-	policyRef := m.stampPolicyRef(ctx, pod, modifiedPod)
+	policyRef := stampPolicyRef(modifiedPod, resolved)
 
 	applied := applyRecommendations(modifiedPod, profile)
 	log.Info("applying resource recommendations", "dry_run", m.dryRunApply, "containers", applied)
@@ -140,34 +152,26 @@ func (m *PodMutator) mutate(ctx context.Context, pod *corev1.Pod, profile *balla
 	return patchResponse(pod, modifiedPod)
 }
 
-// stampPolicyRef resolves the active policy and stamps its name onto modifiedPod,
-// returning the stamped ref ("" when no policy resolved). Policy resolution
-// failures are non-fatal — the admission proceeds without a policy-ref.
-func (m *PodMutator) stampPolicyRef(ctx context.Context, pod, modifiedPod *corev1.Pod) string {
-	resolved, err := m.resolver.Resolve(ctx, policy.Input{
-		Namespace:   pod.Namespace,
-		OwnerKind:   directOwnerKind(pod),
-		Labels:      pod.Labels,
-		Annotations: pod.Annotations,
-	})
-	if err != nil { // coverage:ignore - transient API error listing policy objects
-		ctrl.Log.WithName("webhook").V(1).Info("policy resolution error, skipping policy-ref", "err", err)
-		return ""
-	}
+// stampPolicyRef records the governing policy on modifiedPod and returns the
+// stamped value ("" when no policy matched).
+//
+// This is admission-time resolution; the workloadwatcher refreshes the annotation
+// afterwards, because the policy set can change while the pod runs.
+func stampPolicyRef(modifiedPod *corev1.Pod, resolved *policy.ResolvedPolicy) string {
 	if resolved == nil {
 		return ""
 	}
-	ref := resolved.Name
-	if resolved.Namespaced {
-		ref = pod.Namespace + "/" + resolved.Name
-	}
+	ref := policy.PodAnnotationValue(resolved.Ref)
 	modifiedPod.Annotations[validation.AnnotationPolicyRef] = ref
 	return ref
 }
 
-// lookupProfile resolves the WorkloadProfile for the given pod.
-// Returns (nil, nil) when no profile exists yet — normal for new workloads.
-func (m *PodMutator) lookupProfile(ctx context.Context, pod *corev1.Pod) (*ballastv1.WorkloadProfile, error) {
+// lookupProfile resolves the WorkloadProfile holding this pod's recommendations,
+// which is identified by the pod's label tuple together with the policy governing
+// it. Returns (nil, nil) when no such profile exists yet — normal for new
+// workloads, and also the case immediately after a policy change, until the
+// workloadwatcher creates the profile for the new policy.
+func (m *PodMutator) lookupProfile(ctx context.Context, pod *corev1.Pod, resolved *policy.ResolvedPolicy) (*ballastv1.WorkloadProfile, error) {
 	var cfg ballastv1.BallastConfig
 	if err := m.client.Get(ctx, types.NamespacedName{Name: killswitch.BallastConfigName}, &cfg); err != nil {
 		return nil, fmt.Errorf("getting BallastConfig: %w", err)
@@ -175,8 +179,14 @@ func (m *PodMutator) lookupProfile(ctx context.Context, pod *corev1.Pod) (*balla
 
 	tupleLabels := workloadwatcher.ExtractTupleLabels(pod.Labels, cfg.Spec.IdentityLabels)
 
+	discriminator := naming.NoPolicy
+	if resolved != nil {
+		discriminator = naming.PolicyDiscriminator(resolved.Ref.Kind, resolved.Ref.Namespace, resolved.Ref.Name)
+	}
+
 	var wp ballastv1.WorkloadProfile
-	if err := m.client.Get(ctx, types.NamespacedName{Name: workloadwatcher.ProfileName(tupleLabels, cfg.Spec.IdentityLabels)}, &wp); err != nil {
+	name := naming.ProfileName(tupleLabels, cfg.Spec.IdentityLabels, discriminator)
+	if err := m.client.Get(ctx, types.NamespacedName{Name: name}, &wp); err != nil {
 		return nil, nil //nolint:nilerr // not-found is expected for new workloads
 	}
 
@@ -253,15 +263,4 @@ func patchResponse(original, modified *corev1.Pod) admission.Response {
 		return admission.Errored(http.StatusInternalServerError, fmt.Errorf("marshaling modified pod: %w", err))
 	}
 	return admission.PatchResponseFromRaw(originalJSON, modifiedJSON)
-}
-
-// directOwnerKind returns the Kind of the first controller ownerReference on the pod,
-// or empty string if none is set.
-func directOwnerKind(pod *corev1.Pod) string {
-	for _, ref := range pod.OwnerReferences {
-		if ref.Controller != nil && *ref.Controller {
-			return ref.Kind
-		}
-	}
-	return ""
 }

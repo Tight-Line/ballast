@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **BREAKING (data): a `ResourcePolicy` in any namespace no longer outranks every `ClusterResourcePolicy` fleet-wide, and policies are no longer resolved differently at admission than during measurement and resize** ([#87](https://github.com/Tight-Line/ballast/issues/87)). Both were the same defect. `WorkloadProfile` is cluster-scoped and carries only its identity tuple, so the metrics collector and resource adjuster were resolving policy from an input with no namespace, no owner kind, and no annotations. `client.InNamespace("")` means *all namespaces*, and namespace-scoped policies rank above cluster-scoped ones regardless of priority, so one `ResourcePolicy` with a loose selector governed recommendations and resizes for every matching profile in the cluster, outranking policies that explicitly set a higher priority. In the same breath, any policy selecting on `kinds`, `annotations`, or `namespaces.include` matched at admission but could never match in the controllers, so pods were admitted with one policy's values and then resized toward another's, with nothing logging a conflict because each path resolved successfully on its own terms.
+
+  Policy is now resolved exactly once per pod, by the workloadwatcher, which is the only component holding a pod and therefore the only one that can evaluate a selector correctly. The result is recorded on `workloadprofile.status.policyRef`; the metrics collector and resource adjuster read it instead of resolving again, so all three paths agree by construction. A `Resolver` `Input` with no namespace can no longer match a `ResourcePolicy` at all.
+
+  **The governing policy is now part of a profile's identity.** A profile holds one set of recommendations per container, and the policy chooses the metrics sources, poll cadence, tracked resources, aggregation, and headroom that produce them, so pods resolving to different policies now belong to different profiles. Profile names gain a policy token (`checkout--server--fleet-a1b2c3d4`), and each profile owns its own Redis key namespace via `status.measurementHash`, so sibling profiles never write into one sample series and the profile finalizer purges only its own keys.
+
+  **Upgrade impact: every existing `WorkloadProfile` is replaced by a newly-named one, and the fleet accrues from zero for one `readiness.minTimeSpan` (24h by default) before resizes resume.** No resizes are issued during that window; admission continues to apply nothing until each new profile is ready, so pods keep whatever requests they were created with. The old profiles orphan, age out over `orphanTTL` (168h), and their Redis history is purged by the finalizer as they go. Nothing needs to be done by hand.
+
+### Added
+
+- **Policy changes now take effect on a running cluster without waiting for pod churn.** The workloadwatcher watches both policy kinds and re-evaluates every enrolled pod when a policy is created, deleted, or has its selector or priority changed. Edits to the rest of a policy's spec (aggregation, headroom, thresholds, sources, cadence) are deliberately *not* treated as identity changes: they are read live on the next collection or resize cycle, so they take effect without re-keying measurement history or forcing a fresh accrual.
+- **`status.profileDiscriminator` on `ClusterResourcePolicy` and `ResourcePolicy`**, shown as a `DISCRIMINATOR` column in `kubectl get`. It is the token that policy contributes to the names of the profiles it governs, so they can be listed without computing a hash by hand:
+  `kubectl get workloadprofiles | grep "$(kubectl get crp fleet -o jsonpath='{.status.profileDiscriminator}')"`. Derived from the policy's kind, namespace, and name, so two same-named `ResourcePolicies` in different namespaces stay distinct.
+- **`POLICY` column on `kubectl get workloadprofiles`**, showing the governing policy from `status.policyRef`.
+- The `policy-ref` pod annotation is now refreshed by the workloadwatcher when a policy change moves a pod. Previously it kept advertising whatever was resolved at admission.
+- Documented on the `PolicySelector` CRD type which selector fields can scope measurement and which cannot: `namespaces` and `labelSelector` are expressible as server-side pod queries, `annotations` is not, so annotation selectors govern admission but cannot narrow a profile to an annotated subset of its tuple.
+
 ## [0.5.0] - 2026-07-28
 
 ### Changed

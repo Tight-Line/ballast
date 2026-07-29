@@ -44,3 +44,11 @@ rules:
 - apiGroups: ["ballast.tightlinesoftware.com"]
   resources: ["workloadprofiles/status"]
   verbs: ["patch"]
+# Policy status carries only the operator-derived profileDiscriminator, which the
+# policystatus controllers publish so the WorkloadProfiles a policy governs can be
+# found from the policy. The policies themselves stay read-only above.
+- apiGroups: ["ballast.tightlinesoftware.com"]
+  resources:
+    - clusterresourcepolicies/status
+    - resourcepolicies/status
+  verbs: ["patch"]

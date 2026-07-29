@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -27,7 +28,9 @@ import (
 	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/logger"
 	"github.com/tight-line/ballast/internal/metrics"
+	"github.com/tight-line/ballast/internal/naming"
 	"github.com/tight-line/ballast/internal/plugin"
+	"github.com/tight-line/ballast/internal/policy"
 	"github.com/tight-line/ballast/internal/store"
 	"github.com/tight-line/ballast/internal/validation"
 )
@@ -81,7 +84,12 @@ type Controller struct {
 // New creates a Controller.
 func New(c client.Client, ks *killswitch.KillSwitch, storeClient store.Client, rec *metrics.Recorder) *Controller {
 	return &Controller{
-		Pod:     &PodReconciler{client: c, ks: ks, rec: rec},
+		Pod: &PodReconciler{
+			client:   c,
+			ks:       ks,
+			rec:      rec,
+			resolver: policy.NewResolver(c, ctrl.Log.WithName("workloadwatcher-pod")),
+		},
 		Profile: &ProfileReconciler{client: c, storeClient: storeClient, rec: rec},
 	}
 }
@@ -111,10 +119,18 @@ func (c *Controller) SetupWithManager(mgr ctrl.Manager) error {
 
 // PodReconciler watches pods carrying Ballast behavior annotations and maintains
 // WorkloadProfile objects and their activeWorkloads counters.
+//
+// It is also the only component that resolves policy for a pod outside admission,
+// and the only one positioned to: a pod reconcile has the namespace, the full
+// label set, the annotations, and the owner kind that policy selectors are
+// written against, none of which survive into the cluster-scoped WorkloadProfile
+// the other controllers work from. The resolved policy is recorded on the
+// profile's status.policyRef for those controllers to read.
 type PodReconciler struct {
-	client client.Client
-	ks     *killswitch.KillSwitch
-	rec    *metrics.Recorder
+	client   client.Client
+	ks       *killswitch.KillSwitch
+	rec      *metrics.Recorder
+	resolver *policy.Resolver
 }
 
 // Reconcile handles pod CREATE/UPDATE (stamp and increment) and DELETE (decrement).
@@ -164,16 +180,19 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 		return ctrl.Result{}, err // coverage:ignore - transient API error
 	}
 
-	// The desired profile name is recomputed from the pod's current identity every
-	// reconcile, so a change to the pod's labels or to identityLabels migrates the
-	// pod to the correct profile instead of trusting a possibly-stale stamp.
-	tupleLabels := ExtractTupleLabels(pod.Labels, cfg.Spec.IdentityLabels)
-	selectorLabels := ExtractSelectorLabels(pod.Labels, cfg.Spec.IdentityLabels)
-	profName := ProfileName(tupleLabels, cfg.Spec.IdentityLabels)
+	// The desired identity is recomputed from the pod's current state every
+	// reconcile, so a change to the pod's labels, to identityLabels, or to the
+	// policy set migrates the pod to the correct profile instead of trusting a
+	// possibly-stale stamp.
+	id, err := r.identityFor(ctx, pod, cfg.Spec.IdentityLabels)
+	if err != nil { // coverage:ignore - transient API error listing policy objects
+		return ctrl.Result{}, err
+	}
+	profName := id.name
 
 	// Ensure the target profile exists; recreates it if it was deleted while pods
 	// still reference it.
-	if err := r.ensureProfile(ctx, profName, tupleLabels, selectorLabels); err != nil {
+	if err := r.ensureProfile(ctx, id); err != nil {
 		if errors.Is(err, errProfileTerminating) {
 			// The profile is being purged; wait for it to finish, then a later
 			// reconcile recreates it fresh and rebinds this pod.
@@ -182,7 +201,7 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 		return ctrl.Result{}, err // coverage:ignore - transient API error
 	}
 
-	pid := metrics.ProfileID{Name: profName, Labels: tupleLabels}
+	pid := metrics.ProfileID{Name: profName, Labels: id.tupleLabels}
 	firstEnroll := currentRef == ""
 	migrating := currentRef != "" && currentRef != profName
 
@@ -196,10 +215,8 @@ func (r *PodReconciler) handleCreateUpdate(ctx context.Context, pod *corev1.Pod)
 		}
 	}
 
-	if currentRef != profName {
-		if err := r.stampProfileRef(ctx, pod, profName); err != nil { // coverage:ignore - transient API error
-			return ctrl.Result{}, err
-		}
+	if err := r.stampRefs(ctx, pod, id); err != nil { // coverage:ignore - transient API error
+		return ctrl.Result{}, err
 	}
 
 	if firstEnroll {
@@ -271,9 +288,57 @@ func (r *PodReconciler) handleDelete(ctx context.Context, pod *corev1.Pod) (ctrl
 	return ctrl.Result{}, r.client.Patch(ctx, pod, client.MergeFrom(base))
 }
 
-func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupleLabels, selectorLabels map[string]string) error {
+// profileIdentity is everything that distinguishes one WorkloadProfile: the pods
+// it pools, the policy governing them, and the Redis namespace holding their
+// samples.
+type profileIdentity struct {
+	name            string
+	tupleLabels     map[string]string
+	selectorLabels  map[string]string
+	policyRef       *ballastv1.PolicyReference
+	measurementHash string
+}
+
+// identityFor derives the WorkloadProfile identity a pod belongs to: its label
+// tuple plus the policy governing it.
+//
+// The policy belongs in identity because a profile holds exactly one set of
+// recommendations per container, and the policy is what decides the metrics
+// sources, poll cadence, tracked resources, aggregation, and headroom that
+// produce them. Pods resolving to different policies cannot share one answer, so
+// they cannot share one profile.
+func (r *PodReconciler) identityFor(ctx context.Context, pod *corev1.Pod, identityLabels []string) (id profileIdentity, err error) {
+	resolved, err := r.resolver.Resolve(ctx, policy.InputForPod(pod))
+	if err != nil { // coverage:ignore - transient API error listing policy objects
+		return profileIdentity{}, err
+	}
+
+	id = profileIdentity{
+		tupleLabels:    ExtractTupleLabels(pod.Labels, identityLabels),
+		selectorLabels: ExtractSelectorLabels(pod.Labels, identityLabels),
+	}
+
+	// A pod matching no policy still gets a profile, so it stays counted and
+	// visible; the metrics collector has no policy to measure with and skips it.
+	// That profile's identity carries the NoPolicy token, so as soon as a policy
+	// does match, the pod migrates to a new profile and the empty one orphans.
+	discriminator := naming.NoPolicy
+	var policyKey string
+	if resolved != nil {
+		ref := resolved.Ref
+		id.policyRef = &ref
+		discriminator = naming.PolicyDiscriminator(ref.Kind, ref.Namespace, ref.Name)
+		policyKey = ref.Key()
+	}
+
+	id.name = naming.ProfileName(id.tupleLabels, identityLabels, discriminator)
+	id.measurementHash = store.MeasurementHash(id.tupleLabels, policyKey)
+	return id, nil
+}
+
+func (r *PodReconciler) ensureProfile(ctx context.Context, id profileIdentity) error {
 	var existing ballastv1.WorkloadProfile
-	err := r.client.Get(ctx, types.NamespacedName{Name: profName}, &existing)
+	err := r.client.Get(ctx, types.NamespacedName{Name: id.name}, &existing)
 	if err == nil {
 		// A profile mid-deletion is having its Redis history purged by the
 		// finalizer. Binding a live pod to it now would race the purge and lose
@@ -281,14 +346,14 @@ func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupl
 		if !existing.DeletionTimestamp.IsZero() {
 			return errProfileTerminating
 		}
-		return r.ensureProfileStatus(ctx, &existing, tupleLabels, selectorLabels)
+		return r.ensureProfileStatus(ctx, &existing, id)
 	}
 	if !apierrors.IsNotFound(err) { // coverage:ignore - transient API error
 		return err
 	}
 
 	profile := &ballastv1.WorkloadProfile{
-		ObjectMeta: metav1.ObjectMeta{Name: profName},
+		ObjectMeta: metav1.ObjectMeta{Name: id.name},
 	}
 	if err := r.client.Create(ctx, profile); err != nil {
 		if apierrors.IsAlreadyExists(err) {
@@ -301,28 +366,42 @@ func (r *PodReconciler) ensureProfile(ctx context.Context, profName string, tupl
 		}
 		return err // coverage:ignore - transient non-AlreadyExists error
 	}
-	r.rec.WorkloadProfileCreated(ctx, metrics.ProfileID{Name: profName, Labels: tupleLabels})
+	r.rec.WorkloadProfileCreated(ctx, metrics.ProfileID{Name: id.name, Labels: id.tupleLabels})
 
 	// Status is a subresource; it can only be written after creation.
-	return r.ensureProfileStatus(ctx, profile, tupleLabels, selectorLabels)
+	return r.ensureProfileStatus(ctx, profile, id)
 }
 
-// ensureProfileStatus level-triggers the profile's identity labels: whenever the
-// stored status does not match the desired tuple/selector labels, patch it.
-// Converging on every reconcile (not only at creation) heals a profile whose
-// initial status write was lost — a conflict with the profile reconciler's
-// concurrent finalizer back-fill, a crash between create and status write, or a
-// profile inherited from an older operator version. A Patch (not Update) is used
+// ensureProfileStatus level-triggers the profile's identity: whenever the stored
+// status does not match the desired tuple labels, selector labels, policy
+// reference, or measurement hash, patch it. Converging on every reconcile (not
+// only at creation) heals a profile whose initial status write was lost — a
+// conflict with the profile reconciler's concurrent finalizer back-fill, a crash
+// between create and status write, or a profile inherited from an older operator
+// version that recorded no policy reference at all. A Patch (not Update) is used
 // so the write cannot 409 against that finalizer back-fill.
-func (r *PodReconciler) ensureProfileStatus(ctx context.Context, profile *ballastv1.WorkloadProfile, tupleLabels, selectorLabels map[string]string) error {
-	if maps.Equal(profile.Status.TupleLabels, tupleLabels) &&
-		maps.Equal(profile.Status.SelectorLabels, selectorLabels) {
+func (r *PodReconciler) ensureProfileStatus(ctx context.Context, profile *ballastv1.WorkloadProfile, id profileIdentity) error {
+	if maps.Equal(profile.Status.TupleLabels, id.tupleLabels) &&
+		maps.Equal(profile.Status.SelectorLabels, id.selectorLabels) &&
+		samePolicyRef(profile.Status.PolicyRef, id.policyRef) &&
+		profile.Status.MeasurementHash == id.measurementHash {
 		return nil
 	}
 	base := profile.DeepCopy()
-	profile.Status.TupleLabels = tupleLabels
-	profile.Status.SelectorLabels = selectorLabels
+	profile.Status.TupleLabels = id.tupleLabels
+	profile.Status.SelectorLabels = id.selectorLabels
+	profile.Status.PolicyRef = id.policyRef
+	profile.Status.MeasurementHash = id.measurementHash
 	return r.client.Status().Patch(ctx, profile, client.MergeFrom(base))
+}
+
+// samePolicyRef compares two policy references, treating "no policy matched"
+// (nil) as distinct from every reference.
+func samePolicyRef(a, b *ballastv1.PolicyReference) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // podEnrollment overrides the reconciled pod's enrollment when recomputing a
@@ -417,12 +496,33 @@ func (r *PodReconciler) setActiveWorkloads(ctx context.Context, profName string,
 	return r.client.Status().Patch(ctx, &profile, client.MergeFrom(base))
 }
 
-func (r *PodReconciler) stampProfileRef(ctx context.Context, pod *corev1.Pod, profName string) error {
+// stampRefs writes the profile-ref and policy-ref annotations in a single patch,
+// and is a no-op when both already hold their desired values.
+//
+// policy-ref is refreshed here rather than left as the webhook wrote it. The
+// webhook stamps the policy it resolved at admission; after a policy is created,
+// edited, or deleted, that annotation would otherwise keep advertising a policy
+// that no longer governs the pod, which is a trap for anyone debugging from it.
+func (r *PodReconciler) stampRefs(ctx context.Context, pod *corev1.Pod, id profileIdentity) error {
+	var policyRef string
+	if id.policyRef != nil {
+		policyRef = policy.PodAnnotationValue(*id.policyRef)
+	}
+	if pod.Annotations[AnnotationProfileRef] == id.name &&
+		pod.Annotations[validation.AnnotationPolicyRef] == policyRef {
+		return nil
+	}
+
 	base := pod.DeepCopy()
 	if pod.Annotations == nil {
 		pod.Annotations = make(map[string]string)
 	}
-	pod.Annotations[AnnotationProfileRef] = profName
+	pod.Annotations[AnnotationProfileRef] = id.name
+	if policyRef == "" {
+		delete(pod.Annotations, validation.AnnotationPolicyRef)
+	} else {
+		pod.Annotations[validation.AnnotationPolicyRef] = policyRef
+	}
 	return r.client.Patch(ctx, pod, client.MergeFrom(base))
 }
 
@@ -465,9 +565,22 @@ func (r *PodReconciler) podsForProfile(ctx context.Context, obj client.Object) [
 	return reqs
 }
 
-// podsForConfig maps a BallastConfig change to reconcile requests for every managed
-// pod, so an identityLabels change promptly migrates each pod to its new profile.
-func (r *PodReconciler) podsForConfig(ctx context.Context, _ client.Object) []ctrl.Request {
+// allManagedPods maps a cluster-wide configuration change to reconcile requests
+// for every managed pod, so the change promptly migrates each pod to its correct
+// profile. It backs both the BallastConfig watch (identityLabels changes rename
+// every profile) and the policy watches (a policy change can move any pod to a
+// different policy, and therefore a different profile).
+//
+// The fan-out is deliberately indiscriminate. The set of pods a policy event
+// affects is not "the pods this policy matches": deleting a policy affects the
+// pods that matched the spec that no longer exists, narrowing a selector affects
+// the pods that stopped matching, and because precedence is cluster-wide, a new
+// high-priority policy can flip pods that never matched anything before.
+// Computing that set exactly would need both the old and new spec plus a
+// re-evaluation against every other policy. Enqueueing everything instead costs
+// one cache read and one resolve per pod, writes nothing unless a pod's identity
+// actually changed, and only happens on human-initiated policy edits.
+func (r *PodReconciler) allManagedPods(ctx context.Context, _ client.Object) []ctrl.Request {
 	var podList corev1.PodList
 	if err := r.client.List(ctx, &podList); err != nil { // coverage:ignore - transient API error
 		return nil
@@ -518,12 +631,56 @@ func identityLabelsChanged() predicate.Predicate {
 	}
 }
 
+// policyResolutionChanged admits only the policy events that can change which
+// policy governs a pod: creation, deletion, and updates that touch the selector
+// or the priority.
+//
+// Every other spec field (metrics sources, aggregation, headroom, thresholds,
+// cadence) is read live from the policy object by the metrics collector and the
+// resource adjuster on their next cycle, so those edits take effect without any
+// profile churn. Treating them as identity changes would re-key measurement
+// history and force a fresh accrual for nothing — the sample already recorded
+// does not change meaning because the headroom applied to it did.
+func policyResolutionChanged() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return true },
+		DeleteFunc:  func(event.DeleteEvent) bool { return true },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldSpec, ok1 := policySpecOf(e.ObjectOld)
+			newSpec, ok2 := policySpecOf(e.ObjectNew)
+			if !ok1 || !ok2 {
+				// Not a policy object we recognize; admit it rather than silently
+				// dropping an event that might matter.
+				return true
+			}
+			return oldSpec.Priority != newSpec.Priority ||
+				!reflect.DeepEqual(oldSpec.Selector, newSpec.Selector)
+		},
+	}
+}
+
+// policySpecOf extracts the shared policy spec from either policy kind.
+// ResourcePolicySpec is a type alias for ClusterResourcePolicySpec, so one
+// pointer type serves both.
+func policySpecOf(obj client.Object) (*ballastv1.ClusterResourcePolicySpec, bool) {
+	switch p := obj.(type) {
+	case *ballastv1.ClusterResourcePolicy:
+		return &p.Spec, true
+	case *ballastv1.ResourcePolicy:
+		return &p.Spec, true
+	default:
+		return nil, false
+	}
+}
+
 // SetupWithManager registers the PodReconciler with the manager. Beyond watching
 // pods, it watches WorkloadProfile deletions (to promptly recreate profiles still
-// referenced by live pods) and BallastConfig identityLabels changes (to promptly
-// migrate pods to their new profiles). It also registers the profile-ref pod
-// index on the manager's shared cache, which serves both this reconciler's and
-// the ProfileReconciler's count lookups.
+// referenced by live pods), BallastConfig identityLabels changes (to promptly
+// migrate pods to their new profiles), and both policy kinds (so a policy applied
+// to a running cluster takes effect without waiting for pod churn). It also
+// registers the profile-ref pod index on the manager's shared cache, which serves
+// both this reconciler's and the ProfileReconciler's count lookups.
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(), &corev1.Pod{}, PodProfileRefField, PodProfileRefIndexer,
@@ -538,8 +695,14 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.podsForProfile),
 			builder.WithPredicates(profileDeleted())).
 		Watches(&ballastv1.BallastConfig{},
-			handler.EnqueueRequestsFromMapFunc(r.podsForConfig),
+			handler.EnqueueRequestsFromMapFunc(r.allManagedPods),
 			builder.WithPredicates(identityLabelsChanged())).
+		Watches(&ballastv1.ClusterResourcePolicy{},
+			handler.EnqueueRequestsFromMapFunc(r.allManagedPods),
+			builder.WithPredicates(policyResolutionChanged())).
+		Watches(&ballastv1.ResourcePolicy{},
+			handler.EnqueueRequestsFromMapFunc(r.allManagedPods),
+			builder.WithPredicates(policyResolutionChanged())).
 		Complete(r)
 }
 
@@ -657,8 +820,19 @@ func (r *ProfileReconciler) finalize(ctx context.Context, profile *ballastv1.Wor
 		return ctrl.Result{}, nil
 	}
 
-	tupleHash := store.TupleHash(profile.Status.TupleLabels)
-	keys, err := store.AllKeysForHash(ctx, r.storeClient, tupleHash)
+	// The profile's own measurement hash, not a hash of its tuple: profiles that
+	// share a tuple but resolve to different policies each own a separate key
+	// namespace, and purging by tuple would delete a live sibling's history.
+	hash := profile.Status.MeasurementHash
+	if hash == "" {
+		// A profile from a release that predates measurement hashes (or one whose
+		// status write was lost) holds its samples under the bare tuple hash.
+		// Falling back keeps those keys from being stranded in Redis when the
+		// profile ages out, which is how every profile inherited across the
+		// upgrade is cleaned up.
+		hash = store.TupleHash(profile.Status.TupleLabels)
+	}
+	keys, err := store.AllKeysForHash(ctx, r.storeClient, hash)
 	if err != nil { // coverage:ignore - requires a broken Redis instance
 		return ctrl.Result{}, err
 	}
@@ -737,35 +911,4 @@ func missingLabelPlaceholder(key string) string {
 		return -1
 	}, seg)
 	return "no" + clean
-}
-
-// ProfileName derives a deterministic Kubernetes-safe name from a label tuple.
-// Values are joined with "--" in identityLabels order. Each value is sanitized
-// to lowercase alphanumeric-and-dash.
-func ProfileName(tupleLabels map[string]string, identityLabels []string) string {
-	var parts []string
-	for _, k := range identityLabels {
-		if v, ok := tupleLabels[k]; ok {
-			parts = append(parts, sanitizeName(v))
-		}
-	}
-	name := strings.Join(parts, "--")
-	if len(name) > 253 { // coverage:ignore - triggered only with extremely long label values
-		name = name[:253]
-	}
-	return name
-}
-
-// sanitizeName converts a string to a lowercase DNS-label-safe segment.
-func sanitizeName(s string) string {
-	s = strings.ToLower(s)
-	var b strings.Builder
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' {
-			b.WriteRune(r)
-		} else {
-			b.WriteRune('-')
-		}
-	}
-	return strings.Trim(b.String(), "-")
 }

@@ -18,6 +18,9 @@ spec:
     - jsonPath: .status.activeWorkloads
       name: ActiveWorkloads
       type: integer
+    - jsonPath: .status.policyRef.name
+      name: Policy
+      type: string
     - jsonPath: .status.state
       name: State
       type: string
@@ -206,10 +209,54 @@ spec:
                   - name
                   type: object
                 type: array
+              measurementHash:
+                description: |-
+                  MeasurementHash identifies the Redis key namespace this profile owns. It
+                  covers both TupleLabels and PolicyRef, so profiles that share a tuple but
+                  resolve to different policies keep separate sample series and the profile
+                  finalizer can purge its own keys without reference counting.
+
+                  Recorded here rather than recomputed on demand so that the collector's
+                  writes and the finalizer's purge can never disagree about which keys belong
+                  to this profile.
+                type: string
               meetsThreshold:
                 description: MeetsThreshold is true when the profile has sufficient
                   history to act on.
                 type: boolean
+              policyRef:
+                description: |-
+                  PolicyRef identifies the policy governing this profile, or is unset when no
+                  policy currently matches (the metrics collector then has nothing to
+                  measure with and skips the profile).
+
+                  The governing policy is part of a profile's identity, not merely an
+                  observation about it: the policy chooses the metrics sources, the poll
+                  cadence, the tracked resources, the aggregation, and the headroom behind
+                  one set of recommendations. Pods that resolve to different policies
+                  therefore belong to different profiles. The workloadwatcher resolves policy
+                  per pod (the only place with a pod's namespace, labels, annotations, and
+                  owner kind) and records the result here; the metrics collector and resource
+                  adjuster read it rather than resolving again, so all three agree by
+                  construction.
+                properties:
+                  kind:
+                    description: Kind is the referenced policy's kind.
+                    enum:
+                    - ClusterResourcePolicy
+                    - ResourcePolicy
+                    type: string
+                  name:
+                    description: Name is the policy object's name.
+                    type: string
+                  namespace:
+                    description: Namespace is the policy's namespace, empty for a
+                      ClusterResourcePolicy.
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
               selectorLabels:
                 additionalProperties:
                   type: string

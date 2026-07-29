@@ -37,6 +37,19 @@ type ClusterResourcePolicySpec struct {
 }
 
 // PolicySelector filters which workloads a policy applies to.
+//
+// Every field is evaluated against a real pod, at admission and again whenever the
+// workloadwatcher reconciles that pod. Both use the same inputs, so all four fields
+// are honored consistently and a pod is measured and resized under the same policy
+// it was admitted with; the resolved policy is recorded on the WorkloadProfile's
+// status.policyRef, and the metrics collector and resource adjuster read it there
+// rather than re-deriving it from the profile.
+//
+// One asymmetry is inherent rather than incidental: a policy decides which pods it
+// governs, but the pods a WorkloadProfile *measures* are fetched with a
+// server-side label selector. Distinctions that Kubernetes can express in such a
+// query (namespace, labels) can therefore split measurement; annotations cannot.
+// See the note on Annotations below.
 type PolicySelector struct {
 	// Kinds lists the owner kinds this policy applies to (e.g. Deployment, StatefulSet).
 	// Empty means all kinds.
@@ -48,6 +61,13 @@ type PolicySelector struct {
 	Namespaces NamespaceSelector `json:"namespaces,omitempty"`
 
 	// Annotations maps annotation keys to regex patterns that must match on the pod.
+	//
+	// Annotation selectors decide which policy governs a pod, but they cannot
+	// scope *measurement*. A WorkloadProfile gathers its pods with a label
+	// selector served by the API server, and there is no equivalent query for
+	// annotations, so a profile cannot be narrowed to "the annotated subset" of
+	// its identity tuple. Where that distinction matters, use a label instead:
+	// labelSelector and namespaces are both expressible server-side.
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
 
@@ -200,11 +220,33 @@ type ResizeConfig struct {
 }
 
 // ClusterResourcePolicyStatus defines the observed state of ClusterResourcePolicy.
-type ClusterResourcePolicyStatus struct{}
+type ClusterResourcePolicyStatus struct {
+	// ProfileDiscriminator is the token this policy contributes to the name of
+	// every WorkloadProfile it governs, in the form "<policy-name>-<hash>".
+	//
+	// A WorkloadProfile's identity includes the policy governing it, because the
+	// policy decides which metrics sources are polled, how samples are
+	// aggregated, and how much headroom is added; pods resolving to different
+	// policies therefore cannot share one set of recommendations. This field
+	// makes the resulting profile names traceable back to their policy without
+	// recomputing a hash by hand:
+	//
+	//	kubectl get workloadprofiles | grep "$(kubectl get crp fleet \
+	//	  -o jsonpath='{.status.profileDiscriminator}')"
+	//
+	// The token is derived from the policy's kind, namespace, and name, so it is
+	// stable for the life of the object and identical across every profile that
+	// resolves to it. Renaming a policy produces a different token, and hence
+	// new profiles.
+	// +optional
+	ProfileDiscriminator string `json:"profileDiscriminator,omitempty"`
+}
 
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Priority",type="integer",JSONPath=".spec.priority"
+// +kubebuilder:printcolumn:name="Discriminator",type="string",JSONPath=".status.profileDiscriminator"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // ClusterResourcePolicy is the Schema for the clusterresourcepolicies API

@@ -32,6 +32,7 @@ import (
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/metrics"
+	"github.com/tight-line/ballast/internal/naming"
 	"github.com/tight-line/ballast/internal/validation"
 	"github.com/tight-line/ballast/internal/webhook"
 )
@@ -83,11 +84,35 @@ func defaultBallastConfig() *ballastv1.BallastConfig {
 	}
 }
 
-// readyProfile returns a WorkloadProfile named "web" (matching pod label app=web)
-// with cpu+memory recommendations and meetsThreshold=true.
-func readyProfile() *ballastv1.WorkloadProfile {
+// webProfileName is the profile name the webhook derives for a pod labeled
+// app=web under the given policy, or under no policy when ref is nil. A profile's
+// identity includes its governing policy, so a fixture must carry the name the
+// webhook will actually look up: naming it "web" would simply not be found.
+func webProfileName(ref *ballastv1.PolicyReference) string {
+	discriminator := naming.NoPolicy
+	if ref != nil {
+		discriminator = naming.PolicyDiscriminator(ref.Kind, ref.Namespace, ref.Name)
+	}
+	return naming.ProfileName(map[string]string{"app": "web"}, []string{"app"}, discriminator)
+}
+
+func clusterPolicyRef(name string) *ballastv1.PolicyReference {
+	return &ballastv1.PolicyReference{Kind: ballastv1.KindClusterResourcePolicy, Name: name}
+}
+
+func namespacedPolicyRef(namespace, name string) *ballastv1.PolicyReference {
+	return &ballastv1.PolicyReference{
+		Kind:      ballastv1.KindResourcePolicy,
+		Namespace: namespace,
+		Name:      name,
+	}
+}
+
+// readyProfile returns a WorkloadProfile for pod label app=web under policy ref
+// (nil for no policy), with cpu+memory recommendations and meetsThreshold=true.
+func readyProfile(ref *ballastv1.PolicyReference) *ballastv1.WorkloadProfile {
 	return &ballastv1.WorkloadProfile{
-		ObjectMeta: metav1.ObjectMeta{Name: "web"},
+		ObjectMeta: metav1.ObjectMeta{Name: webProfileName(ref)},
 		Status: ballastv1.WorkloadProfileStatus{
 			MeetsThreshold: true,
 			Containers: []ballastv1.ContainerProfile{
@@ -105,7 +130,7 @@ func readyProfile() *ballastv1.WorkloadProfile {
 
 func notReadyProfile() *ballastv1.WorkloadProfile {
 	return &ballastv1.WorkloadProfile{
-		ObjectMeta: metav1.ObjectMeta{Name: "web"},
+		ObjectMeta: metav1.ObjectMeta{Name: webProfileName(nil)},
 		Status:     ballastv1.WorkloadProfileStatus{MeetsThreshold: false},
 	}
 }
@@ -220,7 +245,7 @@ func policyRefValue(resp admission.Response) string {
 // -- unit tests (fake client) --
 
 func TestPodMutator_KillSwitch(t *testing.T) {
-	fc := newFakeClient(defaultBallastConfig(), readyProfile())
+	fc := newFakeClient(defaultBallastConfig(), readyProfile(nil))
 	m := webhook.NewPodMutator(fc, activeKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
@@ -259,7 +284,7 @@ func TestPodMutator_NoApplyMode(t *testing.T) {
 }
 
 func TestPodMutator_DryRunApply(t *testing.T) {
-	fc := newFakeClient(defaultBallastConfig(), readyProfile())
+	fc := newFakeClient(defaultBallastConfig(), readyProfile(nil))
 	m := webhook.NewPodMutator(fc, inactiveKS(t), true /* dryRunApply */, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
@@ -273,7 +298,7 @@ func TestPodMutator_DryRunApply(t *testing.T) {
 }
 
 func TestPodMutator_SuccessfulPatch(t *testing.T) {
-	fc := newFakeClient(defaultBallastConfig(), readyProfile())
+	fc := newFakeClient(defaultBallastConfig(), readyProfile(nil))
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
@@ -329,7 +354,7 @@ func TestPodMutator_Autoresize_BelowThreshold(t *testing.T) {
 }
 
 func TestPodMutator_Autoresize_AboveThreshold(t *testing.T) {
-	fc := newFakeClient(defaultBallastConfig(), readyProfile())
+	fc := newFakeClient(defaultBallastConfig(), readyProfile(nil))
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeResize)))
@@ -398,7 +423,7 @@ func TestPodMutator_PolicyRefStamped(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "default-policy"},
 		Spec:       ballastv1.ClusterResourcePolicySpec{},
 	}
-	fc := newFakeClient(defaultBallastConfig(), readyProfile(), policy)
+	fc := newFakeClient(defaultBallastConfig(), readyProfile(clusterPolicyRef("default-policy")), policy)
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
@@ -418,7 +443,7 @@ func TestPodMutator_PolicyRefNamespaced(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "team-policy", Namespace: "default"},
 		Spec:       ballastv1.ResourcePolicySpec{},
 	}
-	fc := newFakeClient(defaultBallastConfig(), readyProfile(), policy)
+	fc := newFakeClient(defaultBallastConfig(), readyProfile(namespacedPolicyRef("default", "team-policy")), policy)
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	resp := m.Handle(context.Background(), makeRequest(testPod("p", validation.ModeApply)))
@@ -432,7 +457,7 @@ func TestPodMutator_PolicyRefNamespaced(t *testing.T) {
 }
 
 func TestPodMutator_UnmatchedContainer(t *testing.T) {
-	fc := newFakeClient(defaultBallastConfig(), readyProfile())
+	fc := newFakeClient(defaultBallastConfig(), readyProfile(nil))
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	// pod has an extra "sidecar" container not in the profile
@@ -467,7 +492,7 @@ func TestPodMutator_ApplyAppliedMetric(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "default-policy"},
 		Spec:       ballastv1.ClusterResourcePolicySpec{},
 	}
-	fc := newFakeClient(defaultBallastConfig(), readyProfile(), policy)
+	fc := newFakeClient(defaultBallastConfig(), readyProfile(clusterPolicyRef("default-policy")), policy)
 	rec, reg := newMetricsRecorder(t)
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, rec)
 
@@ -480,7 +505,8 @@ func TestPodMutator_ApplyAppliedMetric(t *testing.T) {
 	if got != 1 {
 		t.Fatalf("ballast_apply_applied_total = %v, want 1", got)
 	}
-	if labels["profile"] != "web" || labels["policy"] != "default-policy" || labels["namespace"] != "default" {
+	if labels["profile"] != webProfileName(clusterPolicyRef("default-policy")) ||
+		labels["policy"] != "default-policy" || labels["namespace"] != "default" {
 		t.Errorf("profile/policy/namespace attrs = %q/%q/%q",
 			labels["profile"], labels["policy"], labels["namespace"])
 	}
@@ -493,7 +519,7 @@ func TestPodMutator_ApplyAppliedMetric(t *testing.T) {
 func TestPodMutator_AppliesRestartableInitSidecar(t *testing.T) {
 	restartAlways := corev1.ContainerRestartPolicyAlways
 	profile := &ballastv1.WorkloadProfile{
-		ObjectMeta: metav1.ObjectMeta{Name: "web"},
+		ObjectMeta: metav1.ObjectMeta{Name: webProfileName(clusterPolicyRef("default-policy"))},
 		Status: ballastv1.WorkloadProfileStatus{
 			MeetsThreshold: true,
 			Containers: []ballastv1.ContainerProfile{{
@@ -532,7 +558,7 @@ func TestPodMutator_AppliesRestartableInitSidecar(t *testing.T) {
 // patch touches no container resources (no container matches the profile) reports
 // result=mutated but does not record ballast.apply.applied.
 func TestPodMutator_ApplyAppliedMetric_AnnotationOnlyMutation(t *testing.T) {
-	fc := newFakeClient(defaultBallastConfig(), readyProfile())
+	fc := newFakeClient(defaultBallastConfig(), readyProfile(nil))
 	rec, reg := newMetricsRecorder(t)
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, rec)
 
@@ -580,7 +606,7 @@ func TestPodMutator_ApplySkippedMetric_NotReady(t *testing.T) {
 		t.Fatalf("ballast_apply_skipped_total = %v (reason=%q), want 1 with reason=not_ready",
 			got, labels["reason"])
 	}
-	if labels["profile"] != "web" || labels["namespace"] != "default" {
+	if labels["profile"] != webProfileName(nil) || labels["namespace"] != "default" {
 		t.Errorf("profile/namespace attrs = %q/%q", labels["profile"], labels["namespace"])
 	}
 }
@@ -611,7 +637,7 @@ func TestPodMutator_ApplySkippedMetric_NoProfile(t *testing.T) {
 // TestPodMutator_ApplySkippedMetric_DryRun asserts a suppressed apply that would
 // have changed resources records reason=dry_run and no apply.applied.
 func TestPodMutator_ApplySkippedMetric_DryRun(t *testing.T) {
-	fc := newFakeClient(defaultBallastConfig(), readyProfile())
+	fc := newFakeClient(defaultBallastConfig(), readyProfile(nil))
 	rec, reg := newMetricsRecorder(t)
 	m := webhook.NewPodMutator(fc, inactiveKS(t), true /* dryRunApply */, rec)
 
@@ -632,7 +658,7 @@ func TestPodMutator_ApplySkippedMetric_DryRun(t *testing.T) {
 
 func TestPodMutator_EmptyRecommendationField(t *testing.T) {
 	profile := &ballastv1.WorkloadProfile{
-		ObjectMeta: metav1.ObjectMeta{Name: "web"},
+		ObjectMeta: metav1.ObjectMeta{Name: webProfileName(nil)},
 		Status: ballastv1.WorkloadProfileStatus{
 			MeetsThreshold: true,
 			Containers: []ballastv1.ContainerProfile{
@@ -660,7 +686,7 @@ func TestPodMutator_EmptyRecommendationField(t *testing.T) {
 
 func TestPodMutator_InvalidQuantity(t *testing.T) {
 	profile := &ballastv1.WorkloadProfile{
-		ObjectMeta: metav1.ObjectMeta{Name: "web"},
+		ObjectMeta: metav1.ObjectMeta{Name: webProfileName(nil)},
 		Status: ballastv1.WorkloadProfileStatus{
 			MeetsThreshold: true,
 			Containers: []ballastv1.ContainerProfile{
@@ -685,7 +711,7 @@ func TestPodMutator_InvalidQuantity(t *testing.T) {
 }
 
 func TestPodMutator_OwnerReference(t *testing.T) {
-	fc := newFakeClient(defaultBallastConfig(), readyProfile())
+	fc := newFakeClient(defaultBallastConfig(), readyProfile(nil))
 	m := webhook.NewPodMutator(fc, inactiveKS(t), false, nil)
 
 	isController := true

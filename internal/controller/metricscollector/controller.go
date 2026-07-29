@@ -129,12 +129,35 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	resolved, err := r.resolver.Resolve(ctx, policy.Input{Labels: profile.Status.TupleLabels})
-	if err != nil { // coverage:ignore - transient API error
+	// Same race, and the same treatment: measurementHash names the Redis key
+	// namespace this profile owns, and writing samples before it is set would put
+	// them under a key belonging to no profile, where nothing would ever read or
+	// purge them. A profile inherited from a release that predates the field is
+	// back-filled by the workloadwatcher on its next pod reconcile.
+	if profile.Status.MeasurementHash == "" {
+		log.Info("measurementHash not yet set, requeueing", "profile", profile.Name)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	// The governing policy is read from the profile, not re-resolved from it. A
+	// WorkloadProfile is cluster-scoped and carries only its identity tuple, so it
+	// supplies neither a namespace nor the pod labels outside that tuple;
+	// re-resolving here would reach a different policy than admission did and
+	// silently measure against one policy while pods were admitted under another.
+	// The workloadwatcher resolves per pod and records the answer in policyRef.
+	if profile.Status.PolicyRef == nil {
+		log.Info("no policy matches profile, skipping", "profile", profile.Name)
+		return ctrl.Result{RequeueAfter: defaultPollInterval}, nil
+	}
+	resolved, err := r.resolver.Load(ctx, *profile.Status.PolicyRef)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if resolved == nil {
-		log.Info("no policy matches profile, skipping", "profile", profile.Name)
+		// The policy was deleted. The workloadwatcher's policy watch is already
+		// migrating these pods to a new profile, which orphans this one.
+		log.Info("policy referenced by profile no longer exists, skipping",
+			"profile", profile.Name, "policy", profile.Status.PolicyRef.Key())
 		return ctrl.Result{RequeueAfter: defaultPollInterval}, nil
 	}
 
@@ -147,7 +170,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	now := time.Now()
-	tupleHash := store.TupleHash(profile.Status.TupleLabels)
+	measurementHash := profile.Status.MeasurementHash
 	pid := metrics.ProfileID{Name: profile.Name, Labels: profile.Status.TupleLabels}
 
 	excluded := r.excludedContainerNames(ctx, profile.Status.SelectorLabels)
@@ -159,7 +182,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// the manager's pod cache, which is already scoped to enrolled pods.
 	measureSelector := enrolledSelector(profile.Status.SelectorLabels)
 
-	observed, err := r.collectAllSamples(ctx, tupleHash, pid, measureSelector, now, sources, excluded)
+	observed, err := r.collectAllSamples(ctx, measurementHash, pid, measureSelector, now, sources, excluded)
 	if err != nil { // coverage:ignore - Redis error
 		return ctrl.Result{}, err
 	}
@@ -167,7 +190,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	resourcesInPolicy := policyResourceMap(resolved.Spec.Metrics)
 	containers := mergeContainerSets(observed, profile.Status.Containers, resourcesInPolicy)
 	containerProfiles, allReady := r.buildContainerProfiles(
-		ctx, tupleHash, containers, resourcesInPolicy, resolved.Spec, now.UnixMilli())
+		ctx, measurementHash, containers, resourcesInPolicy, resolved.Spec, now.UnixMilli())
 
 	if r.dryRunMeasure {
 		log.Info("dry-run: would update WorkloadProfile status",
@@ -216,7 +239,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // Returns the union of (container, resource) pairs seen across all sources.
 func (r *Reconciler) collectAllSamples(
 	ctx context.Context,
-	tupleHash string,
+	measurementHash string,
 	pid metrics.ProfileID,
 	selectorLabels map[string]string,
 	now time.Time,
@@ -234,7 +257,7 @@ func (r *Reconciler) collectAllSamples(
 			continue
 		}
 
-		additional, err := r.collectFromSource(ctx, tupleHash, pid, selectorLabels, now, sourceName, ms, p, excluded)
+		additional, err := r.collectFromSource(ctx, measurementHash, pid, selectorLabels, now, sourceName, ms, p, excluded)
 		if err != nil { // coverage:ignore - Redis error
 			return nil, err
 		}
@@ -257,7 +280,7 @@ func (r *Reconciler) collectAllSamples(
 // Returns the (container, resource) pairs observed from this source's FetchStats results.
 func (r *Reconciler) collectFromSource(
 	ctx context.Context,
-	tupleHash string,
+	measurementHash string,
 	pid metrics.ProfileID,
 	selectorLabels map[string]string,
 	now time.Time,
@@ -294,7 +317,7 @@ func (r *Reconciler) collectFromSource(
 			continue
 		}
 
-		if err := r.writeSample(ctx, tupleHash, ms, s); err != nil { // coverage:ignore - Redis error
+		if err := r.writeSample(ctx, measurementHash, ms, s); err != nil { // coverage:ignore - Redis error
 			return nil, err
 		}
 		r.rec.SampleCollected(ctx, sourceName, s.Resource, s.ContainerName, pid)
@@ -306,11 +329,11 @@ func (r *Reconciler) collectFromSource(
 // writeSample persists a single ContainerStats entry to Redis.
 func (r *Reconciler) writeSample(
 	ctx context.Context,
-	tupleHash string,
+	measurementHash string,
 	ms *ballastv1.MetricsSource,
 	s plugin.ContainerStats,
 ) error {
-	key := store.MetricKey(tupleHash, s.ContainerName, s.Resource)
+	key := store.MetricKey(measurementHash, s.ContainerName, s.Resource)
 	valueStr := quantityToStoreValue(s.Resource, s.Value)
 	if err := store.AddSample(ctx, r.storeClient, key, s.Timestamp.UnixMilli(), valueStr, ms.Spec.Config.ReservoirSize); err != nil { // coverage:ignore - Redis error
 		return fmt.Errorf("adding sample for %s: %w", key, err)
@@ -436,7 +459,7 @@ func (r *Reconciler) tryLoadSource(ctx context.Context, name string) *ballastv1.
 // at least one container was processed and all are ready).
 func (r *Reconciler) buildContainerProfiles(
 	ctx context.Context,
-	tupleHash string,
+	measurementHash string,
 	containers map[string][]string,
 	resourcesInPolicy map[string][]ballastv1.MetricConfig,
 	policySpec ballastv1.ClusterResourcePolicySpec,
@@ -450,7 +473,7 @@ func (r *Reconciler) buildContainerProfiles(
 	var containerProfiles []ballastv1.ContainerProfile
 
 	for _, containerName := range sortedKeys(containers) {
-		cp, ready := r.buildContainerProfile(ctx, tupleHash, containerName,
+		cp, ready := r.buildContainerProfile(ctx, measurementHash, containerName,
 			containers[containerName], resourcesInPolicy, policySpec, nowMs)
 		if !ready {
 			allReady = false
@@ -474,7 +497,7 @@ func (r *Reconciler) buildContainerProfiles(
 //  2. Return the assembled profile and whether all tracked resources were ready.
 func (r *Reconciler) buildContainerProfile(
 	ctx context.Context,
-	tupleHash, containerName string,
+	measurementHash, containerName string,
 	resources []string,
 	resourcesInPolicy map[string][]ballastv1.MetricConfig,
 	policySpec ballastv1.ClusterResourcePolicySpec,
@@ -494,7 +517,7 @@ func (r *Reconciler) buildContainerProfile(
 		}
 
 		usageStats, recs, ready, err := r.processResourceStats(
-			ctx, tupleHash, containerName, resourceName, metricsForResource, policySpec, nowMs)
+			ctx, measurementHash, containerName, resourceName, metricsForResource, policySpec, nowMs)
 		if err != nil { // coverage:ignore - Redis error
 			log.Error(err, "processResourceStats failed",
 				"container", containerName, "resource", resourceName)
@@ -534,12 +557,12 @@ func (r *Reconciler) buildContainerProfile(
 //  8. If ready: computeAllRecommendations for all metric entries for this resource.
 func (r *Reconciler) processResourceStats(
 	ctx context.Context,
-	tupleHash, containerName, resourceName string,
+	measurementHash, containerName, resourceName string,
 	metricsForResource []ballastv1.MetricConfig,
 	policySpec ballastv1.ClusterResourcePolicySpec,
 	nowMs int64,
 ) (containerStats ballastv1.ContainerUsageStats, resourceRecs map[string]ballastv1.ResourceRecommendation, meetsReadiness bool, err error) {
-	key := store.MetricKey(tupleHash, containerName, resourceName)
+	key := store.MetricKey(measurementHash, containerName, resourceName)
 
 	vals, err := store.QueryAll(ctx, r.storeClient, key)
 	if err != nil { // coverage:ignore - Redis error

@@ -18,6 +18,9 @@ spec:
     - jsonPath: .spec.priority
       name: Priority
       type: integer
+    - jsonPath: .status.profileDiscriminator
+      name: Discriminator
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -206,8 +209,15 @@ spec:
                   annotations:
                     additionalProperties:
                       type: string
-                    description: Annotations maps annotation keys to regex patterns
-                      that must match on the pod.
+                    description: |-
+                      Annotations maps annotation keys to regex patterns that must match on the pod.
+
+                      Annotation selectors decide which policy governs a pod, but they cannot
+                      scope *measurement*. A WorkloadProfile gathers its pods with a label
+                      selector served by the API server, and there is no equivalent query for
+                      annotations, so a profile cannot be narrowed to "the annotated subset" of
+                      its identity tuple. Where that distinction matters, use a label instead:
+                      labelSelector and namespaces are both expressible server-side.
                     type: object
                   kinds:
                     description: |-
@@ -287,10 +297,27 @@ spec:
             type: object
           status:
             description: status defines the observed state of ClusterResourcePolicy
+            properties:
+              profileDiscriminator:
+                description: "ProfileDiscriminator is the token this policy contributes
+                  to the name of\nevery WorkloadProfile it governs, in the form \"<policy-name>-<hash>\".\n\nA
+                  WorkloadProfile's identity includes the policy governing it, because
+                  the\npolicy decides which metrics sources are polled, how samples
+                  are\naggregated, and how much headroom is added; pods resolving
+                  to different\npolicies therefore cannot share one set of recommendations.
+                  This field\nmakes the resulting profile names traceable back to
+                  their policy without\nrecomputing a hash by hand:\n\n\tkubectl get
+                  workloadprofiles | grep \"$(kubectl get crp fleet \\\n\t  -o jsonpath='{.status.profileDiscriminator}')\"\n\nThe
+                  token is derived from the policy's kind, namespace, and name, so
+                  it is\nstable for the life of the object and identical across every
+                  profile that\nresolves to it. Renaming a policy produces a different
+                  token, and hence\nnew profiles."
+                type: string
             type: object
         required:
         - spec
         type: object
     served: true
     storage: true
-    subresources: {}
+    subresources:
+      status: {}

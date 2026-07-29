@@ -16,11 +16,14 @@ import (
 type ResourcePolicySpec = ClusterResourcePolicySpec
 
 // ResourcePolicyStatus defines the observed state of ResourcePolicy.
-type ResourcePolicyStatus struct{}
+// It uses the same shape as ClusterResourcePolicyStatus.
+type ResourcePolicyStatus = ClusterResourcePolicyStatus
 
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Priority",type="integer",JSONPath=".spec.priority"
+// +kubebuilder:printcolumn:name="Discriminator",type="string",JSONPath=".status.profileDiscriminator"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // ResourcePolicy is the Schema for the resourcepolicies API
