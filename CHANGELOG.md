@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-29
+
 ### Fixed
 
 - **BREAKING (data): a `ResourcePolicy` in any namespace no longer outranks every `ClusterResourcePolicy` fleet-wide, and policies are no longer resolved differently at admission than during measurement and resize** ([#87](https://github.com/Tight-Line/ballast/issues/87)). Both were the same defect. `WorkloadProfile` is cluster-scoped and carries only its identity tuple, so the metrics collector and resource adjuster were resolving policy from an input with no namespace, no owner kind, and no annotations. `client.InNamespace("")` means *all namespaces*, and namespace-scoped policies rank above cluster-scoped ones regardless of priority, so one `ResourcePolicy` with a loose selector governed recommendations and resizes for every matching profile in the cluster, outranking policies that explicitly set a higher priority. In the same breath, any policy selecting on `kinds`, `annotations`, or `namespaces.include` matched at admission but could never match in the controllers, so pods were admitted with one policy's values and then resized toward another's, with nothing logging a conflict because each path resolved successfully on its own terms.

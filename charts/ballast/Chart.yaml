@@ -2,8 +2,8 @@ apiVersion: v2
 name: ballast
 description: Kubernetes resource right-sizing operator — measures real usage and adjusts pod requests via in-place resize.
 type: application
-version: 0.5.0
-appVersion: "v0.5.0"
+version: 0.6.0
+appVersion: "v0.6.0"
 keywords:
   - kubernetes
   - resource-management
