@@ -153,10 +153,28 @@ func defaultProfile(tupleLabels map[string]string) *ballastv1.WorkloadProfile {
 	return &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: "web"},
 		Status: ballastv1.WorkloadProfileStatus{
-			TupleLabels:    tupleLabels,
-			SelectorLabels: tupleLabels,
+			TupleLabels:     tupleLabels,
+			SelectorLabels:  tupleLabels,
+			PolicyRef:       defaultPolicyRef(),
+			MeasurementHash: profileHash(tupleLabels),
 		},
 	}
+}
+
+// defaultPolicyRef references the policy defaultPolicy builds. The collector reads
+// its governing policy from status.policyRef rather than resolving one, so every
+// profile fixture must record it the way the workloadwatcher would.
+func defaultPolicyRef() *ballastv1.PolicyReference {
+	return &ballastv1.PolicyReference{
+		Kind: ballastv1.KindClusterResourcePolicy,
+		Name: "platform-defaults",
+	}
+}
+
+// profileHash is the Redis key namespace a profile owns, mirroring what the
+// workloadwatcher records in status.measurementHash.
+func profileHash(tupleLabels map[string]string) string {
+	return store.MeasurementHash(tupleLabels, defaultPolicyRef().Key())
 }
 
 func cpuSample(container string, milliCores int64, ts time.Time) plugin.ContainerStats {
@@ -248,8 +266,8 @@ func TestReconcile_KillSwitchActive(t *testing.T) {
 	}
 
 	// No samples should have been written to Redis.
-	tupleHash := store.TupleHash(map[string]string{"app": "web"})
-	key := store.MetricKey(tupleHash, "app", "cpu")
+	measurementHash := profileHash(map[string]string{"app": "web"})
+	key := store.MetricKey(measurementHash, "app", "cpu")
 	count, _ := store.SampleCount(ctx, sc, key)
 	if count != 0 {
 		t.Errorf("expected 0 Redis samples when kill switch active, got %d", count)
@@ -276,8 +294,8 @@ func TestReconcile_DryRun(t *testing.T) {
 	}
 
 	// No samples written.
-	tupleHash := store.TupleHash(map[string]string{"app": "web"})
-	key := store.MetricKey(tupleHash, "app", "cpu")
+	measurementHash := profileHash(map[string]string{"app": "web"})
+	key := store.MetricKey(measurementHash, "app", "cpu")
 	count, _ := store.SampleCount(ctx, sc, key)
 	if count != 0 {
 		t.Errorf("expected 0 Redis samples in dry-run, got %d", count)
@@ -349,8 +367,8 @@ func TestReconcile_CollectAndUpdate(t *testing.T) {
 	}
 
 	// Samples should be written to Redis.
-	tupleHash := store.TupleHash(tupleLabels)
-	key := store.MetricKey(tupleHash, "app", "cpu")
+	measurementHash := profileHash(tupleLabels)
+	key := store.MetricKey(measurementHash, "app", "cpu")
 	count, err := store.SampleCount(ctx, sc, key)
 	if err != nil {
 		t.Fatalf("SampleCount: %v", err)
@@ -461,9 +479,9 @@ func TestReconcile_ExcludesInitAndEphemeralContainers(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	tupleHash := store.TupleHash(tupleLabels)
+	measurementHash := profileHash(tupleLabels)
 	for _, name := range []string{"app", "sidecar"} {
-		key := store.MetricKey(tupleHash, name, "cpu")
+		key := store.MetricKey(measurementHash, name, "cpu")
 		if count, err := store.SampleCount(ctx, sc, key); err != nil {
 			t.Fatalf("SampleCount(%s): %v", name, err)
 		} else if count != 3 {
@@ -472,7 +490,7 @@ func TestReconcile_ExcludesInitAndEphemeralContainers(t *testing.T) {
 	}
 
 	for _, name := range []string{"init-db", "debugger"} {
-		key := store.MetricKey(tupleHash, name, "cpu")
+		key := store.MetricKey(measurementHash, name, "cpu")
 		count, err := store.SampleCount(ctx, sc, key)
 		if err != nil {
 			t.Fatalf("SampleCount(%s): %v", name, err)
@@ -503,8 +521,10 @@ func TestReconcile_ExclusionScopedBySelector(t *testing.T) {
 	profile := &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: "web"},
 		Status: ballastv1.WorkloadProfileStatus{
-			TupleLabels:    map[string]string{"app": "web"},
-			SelectorLabels: map[string]string{"app": "web", "role": plugin.LabelAbsent},
+			TupleLabels:     map[string]string{"app": "web"},
+			SelectorLabels:  map[string]string{"app": "web", "role": plugin.LabelAbsent},
+			PolicyRef:       defaultPolicyRef(),
+			MeasurementHash: profileHash(map[string]string{"app": "web"}),
 		},
 	}
 	matchingPod := &corev1.Pod{
@@ -534,13 +554,13 @@ func TestReconcile_ExclusionScopedBySelector(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	tupleHash := store.TupleHash(profile.Status.TupleLabels)
-	if count, err := store.SampleCount(ctx, sc, store.MetricKey(tupleHash, "web-init", "cpu")); err != nil {
+	measurementHash := profileHash(profile.Status.TupleLabels)
+	if count, err := store.SampleCount(ctx, sc, store.MetricKey(measurementHash, "web-init", "cpu")); err != nil {
 		t.Fatalf("SampleCount(web-init): %v", err)
 	} else if count != 0 {
 		t.Errorf("web-init: got %d samples, want 0 (init container of a matching pod is excluded)", count)
 	}
-	if count, err := store.SampleCount(ctx, sc, store.MetricKey(tupleHash, "batch-init", "cpu")); err != nil {
+	if count, err := store.SampleCount(ctx, sc, store.MetricKey(measurementHash, "batch-init", "cpu")); err != nil {
 		t.Fatalf("SampleCount(batch-init): %v", err)
 	} else if count != 1 {
 		t.Errorf("batch-init: got %d samples, want 1 (pod not matched by selector, so not an exclusion)", count)
@@ -1133,4 +1153,86 @@ func waitForProfileExists(t *testing.T, ctx context.Context, c client.Client, na
 		}
 	}
 	t.Errorf("timed out waiting for WorkloadProfile %q", name)
+}
+
+// A profile whose pods match no policy has nothing to measure with: the policy is
+// what names the metrics sources, so the collector skips rather than guessing.
+func TestReconcile_NoPolicyRef_Skipped(t *testing.T) {
+	profile := defaultProfile(map[string]string{"app": "web"})
+	profile.Status.PolicyRef = nil
+	fc := newFakeClient(profile, defaultMetricsSource(), defaultPolicy())
+	_, sc := newMiniredisClient(t)
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, nil)
+
+	result, err := reconcileProfile(t, r, "web")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected a requeue so the profile is revisited once a policy matches")
+	}
+
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: "web"}, &got); err != nil {
+		t.Fatalf("Get profile: %v", err)
+	}
+	if len(got.Status.Containers) != 0 {
+		t.Error("no containers should be recorded without a policy")
+	}
+}
+
+// The referenced policy can be deleted between the workloadwatcher recording it and
+// this reconcile. Skipping is correct: the policy watch is already migrating those
+// pods to a profile under whatever policy now governs them.
+func TestReconcile_PolicyRefDangling_Skipped(t *testing.T) {
+	profile := defaultProfile(map[string]string{"app": "web"})
+	profile.Status.PolicyRef = &ballastv1.PolicyReference{
+		Kind: ballastv1.KindClusterResourcePolicy,
+		Name: "deleted-policy",
+	}
+	fc := newFakeClient(profile, defaultMetricsSource())
+	_, sc := newMiniredisClient(t)
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, nil)
+
+	result, err := reconcileProfile(t, r, "web")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected a requeue while the profile awaits migration")
+	}
+}
+
+// measurementHash names the Redis key namespace the profile owns. Writing samples
+// before it is set would file them under a key belonging to no profile, where
+// nothing would ever read or purge them.
+func TestReconcile_NoMeasurementHash_Requeues(t *testing.T) {
+	profile := defaultProfile(map[string]string{"app": "web"})
+	profile.Status.MeasurementHash = ""
+	fc := newFakeClient(profile, defaultMetricsSource(), defaultPolicy())
+	_, sc := newMiniredisClient(t)
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, nil)
+
+	result, err := reconcileProfile(t, r, "web")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected a requeue until the workloadwatcher back-fills the hash")
+	}
+}
+
+// A policyRef the resolver cannot interpret is surfaced as an error rather than
+// treated as "no policy": silently skipping would leave the profile accruing
+// nothing with no signal as to why.
+func TestReconcile_PolicyRefUnknownKind_Errors(t *testing.T) {
+	profile := defaultProfile(map[string]string{"app": "web"})
+	profile.Status.PolicyRef = &ballastv1.PolicyReference{Kind: "Nonsense", Name: "x"}
+	fc := newFakeClient(profile, defaultMetricsSource())
+	_, sc := newMiniredisClient(t)
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, nil)
+
+	if _, err := reconcileProfile(t, r, "web"); err == nil {
+		t.Fatal("expected an error for an uninterpretable policyRef")
+	}
 }

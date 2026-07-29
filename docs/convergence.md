@@ -17,22 +17,47 @@ These are the load-bearing principles. Every scenario below is a consequence of
 them; do not add behavior that violates one without revisiting this document.
 
 1. **`profile-ref` is a deterministic function of identity, not an identity itself.**
-   A profile's name is `ProfileName(tupleLabels, identityLabels)`. Any pod with the
-   same identity computes the same name, so re-association after a delete/recreate is
-   automatic and requires no UID/ownerReference bookkeeping. Never model this
-   relationship with `metav1.OwnerReference` (wrong cardinality and wrong cascade
-   direction).
+   A profile's name is `naming.ProfileName(tupleLabels, identityLabels, discriminator)`,
+   where the discriminator is a token derived from the policy governing the pod (or
+   `nopolicy` when none matches). Any pod with the same identity computes the same
+   name, so re-association after a delete/recreate is automatic and requires no
+   UID/ownerReference bookkeeping. Never model this relationship with
+   `metav1.OwnerReference` (wrong cardinality and wrong cascade direction).
 
-2. **Annotations and stamps are hints, not the source of truth.** Every pod
+   **The governing policy is part of identity.** A profile carries one set of
+   recommendations per container, and the policy decides the metrics sources, poll
+   cadence, tracked resources, aggregation, and headroom behind them; pods resolving
+   to different policies have no shared answer and so cannot share a profile. Policy
+   is resolved *per pod*, here, because a pod reconcile is the only place holding the
+   namespace, full labels, annotations, and owner kind that selectors are written
+   against. The result is recorded on `status.policyRef` and read by the metrics
+   collector and resource adjuster; they never re-resolve, which is what keeps
+   admission, measurement, and resize on one policy.
+
+2. **A profile's measurement history is keyed separately from its name.**
+   `status.measurementHash` covers the identity tuple *and* the policy, and is what
+   Redis keys derive from. Two consequences are load-bearing: sibling profiles
+   sharing a tuple never write into one sample series (samples carry no per-sample
+   timestamps, so interleaved writes would inflate counts and distort the
+   distribution), and the profile finalizer can purge its own keys with no reference
+   counting. Never fold the policy into `tupleLabels` to achieve the same split:
+   that map is also the source of `status.selectorLabels`, the server-side label
+   query that finds the profile's pods, and a policy name is not a pod label.
+
+3. **Annotations and stamps are hints, not the source of truth.** Every pod
    CREATE/UPDATE reconcile recomputes the desired profile from the pod's *current*
    labels and the *current* `identityLabels`, then reconciles toward it. The stamp
    is a cache used only on the DELETE path (where the pod is leaving and there is
-   nothing to recompute). The same applies to the profile's own status: each
-   reconcile converges `status.tupleLabels` / `status.selectorLabels` to the
-   recomputed values, so a lost initial status write (conflict, crash, older
-   operator version) heals on the next reconcile of any member pod.
+   nothing to recompute). Policy is re-resolved on every reconcile for the same
+   reason, so a policy created, edited, or deleted while the pod runs moves it to
+   the right profile. The `policy-ref` annotation is likewise refreshed rather than
+   left as the webhook wrote it at admission. The same applies to the profile's own
+   status: each reconcile converges `status.tupleLabels`, `status.selectorLabels`,
+   `status.policyRef`, and `status.measurementHash` to the recomputed values, so a
+   lost initial status write (conflict, crash, older operator version) heals on the
+   next reconcile of any member pod.
 
-3. **Counts are level-triggered, never incremental.** `setActiveWorkloads` derives
+4. **Counts are level-triggered, never incremental.** `setActiveWorkloads` derives
    the count by listing the profile's member pods and counting live ones, so any
    missed or duplicated event self-heals on the next reconcile. It never does
    `count++/count--`. Both reconcilers enforce this. The pod reconciler recounts
@@ -58,22 +83,34 @@ them; do not add behavior that violates one without revisiting this document.
    `old == new`, so any field-diff predicate would also drop the resync events
    the backstop depends on.
 
-4. **Cleanup lives in the finalizer, and only there.** Redis history is purged by the
+5. **Cleanup lives in the finalizer, and only there.** Redis history is purged by the
    WorkloadProfile cleanup finalizer, so every deletion path (orphan-TTL sweep or
    manual `kubectl delete`) clears history exactly once. The finalizer never reaches
    out to mutate sibling Pods — each controller repairs its own object.
 
-5. **Watches are for promptness; the informer resync is the correctness backstop.**
-   The pod controller watches WorkloadProfile deletions and `identityLabels` changes
-   so convergence is prompt (seconds). Even if a watch event is missed, the ~10h
-   resync re-reconciles every pod and converges. Watch predicates are deliberately
-   narrow (delete-only; identityLabels-only and filtered to the canonical
-   BallastConfig name) to avoid enqueue amplification, since profile status is
-   written on every count change. BallastConfig *creation* is also admitted: pods
-   reconciled while the config was absent were skipped, and a delete + re-apply
-   never fires the update predicate.
+6. **Watches are for promptness; the informer resync is the correctness backstop.**
+   The pod controller watches WorkloadProfile deletions, `identityLabels` changes,
+   and both policy kinds, so convergence is prompt (seconds). Even if a watch event
+   is missed, the ~10h resync re-reconciles every pod and converges. Watch
+   predicates are deliberately narrow (delete-only; identityLabels-only and filtered
+   to the canonical BallastConfig name) to avoid enqueue amplification, since profile
+   status is written on every count change. BallastConfig *creation* is also
+   admitted: pods reconciled while the config was absent were skipped, and a delete +
+   re-apply never fires the update predicate.
 
-6. **The kill switch defers work; it must not lose it.** Enrollment reconciles
+   The policy watches admit creation, deletion, and updates that change the selector
+   or the priority — the only fields that decide *which* policy wins. Every other
+   spec field is read live by the metrics collector and resource adjuster on their
+   next cycle, so admitting those edits would re-key measurement history and force a
+   fresh accrual for no gain. Because resolution depends on the whole policy set,
+   the handler enqueues every enrolled pod rather than trying to compute the affected
+   subset: on a delete the matching spec no longer exists, on a narrowed selector the
+   affected pods are the ones that stopped matching, and a new high-priority policy
+   flips pods that previously matched nothing. Each of those reconciles is a cache
+   read plus a resolve and writes nothing unless the pod's identity actually
+   changed.
+
+7. **The kill switch defers work; it must not lose it.** Enrollment reconciles
    skipped while the kill switch is active requeue every minute, so releasing the
    switch converges promptly (including a one-shot `identityLabels` fan-out that
    fired mid-outage) instead of waiting for resync. The DELETE path is never
@@ -83,8 +120,8 @@ them; do not add behavior that violates one without revisiting this document.
 
 - **W** — the workload / kubelet / user (`kubectl`, GitOps)
 - **API** — the Kubernetes API server and the controllers' shared informer cache
-- **PodR** — `PodReconciler` (watches Pods; also WorkloadProfile deletes and
-  BallastConfig `identityLabels` changes)
+- **PodR** — `PodReconciler` (watches Pods; also WorkloadProfile deletes,
+  BallastConfig `identityLabels` changes, and both policy kinds)
 - **ProfR** — `ProfileReconciler` (watches WorkloadProfile)
 - **Redis** — the metric-history store
 
@@ -215,11 +252,21 @@ sequenceDiagram
 
 ## 6. Identity change — migration
 
-Changing `identityLabels` (cluster-wide, via `BallastConfig`) or a pod's own
-identity-label values changes the pod's computed profile name. The pod migrates and
-the profile it leaves is recounted so it can orphan and age out. A `BallastConfig`
-`identityLabels` edit is made prompt by the config watch; a pod-label change is
-delivered as an ordinary pod update.
+Three inputs change a pod's computed profile name: `identityLabels` (cluster-wide,
+via `BallastConfig`), the pod's own identity-label values, and the policy that
+governs the pod. In every case the pod migrates and the profile it leaves is
+recounted so it can orphan and age out. A `BallastConfig` `identityLabels` edit is
+made prompt by the config watch, a policy change by the policy watches, and a
+pod-label change is delivered as an ordinary pod update.
+
+A policy-driven migration is the one that also moves measurement history, because
+`status.measurementHash` covers the policy: the new profile starts from zero samples
+and accrues for `readiness.minTimeSpan` before it can be acted on, while the old
+profile keeps its history until it ages out and its finalizer purges it. This is the
+accepted cost of making the policy part of identity — a profile holds one answer, and
+a different policy is a different answer. It is deliberately *not* triggered by edits
+to a policy's aggregation, headroom, thresholds, sources, or cadence; those are read
+live on the next cycle (see invariant 6).
 
 ```mermaid
 sequenceDiagram
@@ -304,12 +351,13 @@ within one cycle.
 | Profile deleted (manual or TTL) | WorkloadProfile delete watch (`podsForProfile`) | resync of referencing pods |
 | Stale count / lost trailing recount | WorkloadProfile events (`recountActiveWorkloads`) | resync of the profile |
 | Profile status labels lost | Next reconcile of any member pod | resync |
+| Policy created / deleted / re-scoped | Policy watches (`allManagedPods` fan-out) | resync |
 | Kill switch released | 1-minute requeue of skipped pods | resync |
 | Redis history on any profile delete | Cleanup finalizer | — (single chokepoint) |
 
 ## Known limitations
 
-- **Profile-name collisions.** `sanitizeName` can map two distinct identity tuples to
+- **Profile-name collisions.** `naming.SanitizeSegment` can map two distinct identity tuples to
   the same profile name (`Web` vs `web`, `a.b` vs `a-b`). Colliding workloads share
   one profile, and its status labels converge to whichever pod reconciled most
   recently (visible as the tuple labels flapping between the two identities). Avoid

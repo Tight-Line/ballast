@@ -123,7 +123,7 @@ func TestPodsForConfig(t *testing.T) {
 		WithObjects(managed, enrolled, unmanaged).Build()
 	r := &PodReconciler{client: fc}
 
-	reqs := r.podsForConfig(context.Background(), &ballastv1.BallastConfig{})
+	reqs := r.allManagedPods(context.Background(), &ballastv1.BallastConfig{})
 	if len(reqs) != 2 {
 		t.Errorf("podsForConfig: got %d requests, want 2 (managed + enrolled)", len(reqs))
 	}
@@ -213,5 +213,125 @@ func TestCountActiveWorkloads(t *testing.T) {
 				t.Errorf("countActiveWorkloads(%q) = %d, want %d", tt.profName, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPolicyResolutionChangedPredicate(t *testing.T) {
+	p := policyResolutionChanged()
+
+	if !p.Create(event.CreateEvent{}) {
+		t.Error("create must be admitted: a new policy can change which policy governs a pod")
+	}
+	if !p.Delete(event.DeleteEvent{}) {
+		t.Error("delete must be admitted: pods governed by the policy must move elsewhere")
+	}
+	if p.Generic(event.GenericEvent{}) {
+		t.Error("generic should not be admitted")
+	}
+}
+
+// Only selector and priority decide which policy wins. Everything else in the spec
+// is read live by the collector and adjuster on their next cycle, so treating it as
+// an identity change would re-key measurement history for nothing.
+func TestPolicyResolutionChangedPredicate_Update(t *testing.T) {
+	withSelector := func(sel ballastv1.PolicySelector, priority int32) *ballastv1.ClusterResourcePolicy {
+		return &ballastv1.ClusterResourcePolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "fleet"},
+			Spec: ballastv1.ClusterResourcePolicySpec{
+				Priority: priority,
+				Selector: sel,
+				Behaviors: ballastv1.BehaviorConfig{
+					Thresholds: ballastv1.ThresholdConfig{Default: "20%"},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		old, new *ballastv1.ClusterResourcePolicy
+		want     bool
+	}{
+		{
+			name: "selector unchanged",
+			old:  withSelector(ballastv1.PolicySelector{Kinds: []string{"Deployment"}}, 0),
+			new:  withSelector(ballastv1.PolicySelector{Kinds: []string{"Deployment"}}, 0),
+			want: false,
+		},
+		{
+			name: "selector changed",
+			old:  withSelector(ballastv1.PolicySelector{Kinds: []string{"Deployment"}}, 0),
+			new:  withSelector(ballastv1.PolicySelector{Kinds: []string{"StatefulSet"}}, 0),
+			want: true,
+		},
+		{
+			name: "priority changed",
+			old:  withSelector(ballastv1.PolicySelector{}, 0),
+			new:  withSelector(ballastv1.PolicySelector{}, 100),
+			want: true,
+		},
+	}
+
+	p := policyResolutionChanged()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := p.Update(event.UpdateEvent{ObjectOld: tc.old, ObjectNew: tc.new})
+			if got != tc.want {
+				t.Errorf("Update admitted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A headroom edit must not churn profile identity: the sample already recorded does
+// not change meaning because the headroom applied to it did.
+func TestPolicyResolutionChangedPredicate_BehaviorEditIgnored(t *testing.T) {
+	base := &ballastv1.ClusterResourcePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "fleet"},
+		Spec: ballastv1.ClusterResourcePolicySpec{
+			Metrics: []ballastv1.MetricConfig{{Resource: "cpu", Headroom: "1.2"}},
+		},
+	}
+	edited := base.DeepCopy()
+	edited.Spec.Metrics[0].Headroom = "1.5"
+
+	if policyResolutionChanged().Update(event.UpdateEvent{ObjectOld: base, ObjectNew: edited}) {
+		t.Error("a headroom-only edit must not be treated as a resolution change")
+	}
+}
+
+// Namespace-scoped policies share the predicate; ResourcePolicySpec is an alias of
+// ClusterResourcePolicySpec, so one extractor serves both kinds.
+func TestPolicyResolutionChangedPredicate_ResourcePolicy(t *testing.T) {
+	old := &ballastv1.ResourcePolicy{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "local"},
+		Spec:       ballastv1.ResourcePolicySpec{Priority: 0},
+	}
+	updated := old.DeepCopy()
+	updated.Spec.Priority = 10
+
+	if !policyResolutionChanged().Update(event.UpdateEvent{ObjectOld: old, ObjectNew: updated}) {
+		t.Error("a ResourcePolicy priority change must be admitted")
+	}
+}
+
+// An event carrying an object that is not a policy is admitted rather than silently
+// dropped, since guessing wrong would strand pods on a stale policy.
+func TestPolicyResolutionChangedPredicate_UnknownObject(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p"}}
+	if !policyResolutionChanged().Update(event.UpdateEvent{ObjectOld: pod, ObjectNew: pod}) {
+		t.Error("an unrecognized object should be admitted, not dropped")
+	}
+}
+
+func TestPolicySpecOf(t *testing.T) {
+	if _, ok := policySpecOf(&ballastv1.ClusterResourcePolicy{}); !ok {
+		t.Error("ClusterResourcePolicy should be recognized")
+	}
+	if _, ok := policySpecOf(&ballastv1.ResourcePolicy{}); !ok {
+		t.Error("ResourcePolicy should be recognized")
+	}
+	if _, ok := policySpecOf(&corev1.Pod{}); ok {
+		t.Error("a Pod is not a policy")
 	}
 }

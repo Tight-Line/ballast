@@ -18,6 +18,7 @@ import (
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="ActiveWorkloads",type="integer",JSONPath=".status.activeWorkloads"
+// +kubebuilder:printcolumn:name="Policy",type="string",JSONPath=".status.policyRef.name"
 // +kubebuilder:printcolumn:name="State",type="string",JSONPath=".status.state"
 // +kubebuilder:printcolumn:name="Orphaned",type="string",JSONPath=".status.conditions[?(@.type=='Orphaned')].status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
@@ -45,11 +46,68 @@ const (
 	WorkloadProfileStateSufficient WorkloadProfileState = "Sufficient"
 )
 
+// Policy object kinds, as recorded in PolicyReference.Kind.
+const (
+	// KindClusterResourcePolicy is the cluster-scoped policy kind.
+	KindClusterResourcePolicy = "ClusterResourcePolicy"
+	// KindResourcePolicy is the namespace-scoped policy kind.
+	KindResourcePolicy = "ResourcePolicy"
+)
+
+// PolicyReference identifies the policy that governs a WorkloadProfile.
+type PolicyReference struct {
+	// Kind is the referenced policy's kind.
+	// +kubebuilder:validation:Enum=ClusterResourcePolicy;ResourcePolicy
+	Kind string `json:"kind"`
+
+	// Namespace is the policy's namespace, empty for a ClusterResourcePolicy.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// Name is the policy object's name.
+	Name string `json:"name"`
+}
+
+// Key returns the canonical identity of the referenced policy as
+// "kind/namespace/name". Two ResourcePolicies in different namespaces may share
+// a name, so namespace and kind both participate: the key is what distinguishes
+// genuinely different policies wherever a policy identity is hashed or compared.
+func (r PolicyReference) Key() string {
+	return r.Kind + "/" + r.Namespace + "/" + r.Name
+}
+
 // WorkloadProfileStatus holds the observed state of a WorkloadProfile.
 type WorkloadProfileStatus struct {
 	// TupleLabels are the identity labels that define this profile.
 	// +optional
 	TupleLabels map[string]string `json:"tupleLabels,omitempty"`
+
+	// PolicyRef identifies the policy governing this profile, or is unset when no
+	// policy currently matches (the metrics collector then has nothing to
+	// measure with and skips the profile).
+	//
+	// The governing policy is part of a profile's identity, not merely an
+	// observation about it: the policy chooses the metrics sources, the poll
+	// cadence, the tracked resources, the aggregation, and the headroom behind
+	// one set of recommendations. Pods that resolve to different policies
+	// therefore belong to different profiles. The workloadwatcher resolves policy
+	// per pod (the only place with a pod's namespace, labels, annotations, and
+	// owner kind) and records the result here; the metrics collector and resource
+	// adjuster read it rather than resolving again, so all three agree by
+	// construction.
+	// +optional
+	PolicyRef *PolicyReference `json:"policyRef,omitempty"`
+
+	// MeasurementHash identifies the Redis key namespace this profile owns. It
+	// covers both TupleLabels and PolicyRef, so profiles that share a tuple but
+	// resolve to different policies keep separate sample series and the profile
+	// finalizer can purge its own keys without reference counting.
+	//
+	// Recorded here rather than recomputed on demand so that the collector's
+	// writes and the finalizer's purge can never disagree about which keys belong
+	// to this profile.
+	// +optional
+	MeasurementHash string `json:"measurementHash,omitempty"`
 
 	// SelectorLabels are used to query pods from the metrics API.
 	// Keys absent from the originating pod carry the sentinel value "--missing--",

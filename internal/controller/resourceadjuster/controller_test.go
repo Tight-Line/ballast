@@ -136,12 +136,23 @@ func noResizePolicy() *ballastv1.ClusterResourcePolicy {
 	}
 }
 
+// testPolicyRef references the policy the fixtures above build. The adjuster reads
+// its governing policy from status.policyRef rather than resolving one from the
+// profile, so profile fixtures must record it the way the workloadwatcher would.
+func testPolicyRef() *ballastv1.PolicyReference {
+	return &ballastv1.PolicyReference{
+		Kind: ballastv1.KindClusterResourcePolicy,
+		Name: "test-policy",
+	}
+}
+
 // readyProfile returns a WorkloadProfile with MeetsThreshold=true and one container recommendation.
 func readyProfile(cpuRequest, cpuLimit string) *ballastv1.WorkloadProfile {
 	return &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: "prod"},
 		Status: ballastv1.WorkloadProfileStatus{
 			TupleLabels:    map[string]string{"app": "app", "env": "prod"},
+			PolicyRef:      testPolicyRef(),
 			MeetsThreshold: true,
 			Containers: []ballastv1.ContainerProfile{
 				{
@@ -570,6 +581,7 @@ func readyProfileWithRecs(recs map[string]ballastv1.ResourceRecommendation) *bal
 		ObjectMeta: metav1.ObjectMeta{Name: "prod"},
 		Status: ballastv1.WorkloadProfileStatus{
 			TupleLabels:    map[string]string{"app": "app", "env": "prod"},
+			PolicyRef:      testPolicyRef(),
 			MeetsThreshold: true,
 			Containers: []ballastv1.ContainerProfile{
 				{Name: "app", Recommendations: recs},
@@ -1429,5 +1441,56 @@ func TestResolveMaxChangePercent(t *testing.T) {
 	}
 	if got := resourceadjuster.ResolveMaxChangePercent(behaviors); got != 25.0 {
 		t.Errorf("explicit 25%%: got %v, want 25", got)
+	}
+}
+
+// Without a policy there is no resize threshold or cadence to apply, so the
+// adjuster skips instead of falling back to a guess.
+func TestReconcile_NoPolicyRef_Skipped(t *testing.T) {
+	profile := readyProfile("200m", "400m")
+	profile.Status.PolicyRef = nil
+	fc := newFakeClient(profile, noResizePolicy(), resizePod("100m", "200m"))
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+
+	result, err := doReconcile(t, r, "prod")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected a requeue so the profile is revisited once a policy matches")
+	}
+}
+
+// The referenced policy may be deleted before this reconcile runs; the pods are
+// already being migrated to a profile under whichever policy now governs them.
+func TestReconcile_PolicyRefDangling_Skipped(t *testing.T) {
+	profile := readyProfile("200m", "400m")
+	profile.Status.PolicyRef = &ballastv1.PolicyReference{
+		Kind: ballastv1.KindClusterResourcePolicy,
+		Name: "deleted-policy",
+	}
+	fc := newFakeClient(profile, resizePod("100m", "200m"))
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+
+	result, err := doReconcile(t, r, "prod")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected a requeue while the profile awaits migration")
+	}
+}
+
+// A policyRef the resolver cannot interpret is surfaced as an error rather than
+// treated as "no policy", so the failure is visible instead of looking like a
+// profile that simply has no policy.
+func TestReconcile_PolicyRefUnknownKind_Errors(t *testing.T) {
+	profile := readyProfile("200m", "400m")
+	profile.Status.PolicyRef = &ballastv1.PolicyReference{Kind: "Nonsense", Name: "x"}
+	fc := newFakeClient(profile, resizePod("100m", "200m"))
+	r := resourceadjuster.New(fc, inactiveKS(t), false, nil)
+
+	if _, err := doReconcile(t, r, "prod"); err == nil {
+		t.Fatal("expected an error for an uninterpretable policyRef")
 	}
 }

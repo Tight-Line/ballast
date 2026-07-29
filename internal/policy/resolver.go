@@ -8,16 +8,28 @@ import (
 	"sort"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 )
 
 // Input holds the pod attributes used to evaluate policy selectors.
+//
+// Every field must describe a single real pod. Resolution is a per-pod question,
+// and answering it from a partially-filled Input silently changes the answer: an
+// empty Namespace excludes every ResourcePolicy, an empty OwnerKind matches only
+// policies with no Kinds, and absent Annotations match only policies with no
+// annotation selector. Callers with a pod should build the Input with InputForPod
+// rather than assembling it field by field.
 type Input struct {
-	// Namespace is the pod's namespace.
+	// Namespace is the pod's namespace. Empty means "no namespace is known", and
+	// no ResourcePolicy can match, since a namespace-scoped policy cannot be
+	// established as the more specific match for a workload whose namespace is
+	// unknown.
 	Namespace string
 	// OwnerKind is the pre-resolved top-level owner kind (e.g. "Deployment", "StatefulSet").
 	// Callers walk ownerReferences to resolve this before calling Resolve.
@@ -38,11 +50,25 @@ type ResolvedPolicy struct {
 	Name string
 	// Namespaced is true for a ResourcePolicy, false for a ClusterResourcePolicy.
 	Namespaced bool
+	// Ref identifies the policy object, for recording on a WorkloadProfile's
+	// status.policyRef and for loading the same policy again via Load.
+	Ref ballastv1.PolicyReference
+}
+
+// PodAnnotationValue returns the value stamped into a pod's policy-ref
+// annotation: "namespace/name" for a ResourcePolicy, and the bare name for a
+// ClusterResourcePolicy, which has no namespace.
+func PodAnnotationValue(ref ballastv1.PolicyReference) string {
+	if ref.Namespace != "" {
+		return ref.Namespace + "/" + ref.Name
+	}
+	return ref.Name
 }
 
 // policyCandidate is an intermediate match collected during policy resolution.
 type policyCandidate struct {
 	spec       ballastv1.ClusterResourcePolicySpec
+	ref        ballastv1.PolicyReference
 	name       string
 	priority   int32
 	namespaced bool
@@ -65,6 +91,11 @@ func NewResolver(c client.Client, log logr.Logger) *Resolver {
 //   - ResourcePolicy (namespace-scoped) beats ClusterResourcePolicy regardless of priority.
 //   - Within the same class, higher Priority wins.
 //   - Equal priority ties break alphabetically by policy name.
+//
+// The first rule holds only because in.Namespace names the pod's own namespace:
+// "namespaced" is shorthand for "more specific to this workload". An Input with
+// no namespace has no such candidates to rank, because collectMatches admits no
+// ResourcePolicy in that case.
 func (r *Resolver) Resolve(ctx context.Context, in Input) (*ResolvedPolicy, error) {
 	matches, err := r.collectMatches(ctx, in)
 	if err != nil {
@@ -106,29 +137,90 @@ func (r *Resolver) Resolve(ctx context.Context, in Input) (*ResolvedPolicy, erro
 		Spec:       best.spec,
 		Name:       best.name,
 		Namespaced: best.namespaced,
+		Ref:        best.ref,
+	}, nil
+}
+
+// Load returns the policy named by ref with defaults applied, or nil when the
+// object no longer exists.
+//
+// Callers holding a WorkloadProfile use this instead of Resolve: the profile's
+// status.policyRef was written by the workloadwatcher from a full per-pod Input,
+// whereas a profile on its own supplies neither a namespace nor the pod labels
+// outside its identity tuple, so re-resolving from it would reach a different
+// answer than admission did.
+func (r *Resolver) Load(ctx context.Context, ref ballastv1.PolicyReference) (*ResolvedPolicy, error) {
+	var spec ballastv1.ClusterResourcePolicySpec
+
+	switch ref.Kind {
+	case ballastv1.KindResourcePolicy:
+		var rp ballastv1.ResourcePolicy
+		if err := r.client.Get(ctx, types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}, &rp); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("getting ResourcePolicy %s/%s: %w", ref.Namespace, ref.Name, err) // coverage:ignore - transient API error
+		}
+		spec = rp.Spec
+	case ballastv1.KindClusterResourcePolicy:
+		var crp ballastv1.ClusterResourcePolicy
+		if err := r.client.Get(ctx, types.NamespacedName{Name: ref.Name}, &crp); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("getting ClusterResourcePolicy %s: %w", ref.Name, err) // coverage:ignore - transient API error
+		}
+		spec = crp.Spec
+	default:
+		return nil, fmt.Errorf("unknown policy kind %q in reference %s", ref.Kind, ref.Key())
+	}
+
+	// Defaulting happens here for the same reason it happens in Resolve: sparse
+	// policies should track the running release's defaults rather than whatever
+	// was current when the object was written.
+	spec.ApplyDefaults()
+
+	return &ResolvedPolicy{
+		Spec:       spec,
+		Name:       ref.Name,
+		Namespaced: ref.Kind == ballastv1.KindResourcePolicy,
+		Ref:        ref,
 	}, nil
 }
 
 // collectMatches lists all ResourcePolicies and ClusterResourcePolicies that match in.
+//
+// ResourcePolicies are listed only when in.Namespace is set. client.InNamespace("")
+// means *all namespaces*, so listing unconditionally would make every
+// ResourcePolicy in the cluster a candidate for an Input with no namespace, and
+// the scope-before-priority rule in Resolve would then hand any one of them
+// precedence over every ClusterResourcePolicy.
 func (r *Resolver) collectMatches(ctx context.Context, in Input) ([]policyCandidate, error) {
 	var matches []policyCandidate
 
-	var rpList ballastv1.ResourcePolicyList
-	if err := r.client.List(ctx, &rpList, client.InNamespace(in.Namespace)); err != nil { // coverage:ignore - client List failure requires envtest
-		return nil, fmt.Errorf("listing ResourcePolicies in %s: %w", in.Namespace, err)
-	}
-	for _, rp := range rpList.Items {
-		ok, err := r.matchesSelector(in, rp.Spec.Selector)
-		if err != nil {
-			return nil, fmt.Errorf("evaluating ResourcePolicy %s/%s: %w", in.Namespace, rp.Name, err)
+	if in.Namespace != "" {
+		var rpList ballastv1.ResourcePolicyList
+		if err := r.client.List(ctx, &rpList, client.InNamespace(in.Namespace)); err != nil { // coverage:ignore - client List failure requires envtest
+			return nil, fmt.Errorf("listing ResourcePolicies in %s: %w", in.Namespace, err)
 		}
-		if ok {
-			matches = append(matches, policyCandidate{
-				spec:       rp.Spec,
-				name:       rp.Name,
-				priority:   rp.Spec.Priority,
-				namespaced: true,
-			})
+		for _, rp := range rpList.Items {
+			ok, err := r.matchesSelector(in, rp.Spec.Selector)
+			if err != nil {
+				return nil, fmt.Errorf("evaluating ResourcePolicy %s/%s: %w", in.Namespace, rp.Name, err)
+			}
+			if ok {
+				matches = append(matches, policyCandidate{
+					spec:       rp.Spec,
+					name:       rp.Name,
+					priority:   rp.Spec.Priority,
+					namespaced: true,
+					ref: ballastv1.PolicyReference{
+						Kind:      ballastv1.KindResourcePolicy,
+						Namespace: in.Namespace,
+						Name:      rp.Name,
+					},
+				})
+			}
 		}
 	}
 
@@ -147,6 +239,10 @@ func (r *Resolver) collectMatches(ctx context.Context, in Input) ([]policyCandid
 				name:       crp.Name,
 				priority:   crp.Spec.Priority,
 				namespaced: false,
+				ref: ballastv1.PolicyReference{
+					Kind: ballastv1.KindClusterResourcePolicy,
+					Name: crp.Name,
+				},
 			})
 		}
 	}
