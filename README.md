@@ -100,6 +100,8 @@ Ballast groups pods into `WorkloadProfile` objects by matching a configurable se
 
 **WorkloadProfiles are cluster-scoped.** Every pod in every namespace that shares the same label values for the identity keys feeds measurements into the same profile. This is intentional: forty dev namespaces all running the same billing app produce one well-sampled `WorkloadProfile`, not forty thin ones.
 
+The one thing that splits an identity tuple is the policy governing it. A profile holds a single set of recommendations, and the policy is what decides how they are measured and sized, so pods that resolve to different policies get different profiles (see [policy precedence](#default-metricssource-and-clusterresourcepolicy)). With only the default cluster-wide policy in place, nothing splits and the tuple is the whole story.
+
 ### Default: `name` + `component`
 
 ```yaml
@@ -232,12 +234,14 @@ Two flags make rolling out enrollment across a large cluster quick, in two stage
 
 ## Verifying a WorkloadProfile
 
-Once a pod carrying the `ballast.tightlinesoftware.com/mode` label is running, Ballast creates a `WorkloadProfile` for its identity tuple. Check it with:
+Once a pod carrying the `ballast.tightlinesoftware.com/mode` label is running, Ballast creates a `WorkloadProfile` for its identity tuple and the policy governing it. Check it with:
 
 ```bash
 kubectl get workloadprofiles
-kubectl describe workloadprofile billing--api--prod
+kubectl describe workloadprofile <name-from-the-list-above>
 ```
+
+A profile's name is its identity-tuple values joined with `--`, followed by a token identifying its policy (`billing--api--prod--default-a1b2c3d4`), so list the profiles first rather than assuming a name. The `POLICY` column shows which policy governs each one.
 
 The profile status shows accumulated usage statistics and recommendations once the readiness threshold is met (default: 250 samples collected over 24 hours). CPU, memory, and ephemeral storage are all tracked and sized:
 
