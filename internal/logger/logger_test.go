@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -132,8 +132,8 @@ func TestNewWithWriter_OTLPPathPromotesAttributesAndKeepsFieldsOffOTLP(t *testin
 	}
 
 	attrs := map[string]string{}
-	rec.WalkAttributes(func(kv otellog.KeyValue) bool {
-		attrs[kv.Key] = kv.Value.AsString()
+	rec.WalkAttributes(func(kv attribute.KeyValue) bool {
+		attrs[string(kv.Key)] = kv.Value.AsString()
 		return true
 	})
 	if attrs["workload"] != "web" {
