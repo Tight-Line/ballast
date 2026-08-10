@@ -20,9 +20,16 @@ jobs:
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: block
+          # show-openssf-scorecard defaults to true, so the action also talks to
+          # deps.dev (to resolve a package's source repo when the GitHub API has no
+          # source_repository_url, as is common for Go modules) and to the Scorecard
+          # API. The deps.dev call is not wrapped in error handling upstream, so
+          # blocking it fails the whole job with a bare "fetch failed".
           allowed-endpoints: >
             github.com:443
             api.github.com:443
+            api.deps.dev:443
+            api.securityscorecards.dev:443
 
       - name: 'Checkout Repository'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
