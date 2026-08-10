@@ -23,6 +23,11 @@ jobs:
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: block
+          # binaries.sonarsource.com is where the scan action downloads the Sonar
+          # Scanner CLI zip. It caches the CLI under a version-keyed Actions cache,
+          # so the download only happens when that cache is cold; the endpoint was
+          # missing here for two weeks without anyone noticing, until the cache
+          # aged out on 2026-08-10 and every run started failing.
           allowed-endpoints: >
             github.com:443
             api.github.com:443
@@ -34,6 +39,7 @@ jobs:
             sonarcloud.io:443
             api.sonarcloud.io:443
             scanner.sonarcloud.io:443
+            binaries.sonarsource.com:443
             analysis-sensorcache-eu-central-1-prod.s3.eu-central-1.amazonaws.com:443
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
