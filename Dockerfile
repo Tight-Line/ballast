@@ -1,7 +1,7 @@
 # Build stage. --platform=$BUILDPLATFORM keeps the Go toolchain on the native
 # runner architecture and cross-compiles for $TARGETARCH (see GOARCH below), so
 # an arm64 build doesn't run the whole builder under slow QEMU emulation.
-FROM --platform=$BUILDPLATFORM golang:1.26.5@sha256:2005724102f45917a63e9d092fc0e4ea56ea575048ce147caad5f5f61502c365 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.1@sha256:512690a5660563b57d37ecc31129e7f136e831db2aed24a1dbeb8ad7380dc0fa AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
