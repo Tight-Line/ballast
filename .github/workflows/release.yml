@@ -26,6 +26,11 @@ jobs:
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
           egress-policy: block
+          # timestamp.sigstore.dev: cosign v3 (installed by cosign-installer v4)
+          # signs into the new bundle format, which always countersigns with the
+          # sigstore RFC 3161 timestamp authority. cosign v2 never called it, so
+          # the endpoint was not needed when these jobs were written and the gap
+          # only appeared when Dependabot moved the installer to v4.
           allowed-endpoints: >
             github.com:443
             api.github.com:443
@@ -45,6 +50,7 @@ jobs:
             fulcio.sigstore.dev:443
             rekor.sigstore.dev:443
             tuf-repo-cdn.sigstore.dev:443
+            timestamp.sigstore.dev:443
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -146,6 +152,7 @@ jobs:
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
           egress-policy: block
+          # timestamp.sigstore.dev: see the note on the release-image job.
           allowed-endpoints: >
             github.com:443
             api.github.com:443
@@ -160,6 +167,7 @@ jobs:
             fulcio.sigstore.dev:443
             rekor.sigstore.dev:443
             tuf-repo-cdn.sigstore.dev:443
+            timestamp.sigstore.dev:443
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
