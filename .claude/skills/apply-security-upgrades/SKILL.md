@@ -318,13 +318,30 @@ Merging this PR auto-closes the Dependabot PRs whose commits it contains.
 required and strict/up-to-date enforced, so all five have to be green and the
 branch has to be current with `main` before it will merge.
 
-Known transient: `make setup-envtest` downloads envtest binaries from a GitHub
-release on every test and sonar run and intermittently 504s. It hit the
-`sonarcloud` job on the 2026-09 pass while `test` downloaded the same tarball
-fine, which is the signature of a flake rather than a break. Clear it with:
+Known transients, both of which hit the 2026-09 pass and neither of which is a
+real failure:
+
+- `make setup-envtest` downloads envtest binaries from a GitHub release on every
+  test and sonar run and intermittently **504s**. It took out `sonarcloud` while
+  `test` pulled the same tarball fine.
+- `go mod download` intermittently dies on a **`stream error: ... INTERNAL_ERROR`**
+  from `proxy.golang.org` mid-zip. It took out `test` on a later run.
+
+Both clear on a re-run, which only works once the whole run has finished; while
+sibling jobs are still going it refuses with "This workflow is already running":
 
 ```bash
 gh run rerun <run_id> --failed
+```
+
+A dependency-heavy failure is worth one check before writing it off, especially
+right after resolving a `go.sum` conflict. These two commands settle it locally
+in seconds, and "all modules verified" means the checksums are sound and the
+failure was the network:
+
+```bash
+go mod download && echo ok
+go mod verify
 ```
 
 Verify a scanner actually scanned before calling it green. Both of these skip
