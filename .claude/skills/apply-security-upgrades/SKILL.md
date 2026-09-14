@@ -174,6 +174,18 @@ anyway, then break everything at once:
 When a job fails at `Set up Go`, compare its allowlist against a job in the same
 repo that passes. The passing job's list is the answer.
 
+For a denial that is not an obvious toolchain fetch, get the real egress data
+from the StepSecurity run page rather than the Actions log, which does not carry
+it: `https://app.stepsecurity.io/github/Tight-Line/ballast/actions/runs/<run_id>`.
+The run page lists every destination the job actually reached and which ones were
+blocked, which is how the existing allowlists were derived. The StepSecurity
+GitHub App is installed on this repo and emails on block denials.
+
+Wildcard rule when adding an entry: wildcard only narrow vendor-owned domains
+such as `*.ingest.us.sentry.io`; pin shared multi-tenant infrastructure such as
+S3 and GCS buckets to the exact host. Matching is exact-FQDN, so `github.com`
+does not cover its subdomains.
+
 Audit every job at once rather than fixing them one red check at a time. System
 `python3` here has no `yaml` module; `ruby -ryaml` does:
 
@@ -247,6 +259,14 @@ gh pr checks --watch
 ```
 
 Merging this PR auto-closes the Dependabot PRs whose commits it contains.
+
+`main` is branch-protected with `test`, `lint`, `build`, `snyk` and `govulncheck`
+required and strict/up-to-date enforced, so all five have to be green and the
+branch has to be current with `main` before it will merge.
+
+Known transient: `make setup-envtest` downloads envtest binaries from a GitHub
+release on every test and sonar run and intermittently 504s. Re-run the job; that
+one is not a real failure.
 
 ## Checklist
 
