@@ -53,7 +53,16 @@ gh run list --branch main --limit 15 \
 git checkout -b chore/security-upgrades-<YYYY-MM> origin/main
 ```
 
-Merge in a deliberate order; cheapest and least conflict-prone first, Go modules
+**Cherry-pick; do not merge.** `main` has a strictly linear history and the repo
+is merged with GitHub's "Rebase and merge", which replays commits individually and
+throws merge commits away. A branch built with `git merge` therefore fails with
+`This branch cannot be rebased due to conflicts` even when GitHub simultaneously
+reports the PR as `MERGEABLE` and `CLEAN`: the conflict resolution you did lives
+*inside* a merge commit, rebase discards it, and the conflict comes back with
+nothing to resolve it. Cherry-picking resolves the conflict inline, in a real
+commit, where rebase can carry it.
+
+Apply in a deliberate order; cheapest and least conflict-prone first, Go modules
 last, and within Go modules the **grouped minor/patch bump before the security
 bump** so the security pin is the one that survives:
 
@@ -63,26 +72,51 @@ bump** so the security pin is the one that survives:
 4. `gomod` security group
 
 ```bash
-git merge --no-edit origin/<branch>
+# each Dependabot branch is a single commit; -x records where it came from
+git cherry-pick -x origin/<branch>
+```
+
+Cherry-pick preserves `dependabot[bot]` as the author, so the audit trail survives.
+Merging this PR still auto-closes the Dependabot PRs, because the PR body's
+`Closes #NNN` keywords do that regardless of whether their exact SHAs land.
+
+If a branch is already built with merges, linearize it before pushing rather than
+reaching for squash:
+
+```bash
+git branch backup/pre-rebase-$(git rev-parse --short HEAD)   # recoverable
+git rebase origin/main                                       # resolve once, see below
+git diff backup/pre-rebase-<sha> HEAD                        # confirm the tree
 ```
 
 ### 3. Resolve go.mod / go.sum conflicts
 
-The two Go module PRs will conflict. Do **not** hand-merge the version lines.
-Take one side, then re-apply the other's intent through the toolchain so `go.sum`
-stays internally consistent:
+The two Go module changes will conflict when the security bump goes on top of the
+grouped one. Do **not** hand-merge the version lines. Take the already-applied
+side, then re-apply the incoming pin through the toolchain so `go.sum` stays
+internally consistent:
 
 ```bash
 git checkout --ours go.mod go.sum
-go get <module>@<version>   # re-apply each security pin the other branch carried
+go get <module>@<version>   # re-apply each security pin the incoming commit carried
 go mod tidy                 # slow; run it in the background
-git add go.mod go.sum && git commit --no-edit
+git add go.mod go.sum
+git cherry-pick --continue  # or `git rebase --continue`
 ```
+
+`--ours` means "what is already applied" during both cherry-pick and rebase, which
+is the grouped bump. That is the side to keep. Note this is the opposite sense
+from `git merge`, where `--ours` is the branch you are merging into.
 
 Rule for each conflicting line: **take the higher version**. The minor/patch
 group is often newer for transitive deps such as `genproto` and `protobuf`, while
 the security group is newer for the one module it targets, such as `grpc`. Both
 need to win where they are ahead.
+
+`go mod tidy` may legitimately prune `go.sum` lines for the version being replaced.
+That is correct, not drift. But it means the tree is no longer byte-identical to a
+previously verified one, so re-run the gate rather than trusting the earlier
+green run.
 
 ### 4. Fix the gates
 
@@ -306,7 +340,8 @@ prints `ANALYSIS SUCCESSFUL` and `EXECUTION SUCCESS`.
 
 ## Checklist
 
-- [ ] Every open Dependabot PR either merged into the branch or explicitly noted as superseded
+- [ ] Every open Dependabot PR either cherry-picked onto the branch or explicitly noted as superseded
+- [ ] `git rev-list --merges origin/main..HEAD` is empty, so "Rebase and merge" works
 - [ ] `go.mod` and `go.sum` conflicts resolved to the higher version on both sides
 - [ ] `go` directive at the latest patch of its minor line; `govulncheck` clean
 - [ ] Each red gate diagnosed from its real log, not assumed to be a finding
