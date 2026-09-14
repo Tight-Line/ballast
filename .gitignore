@@ -39,3 +39,6 @@ asterix_story_log.json
 charts/ballast/charts/
 charts/ballast/crds/
 dist/
+
+# Per-developer Claude Code settings; the shared skills under .claude/skills are tracked
+.claude/settings.local.json
