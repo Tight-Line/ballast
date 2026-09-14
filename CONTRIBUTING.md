@@ -13,7 +13,12 @@ Thanks for your interest in contributing. This document covers the essentials.
 ## Before you open a PR
 
 1. Run `make check` locally and confirm it passes (`lint` + 100% coverage + build).
-2. Update `CHANGELOG.md` under `[Unreleased]` for any user-visible change.
+2. Update `CHANGELOG.md` under `[Unreleased]` for any user-visible change, and for
+   any security fix even when nothing visible changes. A dependency or toolchain
+   bump that clears an advisory goes under `### Security`: `scripts/make-tag` will
+   not cut a release from an empty `[Unreleased]`, so that entry is what makes a
+   patched release possible in the first place. Routine bumps with no security
+   content do not each need a line.
 3. Update `AGENTS.md` if your change adds files, moves key functions, or changes the
    build/test workflow.
 4. If your change affects the Helm chart, run `helm lint charts/ballast` as well.

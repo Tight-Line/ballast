@@ -241,11 +241,19 @@ pushed from the repo rather than by Dependabot.
 
 ### 5. Changelog and commit
 
-Update `CHANGELOG.md` under `## [Unreleased]` for anything user-visible; a
-toolchain bump and a CI fix both are. Routine dependency bumps do not each need a
-line, so summarize them.
+**A security pass must leave a `### Security` entry under `## [Unreleased]`.** This
+is the one thing that cannot be skipped. `scripts/make-tag` refuses to cut a
+release when `[Unreleased]` is empty, so with no entry there is no way to ship the
+patched build at all, and the fix ends up riding along with whatever feature lands
+next. The entry is also the only way a user learns why the patch release is worth
+taking, since by definition they cannot see the change.
 
-Do not touch version numbers or tags. Releases go through `script/make-tags`.
+This is an explicit carve-out from the usual "user-visible changes only" rule; see
+the Changelog section in `DESIGN.md`. Write the advisory IDs and what they affect,
+not just "bumped dependencies". Routine bumps carrying no security fix do not each
+need a line, so summarize those under `### Changed`.
+
+Do not touch version numbers or tags. Releases go through `scripts/make-tag`.
 Never reference private IKE-standards overlays in this repo's commits or PR text.
 
 Stage every file you touched. `make lint` and `make test-coverage-check` pass on
@@ -303,5 +311,5 @@ prints `ANALYSIS SUCCESSFUL` and `EXECUTION SUCCESS`.
 - [ ] `go` directive at the latest patch of its minor line; `govulncheck` clean
 - [ ] Each red gate diagnosed from its real log, not assumed to be a finding
 - [ ] `make check` green on the committed tree
-- [ ] `CHANGELOG.md` `[Unreleased]` updated
+- [ ] `CHANGELOG.md` `[Unreleased]` has a `### Security` entry naming the advisories, so a patch release can be cut
 - [ ] PR checks watched to completion
