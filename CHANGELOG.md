@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-14
+
 ### Security
 
 - **Go toolchain moved to 1.26.8**, clearing six standard library vulnerabilities that `govulncheck` reports as reachable from Ballast's own code: `net/url` quadratic `resolvePath` (GO-2026-6218), `html/template` JavaScript regexp context tracking (GO-2026-6091), `crypto/tls` post-handshake message limits (GO-2026-6090), `net/http` `ReadHeaderTimeout` on the unencrypted HTTP/2 check (GO-2026-6089), `encoding/asn1` recursion depth (GO-2026-5972), and `golang.org/x/net/idna` Punycode label handling (GO-2026-5026). All six are fixed in Go 1.26.6; the `go` directive was still pinned to 1.26.5. Dependabot updates modules and the builder image but never the `go` directive, so the standard library had been drifting out of support on its own.
