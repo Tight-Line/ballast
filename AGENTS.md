@@ -271,6 +271,13 @@ Run `scripts/make-tag <version>` (e.g. `scripts/make-tag 0.1.0`) to cut a releas
 3. Moves the `[Unreleased]` CHANGELOG section to `[<version>] - <date>`
 4. Commits and tags `v<version>`
 
+Step 3 is a gate, not just a move: the script errors out when `[Unreleased]` has no
+content, so a release cannot be cut without at least one entry. Security-only
+releases therefore still need one. Record dependency, toolchain, and build-pipeline
+security fixes under `### Security` even though a user cannot see them, so a patch
+release remains possible and says what it fixes. See the Changelog section in
+`DESIGN.md`.
+
 Then `git push origin main v<version>` triggers `release.yml`, which:
 - Builds and pushes `ghcr.io/tight-line/ballast:v<version>` and `:latest` (multi-arch: amd64 + arm64), then cosign-signs the image and attaches an SBOM + SLSA provenance
 - Runs `helm dependency update`, packages the chart, and pushes it as a signed OCI artifact to `ghcr.io/tight-line/charts/ballast` (cosign signature + SLSA provenance)

@@ -14,5 +14,5 @@
 
 - [ ] `make check` passes locally
 - [ ] `helm lint charts/ballast` passes (if chart was changed)
-- [ ] `CHANGELOG.md` updated (for user-visible changes)
+- [ ] `CHANGELOG.md` updated (for user-visible changes, and for security fixes under `### Security` even when nothing visible changes)
 - [ ] Documentation updated (if behavior or configuration changed)
