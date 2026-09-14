@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The release workflow can sign again, so tagged images and charts actually publish.** Both signing jobs set `egress-policy: block` with `fulcio`, `rekor` and `tuf-repo-cdn` allowed but not `timestamp.sigstore.dev`, and each died on `Post "https://timestamp.sigstore.dev/api/v1/timestamp": connection refused` after pushing its artifact. The endpoint became mandatory when Dependabot moved `sigstore/cosign-installer` from v3 to v4: cosign v3 signs into the new bundle format, which always countersigns with the sigstore RFC 3161 timestamp authority, where cosign v2 never called it. Same class of egress gap 0.6.1 closed for the `build`, `lint`, `govulncheck` and Snyk jobs, one workflow over. The v0.6.1 tag run failed this way in both jobs, so it left unsigned image and chart layers in GHCR and never created the GitHub release; re-running the tag with this fix signs them in place.
+
 ## [0.6.1] - 2026-09-14
 
 ### Security
