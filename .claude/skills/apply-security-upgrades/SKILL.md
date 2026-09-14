@@ -147,9 +147,21 @@ gh run view "$RUN" --log > /tmp/snyk.log
 grep -nE "##\[error\]|Acquiring|ECONNREFUSED|severity|issues found" /tmp/snyk.log
 ```
 
-`gh run view --log-failed` is often useless here: harden-runner dumps its whole
-agent log into the failed step, burying the real error hundreds of lines down.
-Get the full log and grep it.
+`gh run view --log-failed` is often useless here, and so is `tail`: harden-runner
+dumps its entire agent log into the job's teardown, so both show you eBPF and
+systemd chatter instead of the error. Find the failing step by name, then grep
+only that step's lines:
+
+```bash
+gh run view <run_id> --json jobs \
+  --jq '.jobs[] | {name, conclusion, failed: [.steps[]|select(.conclusion=="failure")|.name]}'
+JOB=<databaseId from above>
+gh run view --job "$JOB" --log | grep -F "<failing step name>" | cut -c1-200 | tail -40
+```
+
+Then widen the `cut` on the one interesting line, because the real cause is often
+past column 200. A truncated `unable to download ...` turned out to end in
+`got status "504 Gateway Timeout"`, which is a transient, not a bug.
 
 #### harden-runner egress blocks (the recurring one)
 
@@ -265,8 +277,24 @@ required and strict/up-to-date enforced, so all five have to be green and the
 branch has to be current with `main` before it will merge.
 
 Known transient: `make setup-envtest` downloads envtest binaries from a GitHub
-release on every test and sonar run and intermittently 504s. Re-run the job; that
-one is not a real failure.
+release on every test and sonar run and intermittently 504s. It hit the
+`sonarcloud` job on the 2026-09 pass while `test` downloaded the same tarball
+fine, which is the signature of a flake rather than a break. Clear it with:
+
+```bash
+gh run rerun <run_id> --failed
+```
+
+Verify a scanner actually scanned before calling it green. Both of these skip
+silently when their token is absent, and a skipped job reports pass:
+
+```bash
+gh run view --job <job_id> --log | grep -F "Run Snyk" | grep -iE "Tested .* dependencies|issues found"
+gh run view --job <job_id> --log | grep -F "SonarCloud Scan" | grep -iE "ANALYSIS SUCCESSFUL|EXECUTION"
+```
+
+A real Snyk run prints `Tested N dependencies for known issues`; a real Sonar run
+prints `ANALYSIS SUCCESSFUL` and `EXECUTION SUCCESS`.
 
 ## Checklist
 
