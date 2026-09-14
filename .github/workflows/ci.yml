@@ -63,11 +63,17 @@ jobs:
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
           egress-policy: block
+          # actions/setup-go fetches the toolchain from the actions/go-versions
+          # release, which redirects to release-assets.githubusercontent.com. The
+          # download only happens when the runner image does not already ship the
+          # Go version in go.mod, so a missing endpoint here stays invisible until
+          # the pinned Go moves ahead of the image, which is what broke this job.
           allowed-endpoints: >
             github.com:443
             proxy.golang.org:443
             sum.golang.org:443
             storage.googleapis.com:443
+            release-assets.githubusercontent.com:443
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -87,11 +93,13 @@ jobs:
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
           egress-policy: block
+          # release-assets.githubusercontent.com: see the note on the lint job.
           allowed-endpoints: >
             github.com:443
             proxy.golang.org:443
             sum.golang.org:443
             storage.googleapis.com:443
+            release-assets.githubusercontent.com:443
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -111,11 +119,13 @@ jobs:
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
           egress-policy: block
+          # release-assets.githubusercontent.com: see the note on the lint job.
           allowed-endpoints: >
             github.com:443
             proxy.golang.org:443
             sum.golang.org:443
             storage.googleapis.com:443
+            release-assets.githubusercontent.com:443
             vuln.go.dev:443
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
