@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-30
+
 ### Security
 
 - **OpenTelemetry OTLP trace exporter moved to 1.45.0**, clearing GHSA-8wmf-6v46-5gfg (CVE-2026-81870, low): in `go.opentelemetry.io/otel/exporters/otlp/otlptrace` and `otlptracegrpc` 1.5.0 through 1.44.0, creating a `TracerProvider` writes the trace collector's endpoint into an internal OpenTelemetry diagnostic log. Ballast is not exposed in practice: the exporter reaches it only indirectly through the Kubernetes libraries, and Ballast never raises OpenTelemetry's internal logger to the verbosity that emits the event. The bump clears the alert so scanners stop flagging the image.
