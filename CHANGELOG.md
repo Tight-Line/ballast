@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **OpenTelemetry OTLP trace exporter moved to 1.45.0**, clearing GHSA-8wmf-6v46-5gfg (CVE-2026-81870, low): in `go.opentelemetry.io/otel/exporters/otlp/otlptrace` and `otlptracegrpc` 1.5.0 through 1.44.0, creating a `TracerProvider` writes the trace collector's endpoint into an internal OpenTelemetry diagnostic log. Ballast is not exposed in practice: the exporter reaches it only indirectly through the Kubernetes libraries, and Ballast never raises OpenTelemetry's internal logger to the verbosity that emits the event. The bump clears the alert so scanners stop flagging the image.
+
+### Changed
+
+- Dependency updates: the grouped Go minor and patch bumps (Kubernetes libraries to 0.37.1, `controller-runtime` to 0.25.1, `ginkgo` to 2.33.0, `gomega` to 1.44.0, `golang.org/x/time` to 0.16.0) and the GitHub Actions group across 8 actions.
+
 ## [0.6.1] - 2026-09-14
 
 ### Security
