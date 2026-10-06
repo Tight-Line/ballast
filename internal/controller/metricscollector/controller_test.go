@@ -821,6 +821,47 @@ func TestReconcile_ObservedContainerNotEvicted(t *testing.T) {
 	}
 }
 
+// TestReconcile_NothingObservedDoesNotEvict: a container that is in status but
+// not (yet) on any pod stamped with this profile's profile-ref, during a cycle
+// in which the metrics source returned nothing, must be kept. That combination
+// is a rollout racing the workloadwatcher plus a failed fetch, not evidence
+// that the container is gone.
+func TestReconcile_NothingObservedDoesNotEvict(t *testing.T) {
+	ctx := context.Background()
+	tupleLabels := map[string]string{"app": "web"}
+	profile := defaultProfile(tupleLabels)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile, appPod())
+
+	_, sc := newMiniredisClient(t)
+	key := store.MetricKey(profileHash(tupleLabels), "sidecar", "cpu")
+	if err := store.AddSample(ctx, sc, key, time.Now().UnixMilli(), "50", 0); err != nil {
+		t.Fatalf("seeding sample: %v", err)
+	}
+	profile.Status.Containers = []ballastv1.ContainerProfile{
+		{Name: "sidecar", UsageStats: []ballastv1.ContainerUsageStats{{Resource: "cpu", Source: "k8s-metrics", Samples: 1}}},
+	}
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	p := &mockPlugin{typeName: "kubernetesMetrics", err: errors.New("metrics API unavailable")}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+	if _, err := reconcileProfile(t, r, "web"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
+		t.Fatalf("Get profile: %v", err)
+	}
+	if len(got.Status.Containers) != 1 || got.Status.Containers[0].Name != "sidecar" {
+		t.Errorf("status containers = %+v, want sidecar kept when nothing was observed", got.Status.Containers)
+	}
+	if count, _ := store.SampleCount(ctx, sc, key); count != 1 {
+		t.Errorf("sidecar series holds %d samples, want 1 (not purged)", count)
+	}
+}
+
 func TestReconcile_ReadinessNotMet(t *testing.T) {
 	ctx := context.Background()
 	// Policy requires 100 data points — we'll only send 1.
