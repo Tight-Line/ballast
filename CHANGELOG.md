@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`github.com/google/cel-go` moved to 0.30.0**, clearing GHSA-gcjh-h69q-9w9g (GO-2026-6094): in 0.22.0 through 0.29.x, CEL environments built with `NativeTypes` / `ParseStructTag` can expose unexported Go struct fields to expressions. Ballast is not exposed in practice: cel-go is an indirect dependency, reached through the Kubernetes authorizer libraries behind controller-runtime's metrics auth filter, and Ballast never builds a CEL environment over its own types. The bump clears the OpenSSF Scorecard vulnerability finding. Dependabot does not update indirect dependencies, so this one had been sitting since August.
+
+### Changed
+
+- Dependency updates: the grouped Go minor and patch bumps across 14 modules (OpenTelemetry to 1.47.0, `controller-runtime` to 0.25.2) and the GitHub Actions group across 6 actions.
+
 ## [0.6.2] - 2026-09-30
 
 ### Security
