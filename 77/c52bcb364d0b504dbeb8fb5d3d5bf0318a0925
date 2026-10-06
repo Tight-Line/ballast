@@ -1,0 +1,45 @@
+internal/controller/metricscollector/controller_test.go
+  s_a77ab9995ffa91::t_cd08565a0f6630 24
+  s_a77ab9995ffa91::t_06204a955f0079 532
+  s_a77ab9995ffa91::t_7cee7109913fc6 190
+  s_a77ab9995ffa91::t_d692caabf3553d 191-200,292,359,751,828,986,1022,1051,1084,1140,1182,1218
+  s_a77ab9995ffa91::t_8727223f50471f 544-547,551
+  s_a77ab9995ffa91::t_c24db266bdd770 563,565,574-583,585-729
+  s_a77ab9995ffa91::t_d9ab005b9dea43 881-883
+DESIGN.md
+  s_a77ab9995ffa91::t_fa84a8b0742c29 40
+internal/store/metrics_test.go
+  s_a77ab9995ffa91::t_846667bb66f0df 165-182
+CHANGELOG.md
+  s_a77ab9995ffa91::t_a9269c48b5e3f7 10-13
+internal/store/metrics.go
+  s_a77ab9995ffa91::t_846667bb66f0df 71-77
+internal/controller/metricscollector/controller.go
+  s_a77ab9995ffa91::t_245bfe45e712ac 322-326
+  s_a77ab9995ffa91::t_eba1db6a2d4315 263
+  s_a77ab9995ffa91::t_ed48045f416bef 372-386
+  s_a77ab9995ffa91::t_5cf3a8367b60d5 291-292
+  s_a77ab9995ffa91::t_cbee069c842f74 215,397-398,401,407-409,411-414,417-434,437
+  s_a77ab9995ffa91::t_d9ed0b66d2d862 811-814,822
+  s_a77ab9995ffa91::t_83f4a27bbb07ea 276
+  s_a77ab9995ffa91::t_88c252357cb816 786-793,798-799
+  s_a77ab9995ffa91::t_fc5dae06ae09b6 176-185,190-191,194,200,210-214
+  s_a77ab9995ffa91::t_002610b831b811 307
+  s_a77ab9995ffa91::t_45e43ff9bf471e 216
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "77c52bcb364d0b504dbeb8fb5d3d5bf0318a0925",
+  "prompts": {},
+  "sessions": {
+    "s_a77ab9995ffa91": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bfab22c4-622b-4591-9995-3fd8a2bc5710",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Nick Marden <nmarden@avvo.com>"
+    }
+  }
+}
