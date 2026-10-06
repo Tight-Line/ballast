@@ -239,38 +239,78 @@ func TestReconcile_CPUClampWouldPromoteToGuaranteed_StepsDownOneMillicore(t *tes
 	assertClamped(t, o, "cpu")
 }
 
-func TestReconcile_GuaranteedPod_RecommendationAboveLimit_NoDrift(t *testing.T) {
-	// A Guaranteed pod whose recommendation exceeds its limit clamps to exactly
-	// the limit, which is where its request already sits: no resize, and it
-	// stays Guaranteed.
-	o := reconcileClamp(t, guaranteedPod(), map[string]ballastv1.ResourceRecommendation{
-		"memory": {Request: "149Mi"},
-	})
+// assertSkipped asserts the reconcile issued no resize and recorded exactly one
+// ballast.resize.skipped with the given reason.
+func assertSkipped(t *testing.T, o clampOutcome, reason string) {
+	t.Helper()
 	if o.resized {
 		t.Errorf("expected no resize, got %+v", o.adjustments)
 	}
 	got, labels := counterSeries(t, o.reg, "ballast_resize_skipped_total")
-	if got != 1 || labels["reason"] != "no_drift" {
-		t.Errorf("ballast_resize_skipped_total = %v (reason=%q), want 1 with reason=no_drift", got, labels["reason"])
+	if got != 1 || labels["reason"] != reason {
+		t.Errorf("ballast_resize_skipped_total = %v (reason=%q), want 1 with reason=%s", got, labels["reason"], reason)
 	}
+}
+
+func TestReconcile_GuaranteedPod_RecommendationAboveLimit_ClampedAtLimit(t *testing.T) {
+	// A Guaranteed pod whose recommendation exceeds its limit clamps to exactly
+	// the limit, which is where its request already sits: no resize, it stays
+	// Guaranteed, and the skip says the limit is what holds it back.
+	o := reconcileClamp(t, guaranteedPod(), map[string]ballastv1.ResourceRecommendation{
+		"memory": {Request: "149Mi"},
+	})
+	assertSkipped(t, o, "clamped_at_limit")
 	assertNotClamped(t, o)
 }
 
-func TestReconcile_AlreadyClampedPod_NoDrift(t *testing.T) {
+func TestReconcile_AlreadyClampedPod_ClampedAtLimit(t *testing.T) {
 	// A Burstable pod already held one byte under its memory limit by an earlier
-	// clamp reports no drift rather than resizing every interval.
+	// clamp does not resize every interval; it reports the steady state as
+	// clamped_at_limit, with no new clamp counted or event emitted.
 	pod := resourcesPod(rl("cpu", "100m", "memory", "134217727"), rl("cpu", "100m", "memory", "128Mi"))
 	o := reconcileClamp(t, pod, map[string]ballastv1.ResourceRecommendation{
 		"memory": {Request: "149Mi"},
 	})
-	if o.resized {
-		t.Errorf("expected no resize, got %+v", o.adjustments)
-	}
-	got, labels := counterSeries(t, o.reg, "ballast_resize_skipped_total")
-	if got != 1 || labels["reason"] != "no_drift" {
-		t.Errorf("ballast_resize_skipped_total = %v (reason=%q), want 1 with reason=no_drift", got, labels["reason"])
+	assertSkipped(t, o, "clamped_at_limit")
+	assertNotClamped(t, o)
+}
+
+func TestReconcile_NoDriftWithinLimit_NoDrift(t *testing.T) {
+	// A recommendation under the limit that the request already matches is
+	// plain no_drift, not clamped_at_limit.
+	pod := resourcesPod(rl("memory", "100Mi"), rl("memory", "128Mi"))
+	o := reconcileClamp(t, pod, map[string]ballastv1.ResourceRecommendation{
+		"memory": {Request: "100Mi"},
+	})
+	assertSkipped(t, o, "no_drift")
+}
+
+func TestReconcile_DriftAlongsideClampedAtLimit_Resized(t *testing.T) {
+	// cpu drifts and is resized; memory is already held at its limit. The pod's
+	// outcome is the resize, and the held memory request is left alone.
+	pod := resourcesPod(rl("cpu", "100m", "memory", "128Mi"), rl("memory", "128Mi"))
+	o := reconcileClamp(t, pod, map[string]ballastv1.ResourceRecommendation{
+		"cpu":    {Request: "500m"},
+		"memory": {Request: "149Mi"},
+	})
+	assertQuantity(t, "cpu request", o.request(t, corev1.ResourceCPU), "300m")
+	assertQuantity(t, "memory request", o.request(t, corev1.ResourceMemory), "128Mi")
+	if got, _ := counterSeries(t, o.reg, "ballast_resize_skipped_total"); got != 0 {
+		t.Errorf("ballast_resize_skipped_total = %v, want 0 when the pod is resized", got)
 	}
 	assertNotClamped(t, o)
+}
+
+func TestReconcile_NotResizableOutranksClampedAtLimit(t *testing.T) {
+	// The only drift is on ephemeral-storage, which cannot be resized in place,
+	// while memory is held at its limit. Pending drift outranks the steady
+	// state, so the skip is not_resizable.
+	pod := resourcesPod(rl("memory", "128Mi", "ephemeral-storage", "5Mi"), rl("memory", "128Mi"))
+	o := reconcileClamp(t, pod, map[string]ballastv1.ResourceRecommendation{
+		"memory":            {Request: "149Mi"},
+		"ephemeral-storage": {Request: "50Mi"},
+	})
+	assertSkipped(t, o, "not_resizable")
 }
 
 func TestReconcile_LimitLoweredBelowCurrentRequest_RequestHeldAtLimit(t *testing.T) {
