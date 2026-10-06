@@ -1,0 +1,41 @@
+charts/ballast/.helmignore
+  s_a77ab9995ffa91::t_24b25f3ba8f161 1-4
+charts/ballast/tests/default_sc_test.yaml
+  s_a77ab9995ffa91::t_ad5adaedf3a058 1-51
+charts/ballast/tests/grow_test.yaml
+  s_a77ab9995ffa91::t_ad5adaedf3a058 1-57
+charts/ballast/tests/beta_sc_test.yaml
+  s_a77ab9995ffa91::t_ad5adaedf3a058 1-33
+AGENTS.md
+  s_a77ab9995ffa91::t_1d4e7ff22f3871 254-255
+charts/ballast/tests/no_default_sc_test.yaml
+  s_a77ab9995ffa91::t_ad5adaedf3a058 1-38
+charts/ballast/tests/no_cluster_test.yaml
+  s_a77ab9995ffa91::t_ad5adaedf3a058 1-15
+Makefile
+  s_a77ab9995ffa91::t_d5755555661ba1 207,212
+  s_a77ab9995ffa91::t_442b311d0473f2 133-134
+  s_a77ab9995ffa91::t_f0ddd16e3c13f4 249-256
+.github/workflows/ci.yml
+  s_a77ab9995ffa91::t_ace651cb3beb51 97
+  s_a77ab9995ffa91::t_6b3ca614becc6a 71-75,82-84,98-104
+  s_a77ab9995ffa91::t_ae507b80cfe92a 105
+charts/ballast/tests/storage_values_test.yaml
+  s_a77ab9995ffa91::t_0cf7bf624b96d8 1-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "663c4921acc6e5b032def3ef0719777a7de8203a",
+  "prompts": {},
+  "sessions": {
+    "s_a77ab9995ffa91": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bfab22c4-622b-4591-9995-3fd8a2bc5710",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Nick Marden <nmarden@avvo.com>"
+    }
+  }
+}
