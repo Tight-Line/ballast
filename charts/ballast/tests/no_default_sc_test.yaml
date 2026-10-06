@@ -1,0 +1,38 @@
+suite: cluster reachable, no default StorageClass
+templates:
+  - templates/valkey-storage-guard.yaml
+release:
+  name: ballast
+  namespace: ballast-system
+kubernetesProvider:
+  scheme:
+    "v1/Namespace": {gvr: {version: v1, resource: namespaces}, namespaced: false}
+    "storage.k8s.io/v1/StorageClass": {gvr: {group: storage.k8s.io, version: v1, resource: storageclasses}, namespaced: false}
+    "v1/PersistentVolumeClaim": {gvr: {version: v1, resource: persistentvolumeclaims}, namespaced: true}
+  objects:
+    - {kind: Namespace, apiVersion: v1, metadata: {name: kube-system}}
+    - kind: StorageClass
+      apiVersion: storage.k8s.io/v1
+      metadata: {name: nfs-client}
+      provisioner: example.com/nfs
+    - kind: StorageClass
+      apiVersion: storage.k8s.io/v1
+      metadata:
+        name: explicit-false
+        annotations: {storageclass.kubernetes.io/is-default-class: "false"}
+      provisioner: example.com/x
+tests:
+  - it: fails with defaults (useClusterDefaultClass) when no class is default
+    asserts:
+      - failedTemplate:
+          errorPattern: "has no default StorageClass"
+  - it: passes with a named class
+    set:
+      valkey.dataStorage.className: nfs-client
+    asserts:
+      - hasDocuments: {count: 0}
+  - it: passes when data storage is disabled
+    set:
+      valkey.dataStorage.enabled: false
+    asserts:
+      - hasDocuments: {count: 0}

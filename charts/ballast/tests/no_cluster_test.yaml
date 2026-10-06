@@ -1,0 +1,15 @@
+suite: no cluster (lookup returns empty for everything)
+templates:
+  - templates/valkey-storage-guard.yaml
+release:
+  name: ballast
+  namespace: ballast-system
+tests:
+  - it: renders nothing and does not fail at defaults
+    asserts:
+      - hasDocuments: {count: 0}
+  - it: still fails deterministically when no class decision is made
+    set: {valkey.dataStorage.useClusterDefaultClass: false}
+    asserts:
+      - failedTemplate:
+          errorPattern: "needs a StorageClass decision"

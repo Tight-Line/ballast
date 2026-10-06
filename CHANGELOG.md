@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `make helm-test` (`scripts/test-chart.sh`): render-time checks of the chart's storage defaults and failure messages, runnable without a cluster.
+- `make helm-test`: [helm-unittest](https://github.com/helm-unittest/helm-unittest) suites under `charts/ballast/tests/` covering the chart's storage defaults and failure messages, including the cluster-lookup guards (no default StorageClass, live PVC capacity above or below `requestedSize`) against a faked cluster, so no real cluster is needed. CI runs it with `make helm-lint` in the lint job. The suites are excluded from the packaged chart.
 - **`ballast.recommendation.clamped` counter**, with the usual profile attributes plus `container`, `resource`, `policy`, `namespace`, and `phase` (`admission` or `resize`), and an info-level log line for every clamp ([#119](https://github.com/Tight-Line/ballast/issues/119)). A resize clamp also emits a `RequestClampedToLimit` Warning event on the pod. An admission clamp stamps `ballast.tightlinesoftware.com/clamped-<resource>-request` with the request Ballast would otherwise have written, since the pod does not exist yet to carry an event. A steady stream of clamps for one workload means its limit sits below observed usage plus headroom.
 
 ### Fixed

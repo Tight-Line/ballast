@@ -1,0 +1,4 @@
+# Patterns excluded from the packaged chart (helm package / helm push).
+
+# helm-unittest suites: run by `make helm-test`, not shipped.
+tests/
