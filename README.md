@@ -49,7 +49,7 @@ Pod eviction for cluster rebalancing is handled by [Kubernetes Descheduler](http
 - Kubernetes 1.35+ (required for in-place pod resize; earlier versions support measure and apply but not resize)
 - [metrics-server](https://github.com/kubernetes-sigs/metrics-server) installed in the cluster (source for CPU and memory; ephemeral-storage usage comes from the kubelet Summary API and needs no extra component)
 - TLS certificate for the admission webhook (see [Webhook TLS](#webhook-tls) below)
-- A Redis-compatible store (Ballast ships with a bundled Valkey via Helm; an existing Redis or Valkey instance works too). The bundled Valkey persists to a PersistentVolumeClaim on the cluster's default StorageClass by default, so accrued history survives pod reschedules; its memory and storage defaults are small and linked, so scale them together (see the annotated `valkey:` block in `values.yaml`).
+- A Redis-compatible store (Ballast ships with a bundled Valkey via Helm; an existing Redis or Valkey instance works too). The bundled Valkey persists to a PersistentVolumeClaim on the cluster's default StorageClass by default, so accrued history survives pod reschedules. If the cluster has no default StorageClass, set `valkey.dataStorage.className` to the class the store should use; install and upgrade fail otherwise (see [Upgrade notes](#upgrade-notes)). Its memory and storage defaults are small and linked, so scale them together (see the annotated `valkey:` block in `values.yaml`).
 
 ## Installation
 
@@ -66,6 +66,23 @@ This pulls the latest signed chart from the GitHub Container Registry. To pin a 
 The chart ships with a sensible default for `ballastConfig.identityLabels` (`app.kubernetes.io/name` + `app.kubernetes.io/component`). Read the section below before overriding it — the choice has cluster-wide consequences.
 
 Upgrades are `helm upgrade --install ballast oci://ghcr.io/tight-line/charts/ballast` with no extra steps. CRDs are kept in sync automatically: Helm itself never upgrades the `crds/` directory, so the chart runs a pre-install/pre-upgrade hook Job (`ballastd apply-crds`) that server-side-applies the CRD manifests baked into the operator image. Set `crds.upgradeHook.enabled: false` to opt out if external tooling manages CRDs; you are then responsible for applying `config/crd/bases/` on every upgrade.
+
+### Upgrade notes
+
+**`UPGRADE FAILED ... PersistentVolumeClaim "ballast-valkey" is invalid: spec.resources.requests.storage: Forbidden: field can not be less than status.capacity`** ([#89](https://github.com/Tight-Line/ballast/issues/89)). Kubernetes refuses any PVC update that requests less than the volume's current capacity, and Helm re-sends the request on every upgrade. Earlier charts requested `192Mi` for the Valkey store, and most cloud StorageClasses (EBS, GCE PD, Azure Disk) round that up to a 1Gi minimum, so every upgrade after the first failed on the PVC even when nothing changed. Under Helm 4 the rest of the release still applies and only the release is marked `failed`; under Helm 3 the upgrade stops partway. The default is now `1Gi`, and the chart checks the live PVC before applying: if it is bigger than `valkey.dataStorage.requestedSize`, the upgrade fails up front with the exact value to set. To recover by hand:
+
+```bash
+kubectl -n ballast-system get pvc ballast-valkey -o jsonpath='{.status.capacity.storage}'
+helm upgrade --install ballast oci://ghcr.io/tight-line/charts/ballast \
+  --namespace ballast-system \
+  --set valkey.dataStorage.requestedSize=<that value>
+```
+
+Keep that value (or anything larger) in your values from then on. Do not lower it later.
+
+The opposite case can also stop an upgrade. On a StorageClass with no minimum size (local-path, NFS, kind's `standard`), an existing install has a 192Mi PVC, and the new 1Gi default asks Kubernetes to grow it. That only works when the class sets `allowVolumeExpansion: true`; otherwise the chart fails before applying and names the `--set valkey.dataStorage.requestedSize=<capacity>` that keeps the existing volume. Alternatively, delete the PVC and the Valkey pod holding it, and the next upgrade provisions a fresh 1Gi volume (the store starts empty).
+
+**No default StorageClass** ([#90](https://github.com/Tight-Line/ballast/issues/90)). A PVC that names no class is only provisioned fresh when the cluster has a default StorageClass. Without one, Kubernetes binds it to any unbound PersistentVolume that is big enough, typically one created for another application, along with that volume's reclaim policy. The chart now refuses to install or upgrade in that situation (it checks for a StorageClass annotated `storageclass.kubernetes.io/is-default-class: "true"`). Set `valkey.dataStorage.className` to the class the store should use, or mark a default class on the cluster. This also stops upgrades of an existing install on such a cluster, whose store may already sit on a volume that was never provisioned for it: check `kubectl -n ballast-system get pvc ballast-valkey -o wide` and its PersistentVolume before deciding, and note that moving the store to a new class means deleting and recreating the PVC, which restarts the fleet's accrual (24h by default). `valkey.dataStorage.useClusterDefaultClass: true` (the default) is what tells the chart an empty `className` means "the cluster default"; setting it to `false` with no `className` makes the chart refuse to render, which is a way to force every install to name its class. The StorageClass check needs a live cluster, so `helm template` and client-side `--dry-run` skip it; `--dry-run=server` runs it.
 
 ## Verifying the release
 

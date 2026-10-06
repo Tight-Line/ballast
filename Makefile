@@ -3,7 +3,7 @@
         manifests generate install uninstall deploy undeploy \
         setup-envtest setup-test-e2e test-e2e cleanup-test-e2e \
         build-installer help \
-        helm-build helm-lint helm-template helm-package helm-install-local helm-update-local
+        helm-build helm-lint helm-test helm-template helm-package helm-install-local helm-update-local
 
 # Build variables
 VERSION ?= 0.1.0
@@ -129,6 +129,9 @@ helm-build: manifests ## Sync CRDs from config/crd/bases/ and download chart dep
 
 helm-lint: helm-build ## Lint the Helm chart.
 	$(HELM) lint $(CHART_DIR)
+
+helm-test: helm-build ## Render-time checks of chart values (scripts/test-chart.sh); no cluster needed.
+	HELM=$(HELM) ./scripts/test-chart.sh $(CHART_DIR)
 
 helm-template: helm-build ## Render Helm templates to stdout for inspection.
 	$(HELM) template ballast $(CHART_DIR) --namespace ballast-system
