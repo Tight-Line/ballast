@@ -816,7 +816,11 @@ func policyResourceMap(metricCfgs []ballastv1.MetricConfig) map[string][]ballast
 // and purging would discard the samples just written. An empty owned set means
 // none of this profile's pods exist right now (a workload scaled to zero, for
 // instance), which says nothing about the containers it runs, so nothing is
-// evicted and history survives the gap.
+// evicted and history survives the gap. An empty current set (every source
+// failed or returned nothing) likewise evicts nothing: during a rollout, a
+// container that exists only on new pods is briefly missing from owned until
+// the workloadwatcher stamps their profile-ref, and a cycle that measured
+// nothing is no evidence that it is gone.
 func mergeContainerSets(
 	current map[string]map[string]struct{},
 	existing []ballastv1.ContainerProfile,
@@ -836,7 +840,7 @@ func mergeContainerSets(
 	for _, cp := range existing {
 		_, isOwned := owned[cp.Name]
 		_, isCurrent := current[cp.Name]
-		if !isOwned && !isCurrent && len(owned) > 0 {
+		if !isOwned && !isCurrent && len(owned) > 0 && len(current) > 0 {
 			evicted = append(evicted, cp)
 			continue
 		}
