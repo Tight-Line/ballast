@@ -1,0 +1,65 @@
+README.md
+  s_a77ab9995ffa91::t_6d464963781887 176
+  s_a77ab9995ffa91::t_bff4e18b00900e 174
+internal/controller/resourceadjuster/controller.go
+  s_a77ab9995ffa91::t_b899da0f7ace6e 384-393,400-408,411-412,415-417,419-427,431-434
+  s_a77ab9995ffa91::t_5224d31eda6587 645-649
+  s_a77ab9995ffa91::t_244d2ec0f95015 13
+  s_a77ab9995ffa91::t_c77b6f6b6ed28d 568-569,582-586
+  s_a77ab9995ffa91::t_190415af6bf3ea 293,295,297
+  s_a77ab9995ffa91::t_1cf9724be1d6a6 279
+  s_a77ab9995ffa91::t_4ea43e158e0f69 525-529
+  s_a77ab9995ffa91::t_d94b1ff75baaf8 673-674,676
+  s_a77ab9995ffa91::t_3faa15b86bcf6a 435-436
+internal/controller/resourceadjuster/controller_test.go
+  s_a77ab9995ffa91::t_12953822d9dec2 776,1232,1248,1263
+internal/metrics/recorder.go
+  s_a77ab9995ffa91::t_2ed200efc754f1 376
+  s_a77ab9995ffa91::t_aa645fc777a376 348-349
+internal/webhook/apply_internal_test.go
+  s_a77ab9995ffa91::t_14d0038e927c49 78,96,107,157,322
+  s_a77ab9995ffa91::t_7ac86001dd45d0 137,154,185,296
+  s_a77ab9995ffa91::t_81dbf147b78a3b 193-196,203-235,237-259,261-272
+internal/kube/qos.go
+  s_a77ab9995ffa91::t_f2fa0a1a3641bd 16-19,25
+  s_a77ab9995ffa91::t_ba72e802240ca5 84-103
+  s_a77ab9995ffa91::t_3b81010cdb2c4c 34-42,46-51
+internal/webhook/pod_mutator.go
+  s_a77ab9995ffa91::t_8e2e646e56dc96 276-278,282,285,291
+  s_a77ab9995ffa91::t_5b14b1a8b1295b 174,177
+  s_a77ab9995ffa91::t_49f0b5cccd0f94 345-349,351-354,357,359
+  s_a77ab9995ffa91::t_6862da61b87f2b 304-308,314,316-322
+  s_a77ab9995ffa91::t_dd420d7bd51eb0 375-377
+  s_a77ab9995ffa91::t_9aef55fe169bcb 249-253
+internal/kube/qos_test.go
+  s_a77ab9995ffa91::t_23054e77cb4601 104-125,129
+  s_a77ab9995ffa91::t_b64a2835100bfc 28-31
+AGENTS.md
+  s_a77ab9995ffa91::t_748ad9afb03bb5 159
+  s_a77ab9995ffa91::t_bdf144991d85a0 173
+internal/controller/resourceadjuster/clamp_test.go
+  s_a77ab9995ffa91::t_161e706118e44e 362-364
+  s_a77ab9995ffa91::t_14d0038e927c49 369
+  s_a77ab9995ffa91::t_88cd9263498ef6 377-443
+  s_a77ab9995ffa91::t_885a549996799c 93-106,109
+  s_a77ab9995ffa91::t_7b601a2156deb0 92
+CHANGELOG.md
+  s_a77ab9995ffa91::t_22e4b30f8df69b 31
+  s_a77ab9995ffa91::t_1e764658429e05 17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "70784324d2e78a8f4521b3b8b2f539d7b7e543a8",
+  "prompts": {},
+  "sessions": {
+    "s_a77ab9995ffa91": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bfab22c4-622b-4591-9995-3fd8a2bc5710",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Nick Marden <nmarden@avvo.com>"
+    }
+  }
+}
