@@ -173,22 +173,31 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	measurementHash := profile.Status.MeasurementHash
 	pid := metrics.ProfileID{Name: profile.Name, Labels: profile.Status.TupleLabels}
 
-	excluded := r.excludedContainerNames(ctx, profile.Status.SelectorLabels)
+	// Fail closed: without the pod specs there is no way to tell a measurable
+	// container from a run-to-completion init or ephemeral one, and a single
+	// stray sample admitted here would pin the profile in Accruing (#59). Skip
+	// the whole cycle, leaving status untouched, and retry on the normal poll.
+	includable, err := r.includableContainerNames(ctx, profile.Status.SelectorLabels)
+	if err != nil {
+		log.Error(err, "listing pods to determine measurable containers; skipping this collection cycle",
+			"profile", profile.Name)
+		return ctrl.Result{RequeueAfter: pollInterval}, nil
+	}
 
 	// Measure only opted-in pods: require the enrollment label in addition to the
 	// identity tuple. Without it, unenrolled pods that share the identity labels
 	// (common with the default tuple, whose keys many pods carry) would be folded
-	// into the profile. excludedContainerNames needs no such requirement; it reads
-	// the manager's pod cache, which is already scoped to enrolled pods.
+	// into the profile. includableContainerNames needs no such requirement; it
+	// reads the manager's pod cache, which is already scoped to enrolled pods.
 	measureSelector := enrolledSelector(profile.Status.SelectorLabels)
 
-	observed, err := r.collectAllSamples(ctx, measurementHash, pid, measureSelector, now, sources, excluded)
+	observed, err := r.collectAllSamples(ctx, measurementHash, pid, measureSelector, now, sources, includable)
 	if err != nil { // coverage:ignore - Redis error
 		return ctrl.Result{}, err
 	}
 
 	resourcesInPolicy := policyResourceMap(resolved.Spec.Metrics)
-	containers := mergeContainerSets(observed, profile.Status.Containers, resourcesInPolicy)
+	containers, evicted := mergeContainerSets(observed, profile.Status.Containers, resourcesInPolicy, includable)
 	containerProfiles, allReady := r.buildContainerProfiles(
 		ctx, measurementHash, containers, resourcesInPolicy, resolved.Spec, now.UnixMilli())
 
@@ -196,6 +205,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		log.Info("dry-run: would update WorkloadProfile status",
 			"dry_run", true, "profile", profile.Name, "meetsThreshold", allReady)
 		return ctrl.Result{RequeueAfter: pollInterval}, nil
+	}
+
+	// Purge before the status patch: if the patch then fails, the next cycle
+	// evicts the same containers again, whereas the reverse order could strand
+	// their series in Redis until the profile itself is deleted.
+	if err := r.purgeContainers(ctx, measurementHash, evicted); err != nil { // coverage:ignore - Redis error
+		return ctrl.Result{}, err
 	}
 
 	if allReady && !profile.Status.MeetsThreshold {
@@ -244,7 +260,7 @@ func (r *Reconciler) collectAllSamples(
 	selectorLabels map[string]string,
 	now time.Time,
 	sources map[string]*ballastv1.MetricsSource,
-	excluded map[string]struct{},
+	includable map[string]struct{},
 ) (map[string]map[string]struct{}, error) {
 	log := ctrl.LoggerFrom(ctx)
 	observed := make(map[string]map[string]struct{})
@@ -257,7 +273,7 @@ func (r *Reconciler) collectAllSamples(
 			continue
 		}
 
-		additional, err := r.collectFromSource(ctx, measurementHash, pid, selectorLabels, now, sourceName, ms, p, excluded)
+		additional, err := r.collectFromSource(ctx, measurementHash, pid, selectorLabels, now, sourceName, ms, p, includable)
 		if err != nil { // coverage:ignore - Redis error
 			return nil, err
 		}
@@ -272,7 +288,8 @@ func (r *Reconciler) collectAllSamples(
 // Steps (in order):
 //  1. Call FetchStats — on error, log at Error and return an empty result (non-fatal so other
 //     sources are still attempted).
-//  2. For each ContainerStats: record the (container, resource) pair as observed.
+//  2. For each ContainerStats whose container is includable: record the
+//     (container, resource) pair as observed. Other containers are dropped.
 //  3. If --dry-run-measure, log the sample and skip writing.
 //  4. Otherwise, delegate to writeSample (AddSample → ExpireOlderThan → EnforceReservoirCap).
 //     Redis write failures are fatal and propagate to the caller.
@@ -287,7 +304,7 @@ func (r *Reconciler) collectFromSource(
 	sourceName string,
 	ms *ballastv1.MetricsSource,
 	p plugin.MetricsPlugin,
-	excluded map[string]struct{},
+	includable map[string]struct{},
 ) (map[string]map[string]struct{}, error) {
 	log := ctrl.LoggerFrom(ctx)
 	observed := make(map[string]map[string]struct{})
@@ -302,10 +319,11 @@ func (r *Reconciler) collectFromSource(
 	}
 
 	for _, s := range samples {
-		// Init containers (including restartable-init sidecars) and ephemeral
-		// containers are never measured: apply/resize only touch spec.containers,
-		// so their samples would only produce unactionable recommendations.
-		if _, skip := excluded[s.ContainerName]; skip {
+		// Only containers the pod specs show apply/resize can patch are measured;
+		// anything else (run-to-completion init, ephemeral, or a container the
+		// pod cache has not caught up with yet) would only produce unactionable
+		// recommendations.
+		if _, ok := includable[s.ContainerName]; !ok {
 			continue
 		}
 		markObserved(observed, s.ContainerName, s.Resource)
@@ -341,18 +359,6 @@ func (r *Reconciler) writeSample(
 	return nil
 }
 
-// excludedContainerNames returns the set of container names that must never be
-// measured for this profile: run-to-completion init containers and ephemeral
-// (debug) containers. These names come from the pod spec because the metrics API
-// reports a flat container list that does not mark them, and Ballast's
-// apply/resize paths only touch containers they can patch — so measuring the
-// excluded ones yields recommendations that can never be applied.
-//
-// Restartable-init "native sidecar" containers (restartPolicy: Always) are NOT
-// excluded: they run for the pod's whole lifetime and are first-class
-// right-sizing targets, measured here and patched by the webhook and
-// resourceadjuster on spec.initContainers (#30).
-//
 // enrolledSelector returns the identity-tuple selector plus a requirement that the
 // enrollment (mode) label be present, so a measurement query matches only opted-in
 // pods. It copies the input rather than mutating the profile's stored SelectorLabels.
@@ -363,13 +369,21 @@ func enrolledSelector(selectorLabels map[string]string) map[string]string {
 	return out
 }
 
-// Pods are matched with the profile's selector labels. A List failure is
-// non-fatal: it returns an empty set and logs, leaving measurement unchanged for
-// this cycle rather than failing the reconcile.
-func (r *Reconciler) excludedContainerNames(ctx context.Context, selectorLabels map[string]string) map[string]struct{} {
-	log := ctrl.LoggerFrom(ctx)
-	excluded := make(map[string]struct{})
-
+// includableContainerNames returns the set of container names this profile may
+// measure: the regular spec.containers and the restartable-init "native sidecar"
+// containers (restartPolicy: Always, #30) of every pod the profile's selector
+// matches. These names come from the pod spec because the metrics API reports a
+// flat container list that does not mark container kinds, and Ballast's
+// apply/resize paths only touch containers they can patch. Measuring anything
+// else, run-to-completion init and ephemeral (debug) containers included,
+// yields recommendations that can never be applied.
+//
+// This is an allowlist rather than a denylist of init/ephemeral names, so a
+// container the matching pod specs do not show at all (for example one the
+// metrics source reports before the pod cache reflects it) is not measured
+// either. An empty set means no pod currently matches. A List failure is
+// returned to the caller, which skips the cycle rather than guessing (#59).
+func (r *Reconciler) includableContainerNames(ctx context.Context, selectorLabels map[string]string) (map[string]struct{}, error) {
 	// Narrow the List server-side with the concrete labels; LabelAbsent keys
 	// cannot be expressed as MatchingLabels, so they are applied client-side below.
 	matching := client.MatchingLabels{}
@@ -380,28 +394,47 @@ func (r *Reconciler) excludedContainerNames(ctx context.Context, selectorLabels 
 	}
 
 	var podList corev1.PodList
-	if err := r.client.List(ctx, &podList, matching); err != nil { // coverage:ignore - transient API error
-		log.Error(err, "listing pods to exclude init/ephemeral containers; measuring all reported containers this cycle")
-		return excluded
+	if err := r.client.List(ctx, &podList, matching); err != nil {
+		return nil, fmt.Errorf("listing pods: %w", err)
 	}
 
+	includable := make(map[string]struct{})
 	for i := range podList.Items {
 		pod := &podList.Items[i]
 		if !plugin.MatchesSelector(pod.Labels, selectorLabels) {
 			continue
 		}
+		for j := range pod.Spec.Containers {
+			includable[pod.Spec.Containers[j].Name] = struct{}{}
+		}
 		for j := range pod.Spec.InitContainers {
-			// Restartable-init "native sidecars" are first-class targets and stay
-			// measured; only run-to-completion init containers are excluded.
-			if !kube.IsRestartableInit(pod.Spec.InitContainers[j]) {
-				excluded[pod.Spec.InitContainers[j].Name] = struct{}{}
+			// Restartable-init "native sidecars" are first-class targets;
+			// run-to-completion init containers are not.
+			if kube.IsRestartableInit(pod.Spec.InitContainers[j]) {
+				includable[pod.Spec.InitContainers[j].Name] = struct{}{}
 			}
 		}
-		for j := range pod.Spec.EphemeralContainers {
-			excluded[pod.Spec.EphemeralContainers[j].Name] = struct{}{}
+	}
+	return includable, nil
+}
+
+// purgeContainers deletes the stored series of every container evicted from the
+// tracked set, one (container, resource) key per usage stat in its old status
+// entry. Left in place, a later re-admission of the same name would inherit the
+// stale samples and first-seen time.
+func (r *Reconciler) purgeContainers(ctx context.Context, measurementHash string, evicted []ballastv1.ContainerProfile) error {
+	log := ctrl.LoggerFrom(ctx)
+	for i := range evicted {
+		log.Info("evicting container that is not measurable on any matching pod",
+			"container", evicted[i].Name)
+		for _, us := range evicted[i].UsageStats {
+			key := store.MetricKey(measurementHash, evicted[i].Name, us.Resource)
+			if err := store.DeleteSeries(ctx, r.storeClient, key); err != nil { // coverage:ignore - Redis error
+				return fmt.Errorf("purging %s: %w", key, err)
+			}
 		}
 	}
-	return excluded
+	return nil
 }
 
 // loadSources fetches the MetricsSource CRD for each unique source name referenced in the
@@ -750,11 +783,20 @@ func policyResourceMap(metricCfgs []ballastv1.MetricConfig) map[string][]ballast
 // mergeContainerSets returns a container→resources map combining containers from the current
 // FetchStats cycle with containers already present in the profile status. Only resources
 // referenced in the policy are included, ensuring stale resources don't accumulate.
+//
+// Status entries are re-checked against includable so a container admitted once
+// (by an earlier fail-open cycle, say) is not carried forward forever: it would
+// never gain samples again and, failing readiness every cycle, would pin the
+// whole profile in Accruing (#59). Those entries are returned as evicted for the
+// caller to purge. An empty includable set means no pod matches right now (a
+// workload scaled to zero, for instance), which says nothing about the
+// containers it runs, so nothing is evicted and history survives the gap.
 func mergeContainerSets(
 	current map[string]map[string]struct{},
 	existing []ballastv1.ContainerProfile,
 	resourcesInPolicy map[string][]ballastv1.MetricConfig,
-) map[string][]string {
+	includable map[string]struct{},
+) (merged map[string][]string, evicted []ballastv1.ContainerProfile) {
 	result := make(map[string][]string)
 
 	for containerName, resourceSet := range current {
@@ -766,6 +808,10 @@ func mergeContainerSets(
 	}
 
 	for _, cp := range existing {
+		if _, ok := includable[cp.Name]; !ok && len(includable) > 0 {
+			evicted = append(evicted, cp)
+			continue
+		}
 		for _, us := range cp.UsageStats {
 			if _, inPolicy := resourcesInPolicy[us.Resource]; inPolicy {
 				result[cp.Name] = appendUnique(result[cp.Name], us.Resource)
@@ -773,7 +819,7 @@ func mergeContainerSets(
 		}
 	}
 
-	return result
+	return result, evicted
 }
 
 // markObserved records that (container, resource) was seen in a FetchStats cycle.
