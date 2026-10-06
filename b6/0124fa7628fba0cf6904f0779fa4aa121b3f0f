@@ -1,0 +1,66 @@
+internal/controller/resourceadjuster/clamp_test.go
+  s_a77ab9995ffa91::t_68a1679526814c 1-186,190-200,202-233,235-319
+  s_a77ab9995ffa91::t_7c25393c7d0b83 189,201,234
+  s_a77ab9995ffa91::t_939239c7c84255 187-188
+internal/webhook/apply_internal_test.go
+  s_a77ab9995ffa91::t_874bfb7d6b16f1 1-9,11-15,17-33,35-44,46-234,259-283
+  s_a77ab9995ffa91::t_89922d425290d3 235-258
+  s_a77ab9995ffa91::t_0f7a2830745ac2 10,16,34,45
+internal/webhook/pod_mutator_test.go
+  s_a77ab9995ffa91::t_b6e572eda29dbc 21,742-861
+  s_a77ab9995ffa91::t_b986dc1b6d3a17 862
+internal/controller/resourceadjuster/controller.go
+  s_a77ab9995ffa91::t_ce5daf513f0c1a 383-386,393-396,398-399
+  s_a77ab9995ffa91::t_0ff23a6c0fe6b6 246
+  s_a77ab9995ffa91::t_497eabe3caeb60 364,367,372-375,377-382,387-392,397,400,405-413,419
+  s_a77ab9995ffa91::t_57feda559bdb4f 432-434,445,451-484,486-501
+  s_a77ab9995ffa91::t_b7f5f04aeef09f 269
+  s_a77ab9995ffa91::t_4971533503a2b9 282-291
+  s_a77ab9995ffa91::t_46635d702426cd 331,336,344,347
+internal/kube/qos_test.go
+  s_a77ab9995ffa91::t_b92784ebf81670 112-145
+  s_a77ab9995ffa91::t_bee3d28295aa38 1-111
+CHANGELOG.md
+  s_a77ab9995ffa91::t_976b0bf3a6f5f0 10-21
+internal/kube/qos.go
+  s_a77ab9995ffa91::t_dc9ba3292c873b 1-96
+README.md
+  s_a77ab9995ffa91::t_59c0e438705df0 157
+  s_a77ab9995ffa91::t_f0bd460f0dfc34 159
+  s_a77ab9995ffa91::t_c77366d20752c9 158
+AGENTS.md
+  s_a77ab9995ffa91::t_f56df0b4ff0684 173
+  s_a77ab9995ffa91::t_d7e870a73042c3 161
+  s_a77ab9995ffa91::t_b96913b6074e68 159-160
+internal/webhook/pod_mutator.go
+  s_a77ab9995ffa91::t_3c809cb8b84b6f 226-255,257,259-260,266-344
+  s_a77ab9995ffa91::t_47ef421a44be3e 13,15
+  s_a77ab9995ffa91::t_7cbf43e1f00a7d 34-43
+  s_a77ab9995ffa91::t_b8901763cd7530 141-146,151-154,156-157
+  s_a77ab9995ffa91::t_2149fdf4cea775 171-180
+  s_a77ab9995ffa91::t_1fb88908cc7f02 357-361,364,366-369,371-372,374-394,396,408
+internal/metrics/recorder.go
+  s_a77ab9995ffa91::t_df20ef0274faff 342-345
+  s_a77ab9995ffa91::t_5f6ee39cd17b45 57
+  s_a77ab9995ffa91::t_aad8315f5e8777 107-108
+  s_a77ab9995ffa91::t_4fae398e26f24b 371-388
+internal/metrics/metrics_test.go
+  s_a77ab9995ffa91::t_8ade2ea868de78 312-333
+  s_a77ab9995ffa91::t_44bba7a670d1f8 144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "b60124fa7628fba0cf6904f0779fa4aa121b3f0f",
+  "prompts": {},
+  "sessions": {
+    "s_a77ab9995ffa91": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bfab22c4-622b-4591-9995-3fd8a2bc5710",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Nick Marden <nmarden@avvo.com>"
+    }
+  }
+}
