@@ -28,6 +28,7 @@ import (
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
 	"github.com/tight-line/ballast/internal/controller/metricscollector"
+	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
 	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/plugin"
 	"github.com/tight-line/ballast/internal/store"
@@ -190,11 +191,31 @@ func cpuSample(container string, milliCores int64, ts time.Time) plugin.Containe
 // appPod is a pod matched by the {"app": "web"} profile
 // fixtures whose only container is "app". The collector measures only
 // containers that a matching pod's spec shows, so a test that expects "app"
-// samples to be written needs this pod in the fake client.
+// samples to be written needs this pod in the fake client. It carries the
+// profile-ref annotation for the "web" profile, as the workloadwatcher stamps it.
 func appPod() *corev1.Pod {
 	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "web-app", Namespace: "default", Labels: map[string]string{"app": "web"}},
-		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "web-app",
+			Namespace:   "default",
+			Labels:      map[string]string{"app": "web"},
+			Annotations: map[string]string{workloadwatcher.AnnotationProfileRef: "web"},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}},
+	}
+}
+
+// siblingPod matches the {"app": "web"} selector but is bound to another
+// profile: same identity tuple, different governing policy.
+func siblingPod() *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "web-other",
+			Namespace:   "default",
+			Labels:      map[string]string{"app": "web"},
+			Annotations: map[string]string{workloadwatcher.AnnotationProfileRef: "web-other-policy"},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "other"}}},
 	}
 }
 
@@ -727,6 +748,76 @@ func TestReconcile_ExcludedStatusContainerEvicted(t *testing.T) {
 	}
 	if ms, _ := store.FirstSeenMs(ctx, sc, strayKey); ms != 0 {
 		t.Errorf("stray first_seen still %d, want it purged", ms)
+	}
+}
+
+// TestReconcile_SiblingPodsDoNotEvict covers profiles that share an identity
+// tuple under different policies. This profile is scaled to zero while a
+// sibling profile's pods, with different container names, still match the
+// selector. Only the profile's own pods (by profile-ref) say which containers
+// it runs, so none of its status entries or stored series may be touched.
+func TestReconcile_SiblingPodsDoNotEvict(t *testing.T) {
+	ctx := context.Background()
+	tupleLabels := map[string]string{"app": "web"}
+	profile := defaultProfile(tupleLabels)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile, siblingPod())
+
+	_, sc := newMiniredisClient(t)
+	key := store.MetricKey(profileHash(tupleLabels), "app", "cpu")
+	if err := store.AddSample(ctx, sc, key, time.Now().UnixMilli(), "200", 0); err != nil {
+		t.Fatalf("seeding sample: %v", err)
+	}
+	profile.Status.Containers = []ballastv1.ContainerProfile{
+		{Name: "app", UsageStats: []ballastv1.ContainerUsageStats{{Resource: "cpu", Source: "k8s-metrics", Samples: 1}}},
+	}
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, &mockPlugin{typeName: "kubernetesMetrics"})
+	if _, err := reconcileProfile(t, r, "web"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
+		t.Fatalf("Get profile: %v", err)
+	}
+	if len(got.Status.Containers) != 1 || got.Status.Containers[0].Name != "app" {
+		t.Errorf("status containers = %+v, want app kept while only sibling pods exist", got.Status.Containers)
+	}
+	if count, _ := store.SampleCount(ctx, sc, key); count != 1 {
+		t.Errorf("app series holds %d samples, want 1 (not purged)", count)
+	}
+}
+
+// TestReconcile_ObservedContainerNotEvicted: the measurement selector folds
+// same-tuple pods together, so a sibling profile's container can be measured
+// into this profile. While it is being observed it must not be evicted, or
+// every cycle would purge the samples it had just written.
+func TestReconcile_ObservedContainerNotEvicted(t *testing.T) {
+	ctx := context.Background()
+	tupleLabels := map[string]string{"app": "web"}
+	profile := defaultProfile(tupleLabels)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile, appPod(), siblingPod())
+	profile.Status.Containers = []ballastv1.ContainerProfile{
+		{Name: "other", UsageStats: []ballastv1.ContainerUsageStats{{Resource: "cpu", Source: "k8s-metrics", Samples: 0}}},
+	}
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	_, sc := newMiniredisClient(t)
+	p := &mockPlugin{typeName: "kubernetesMetrics", samples: []plugin.ContainerStats{
+		cpuSample("other", 100, time.Now()),
+	}}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+	if _, err := reconcileProfile(t, r, "web"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if count, _ := store.SampleCount(ctx, sc, store.MetricKey(profileHash(tupleLabels), "other", "cpu")); count != 1 {
+		t.Errorf("other series holds %d samples, want the 1 just written", count)
 	}
 }
 

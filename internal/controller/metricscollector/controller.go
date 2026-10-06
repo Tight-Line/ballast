@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	ballastv1 "github.com/tight-line/ballast/api/v1"
+	"github.com/tight-line/ballast/internal/controller/workloadwatcher"
 	"github.com/tight-line/ballast/internal/killswitch"
 	"github.com/tight-line/ballast/internal/kube"
 	"github.com/tight-line/ballast/internal/logger"
@@ -177,7 +178,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// container from a run-to-completion init or ephemeral one, and a single
 	// stray sample admitted here would pin the profile in Accruing (#59). Skip
 	// the whole cycle, leaving status untouched, and retry on the normal poll.
-	includable, err := r.includableContainerNames(ctx, profile.Status.SelectorLabels)
+	includable, owned, err := r.includableContainerNames(ctx, profile.Status.SelectorLabels, profile.Name)
 	if err != nil {
 		log.Error(err, "listing pods to determine measurable containers; skipping this collection cycle",
 			"profile", profile.Name)
@@ -197,7 +198,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	resourcesInPolicy := policyResourceMap(resolved.Spec.Metrics)
-	containers, evicted := mergeContainerSets(observed, profile.Status.Containers, resourcesInPolicy, includable)
+	containers, evicted := mergeContainerSets(observed, profile.Status.Containers, resourcesInPolicy, owned)
 	containerProfiles, allReady := r.buildContainerProfiles(
 		ctx, measurementHash, containers, resourcesInPolicy, resolved.Spec, now.UnixMilli())
 
@@ -381,9 +382,22 @@ func enrolledSelector(selectorLabels map[string]string) map[string]string {
 // This is an allowlist rather than a denylist of init/ephemeral names, so a
 // container the matching pod specs do not show at all (for example one the
 // metrics source reports before the pod cache reflects it) is not measured
-// either. An empty set means no pod currently matches. A List failure is
-// returned to the caller, which skips the cycle rather than guessing (#59).
-func (r *Reconciler) includableContainerNames(ctx context.Context, selectorLabels map[string]string) (map[string]struct{}, error) {
+// either. A List failure is returned to the caller, which skips the cycle
+// rather than guessing (#59).
+//
+// owned is the same allowlist restricted to pods whose profile-ref annotation
+// names this profile. The selector covers the identity tuple only, so it also
+// matches pods of a sibling profile that shares the tuple under a different
+// policy; those pods say nothing about which containers this profile runs.
+// Eviction uses owned, and an empty owned set means this profile has no pods
+// right now (scaled to zero, or not yet stamped by the workloadwatcher).
+// Sample admission keeps the selector-wide set: samples carry no pod identity,
+// so the measurement query already folds same-tuple pods together.
+func (r *Reconciler) includableContainerNames(
+	ctx context.Context,
+	selectorLabels map[string]string,
+	profileName string,
+) (includable, owned map[string]struct{}, err error) {
 	// Narrow the List server-side with the concrete labels; LabelAbsent keys
 	// cannot be expressed as MatchingLabels, so they are applied client-side below.
 	matching := client.MatchingLabels{}
@@ -395,27 +409,36 @@ func (r *Reconciler) includableContainerNames(ctx context.Context, selectorLabel
 
 	var podList corev1.PodList
 	if err := r.client.List(ctx, &podList, matching); err != nil {
-		return nil, fmt.Errorf("listing pods: %w", err)
+		return nil, nil, fmt.Errorf("listing pods: %w", err)
 	}
 
-	includable := make(map[string]struct{})
+	includable = make(map[string]struct{})
+	owned = make(map[string]struct{})
 	for i := range podList.Items {
 		pod := &podList.Items[i]
 		if !plugin.MatchesSelector(pod.Labels, selectorLabels) {
 			continue
 		}
+		ownedPod := pod.Annotations[workloadwatcher.AnnotationProfileRef] == profileName
+		var names []string
 		for j := range pod.Spec.Containers {
-			includable[pod.Spec.Containers[j].Name] = struct{}{}
+			names = append(names, pod.Spec.Containers[j].Name)
 		}
 		for j := range pod.Spec.InitContainers {
 			// Restartable-init "native sidecars" are first-class targets;
 			// run-to-completion init containers are not.
 			if kube.IsRestartableInit(pod.Spec.InitContainers[j]) {
-				includable[pod.Spec.InitContainers[j].Name] = struct{}{}
+				names = append(names, pod.Spec.InitContainers[j].Name)
+			}
+		}
+		for _, name := range names {
+			includable[name] = struct{}{}
+			if ownedPod {
+				owned[name] = struct{}{}
 			}
 		}
 	}
-	return includable, nil
+	return includable, owned, nil
 }
 
 // purgeContainers deletes the stored series of every container evicted from the
@@ -784,18 +807,21 @@ func policyResourceMap(metricCfgs []ballastv1.MetricConfig) map[string][]ballast
 // FetchStats cycle with containers already present in the profile status. Only resources
 // referenced in the policy are included, ensuring stale resources don't accumulate.
 //
-// Status entries are re-checked against includable so a container admitted once
-// (by an earlier fail-open cycle, say) is not carried forward forever: it would
-// never gain samples again and, failing readiness every cycle, would pin the
-// whole profile in Accruing (#59). Those entries are returned as evicted for the
-// caller to purge. An empty includable set means no pod matches right now (a
-// workload scaled to zero, for instance), which says nothing about the
-// containers it runs, so nothing is evicted and history survives the gap.
+// Status entries are re-checked against owned (the containers this profile's own
+// pods can measure) so a container admitted once (by an earlier fail-open cycle,
+// say) is not carried forward forever: it would never gain samples again and,
+// failing readiness every cycle, would pin the whole profile in Accruing (#59).
+// Those entries are returned as evicted for the caller to purge. A container
+// observed this cycle is never evicted, since it is being measured right now
+// and purging would discard the samples just written. An empty owned set means
+// none of this profile's pods exist right now (a workload scaled to zero, for
+// instance), which says nothing about the containers it runs, so nothing is
+// evicted and history survives the gap.
 func mergeContainerSets(
 	current map[string]map[string]struct{},
 	existing []ballastv1.ContainerProfile,
 	resourcesInPolicy map[string][]ballastv1.MetricConfig,
-	includable map[string]struct{},
+	owned map[string]struct{},
 ) (merged map[string][]string, evicted []ballastv1.ContainerProfile) {
 	result := make(map[string][]string)
 
@@ -808,7 +834,9 @@ func mergeContainerSets(
 	}
 
 	for _, cp := range existing {
-		if _, ok := includable[cp.Name]; !ok && len(includable) > 0 {
+		_, isOwned := owned[cp.Name]
+		_, isCurrent := current[cp.Name]
+		if !isOwned && !isCurrent && len(owned) > 0 {
 			evicted = append(evicted, cp)
 			continue
 		}
