@@ -251,6 +251,8 @@ Run the full gate: `make check` (lint + coverage + build).
 | `make tools` | Install goimports |
 | `make setup-hooks` | Install pre-commit hook (`scripts/pre-commit`) |
 | `make docker-kind KIND_CLUSTER=<name>` | Build image for host arch (auto-detected via `uname -m`) tagged `:local` and load into the named kind cluster |
+| `make helm-lint` | Sync CRDs and chart dependencies, then `helm lint` the chart |
+| `make helm-test` | Run the chart's helm-unittest suites (`charts/ballast/tests/`, excluded from the package by `.helmignore`); `lookup`-based guards are tested with a faked cluster, no real cluster needed |
 | `make helm-install-local` | Install/upgrade chart into the current kubeconfig cluster using the locally loaded `:local` image (`pullPolicy: Never`) |
 | `make helm-update-local KIND_CLUSTER=<name>` | Combined: `docker-kind` + `helm-install-local` in one step — the normal local dev iteration command |
 

@@ -1,0 +1,57 @@
+suite: existing 192Mi PVC (class with no minimum), growing to the new 1Gi default
+templates:
+  - templates/valkey-storage-guard.yaml
+release:
+  name: ballast
+  namespace: ballast-system
+kubernetesProvider:
+  scheme:
+    "v1/Namespace": {gvr: {version: v1, resource: namespaces}, namespaced: false}
+    "storage.k8s.io/v1/StorageClass": {gvr: {group: storage.k8s.io, version: v1, resource: storageclasses}, namespaced: false}
+    "v1/PersistentVolumeClaim": {gvr: {version: v1, resource: persistentvolumeclaims}, namespaced: true}
+  objects:
+    - {kind: Namespace, apiVersion: v1, metadata: {name: kube-system}}
+    - kind: StorageClass
+      apiVersion: storage.k8s.io/v1
+      metadata:
+        name: standard
+        annotations: {storageclass.kubernetes.io/is-default-class: "true"}
+      provisioner: rancher.io/local-path
+    - kind: StorageClass
+      apiVersion: storage.k8s.io/v1
+      metadata: {name: expandable}
+      provisioner: ebs.csi.aws.com
+      allowVolumeExpansion: true
+    - kind: PersistentVolumeClaim
+      apiVersion: v1
+      metadata: {name: ballast-valkey, namespace: ballast-system}
+      spec: {accessModes: [ReadWriteOnce], storageClassName: standard, resources: {requests: {storage: 192Mi}}}
+      status: {phase: Bound, capacity: {storage: 192Mi}}
+    - kind: PersistentVolumeClaim
+      apiVersion: v1
+      metadata: {name: grow-valkey, namespace: ballast-system}
+      spec: {accessModes: [ReadWriteOnce], storageClassName: expandable, resources: {requests: {storage: 192Mi}}}
+      status: {phase: Bound, capacity: {storage: 192Mi}}
+    - kind: PersistentVolumeClaim
+      apiVersion: v1
+      metadata: {name: static-valkey, namespace: ballast-system}
+      spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 192Mi}}}
+      status: {phase: Bound, capacity: {storage: 192Mi}}
+tests:
+  - it: fails on a non-expandable class and names the value that keeps the volume
+    asserts:
+      - failedTemplate:
+          errorPattern: "requestedSize \\(1Gi\\) is larger than the capacity \\(192Mi\\).*StorageClass \\(standard\\) does not allow volume expansion.*--set valkey.dataStorage.requestedSize=192Mi"
+  - it: passes when the request is pinned to the live capacity
+    set: {valkey.dataStorage.requestedSize: 192Mi}
+    asserts:
+      - hasDocuments: {count: 0}
+  - it: passes on an expandable class
+    release: {name: grow}
+    asserts:
+      - hasDocuments: {count: 0}
+  - it: fails for a classless (statically bound) claim
+    release: {name: static}
+    asserts:
+      - failedTemplate:
+          errorPattern: "StorageClass \\(none\\) does not allow volume expansion"

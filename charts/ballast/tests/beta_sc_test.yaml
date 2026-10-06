@@ -1,0 +1,33 @@
+suite: cluster reachable, default StorageClass via beta annotation, PVC capacity in bytes
+templates:
+  - templates/valkey-storage-guard.yaml
+release:
+  name: ballast
+  namespace: ballast-system
+kubernetesProvider:
+  scheme:
+    "v1/Namespace": {gvr: {version: v1, resource: namespaces}, namespaced: false}
+    "storage.k8s.io/v1/StorageClass": {gvr: {group: storage.k8s.io, version: v1, resource: storageclasses}, namespaced: false}
+    "v1/PersistentVolumeClaim": {gvr: {version: v1, resource: persistentvolumeclaims}, namespaced: true}
+  objects:
+    - {kind: Namespace, apiVersion: v1, metadata: {name: kube-system}}
+    - kind: StorageClass
+      apiVersion: storage.k8s.io/v1
+      metadata:
+        name: legacy
+        annotations: {storageclass.beta.kubernetes.io/is-default-class: "true"}
+      provisioner: example.com/x
+    - kind: PersistentVolumeClaim
+      apiVersion: v1
+      metadata: {name: ballast-valkey, namespace: ballast-system}
+      spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 1Gi}}}
+      status: {phase: Bound, capacity: {storage: "1073741824"}}
+tests:
+  - it: passes at defaults (beta default annotation honored, 1073741824 == 1Gi)
+    asserts:
+      - hasDocuments: {count: 0}
+  - it: fails at the old 192Mi default
+    set: {valkey.dataStorage.requestedSize: 192Mi}
+    asserts:
+      - failedTemplate:
+          errorPattern: "--set valkey.dataStorage.requestedSize=1073741824"

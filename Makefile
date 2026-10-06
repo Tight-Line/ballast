@@ -130,8 +130,8 @@ helm-build: manifests ## Sync CRDs from config/crd/bases/ and download chart dep
 helm-lint: helm-build ## Lint the Helm chart.
 	$(HELM) lint $(CHART_DIR)
 
-helm-test: helm-build ## Render-time checks of chart values (scripts/test-chart.sh); no cluster needed.
-	HELM=$(HELM) ./scripts/test-chart.sh $(CHART_DIR)
+helm-test: helm-build helm-unittest ## Run the chart's helm-unittest suites (charts/ballast/tests/); no cluster needed.
+	"$(HELM_UNITTEST)" $(CHART_DIR)
 
 helm-template: helm-build ## Render Helm templates to stdout for inspection.
 	$(HELM) template ballast $(CHART_DIR) --namespace ballast-system
@@ -204,10 +204,12 @@ KUSTOMIZE  ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST    ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+HELM_UNITTEST ?= $(LOCALBIN)/helm-unittest
 
 KUSTOMIZE_VERSION       ?= v5.8.1
 CONTROLLER_TOOLS_VERSION ?= v0.21.0
 GOLANGCI_LINT_VERSION   ?= v2.12.2
+HELM_UNITTEST_VERSION   ?= v0.5.2
 
 ENVTEST_VERSION ?= $(shell v='$(call gomodver,sigs.k8s.io/controller-runtime)'; \
   [ -n "$$v" ] || { echo "Set ENVTEST_VERSION manually" >&2; exit 1; }; \
@@ -243,6 +245,14 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+# helm-unittest is built from source with go install, like the tools above, so
+# the download is verified against the Go checksum database instead of a
+# release tarball. The binary runs standalone; no `helm plugin install` needed.
+.PHONY: helm-unittest
+helm-unittest: $(HELM_UNITTEST) ## Download helm-unittest locally if necessary.
+$(HELM_UNITTEST): $(LOCALBIN)
+	$(call go-install-tool,$(HELM_UNITTEST),github.com/helm-unittest/helm-unittest/cmd/helm-unittest,$(HELM_UNITTEST_VERSION))
 
 # go-install-tool: install $2@$3 to $1 (versioned symlink pattern)
 define go-install-tool

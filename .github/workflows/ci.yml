@@ -68,12 +68,20 @@ jobs:
           # download only happens when the runner image does not already ship the
           # Go version in go.mod, so a missing endpoint here stays invisible until
           # the pinned Go moves ahead of the image, which is what broke this job.
+          #
+          # Chart checks: get.helm.sh serves the Helm binary; valkey-io.github.io
+          # redirects to valkey.io for the valkey subchart index, whose tarball
+          # comes from github.com release assets (already allowed). helm-unittest
+          # is go-installed, so it only needs the Go module endpoints above.
           allowed-endpoints: >
             github.com:443
             proxy.golang.org:443
             sum.golang.org:443
             storage.googleapis.com:443
             release-assets.githubusercontent.com:443
+            get.helm.sh:443
+            valkey-io.github.io:443
+            valkey.io:443
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -85,6 +93,15 @@ jobs:
 
       - name: Run lint
         run: make lint
+
+      # Pinned so chart lint/tests are reproducible; downloads from get.helm.sh.
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.1
+
+      - name: Lint and unit-test the Helm chart
+        run: make helm-lint helm-test
 
   build:
     runs-on: ubuntu-latest

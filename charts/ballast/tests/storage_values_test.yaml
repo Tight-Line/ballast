@@ -1,0 +1,46 @@
+suite: valkey PVC rendering from storage values (no cluster)
+templates:
+  - charts/valkey/templates/pvc.yaml
+  - templates/valkey-storage-guard.yaml
+release:
+  name: ballast
+  namespace: ballast-system
+tests:
+  - it: defaults render a 1Gi PVC with no storageClassName
+    template: charts/valkey/templates/pvc.yaml
+    asserts:
+      - isKind: {of: PersistentVolumeClaim}
+      - equal: {path: metadata.name, value: ballast-valkey}
+      - equal: {path: spec.resources.requests.storage, value: 1Gi}
+      - notExists: {path: spec.storageClassName}
+  - it: className renders storageClassName
+    template: charts/valkey/templates/pvc.yaml
+    set: {valkey.dataStorage.className: fast-ssd}
+    asserts:
+      - equal: {path: spec.storageClassName, value: fast-ssd}
+  - it: className wins with useClusterDefaultClass=false
+    template: charts/valkey/templates/pvc.yaml
+    set:
+      valkey.dataStorage.className: fast-ssd
+      valkey.dataStorage.useClusterDefaultClass: false
+    asserts:
+      - equal: {path: spec.storageClassName, value: fast-ssd}
+  - it: empty className without useClusterDefaultClass fails
+    template: templates/valkey-storage-guard.yaml
+    set:
+      valkey.dataStorage.className: ""
+      valkey.dataStorage.useClusterDefaultClass: false
+    asserts:
+      - failedTemplate:
+          errorPattern: "valkey.dataStorage needs a StorageClass decision"
+  - it: no StorageClass decision is needed when dataStorage is disabled
+    template: charts/valkey/templates/pvc.yaml
+    set:
+      valkey.dataStorage.enabled: false
+      valkey.dataStorage.useClusterDefaultClass: false
+    asserts:
+      - hasDocuments: {count: 0}
+  - it: the guard template never emits an object
+    template: templates/valkey-storage-guard.yaml
+    asserts:
+      - hasDocuments: {count: 0}
