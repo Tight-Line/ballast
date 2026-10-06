@@ -68,6 +68,13 @@ func DeleteKey(ctx context.Context, c Client, key string) error {
 	return c.Del(ctx, key).Err()
 }
 
+// DeleteSeries removes the list at key together with its first_seen key, so a
+// series purged on its own (rather than in a whole-hash AllKeysForHash pass)
+// leaves no first-seen timestamp behind to resurrect a stale time span.
+func DeleteSeries(ctx context.Context, c Client, key string) error {
+	return c.Del(ctx, key, firstSeenKey(key)).Err()
+}
+
 func firstSeenKey(key string) string {
 	return key + ":first_seen"
 }

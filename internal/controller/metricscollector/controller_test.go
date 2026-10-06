@@ -21,6 +21,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -186,6 +187,17 @@ func cpuSample(container string, milliCores int64, ts time.Time) plugin.Containe
 	}
 }
 
+// appPod is a pod matched by the {"app": "web"} profile
+// fixtures whose only container is "app". The collector measures only
+// containers that a matching pod's spec shows, so a test that expects "app"
+// samples to be written needs this pod in the fake client.
+func appPod() *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "web-app", Namespace: "default", Labels: map[string]string{"app": "web"}},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}},
+	}
+}
+
 // -- unit tests --
 
 func TestReconcile_ProfileNotFound(t *testing.T) {
@@ -277,7 +289,7 @@ func TestReconcile_KillSwitchActive(t *testing.T) {
 func TestReconcile_DryRun(t *testing.T) {
 	ctx := context.Background()
 	profile := defaultProfile(map[string]string{"app": "web"})
-	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile, appPod())
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -344,7 +356,7 @@ func TestReconcile_CollectAndUpdate(t *testing.T) {
 	ctx := context.Background()
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile, appPod())
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -517,7 +529,7 @@ func TestReconcile_ExclusionScopedBySelector(t *testing.T) {
 	ctx := context.Background()
 	// The selector requires "role" to be absent. A pod carrying role=batch is
 	// returned by the server-side app=web filter but rejected client-side, so its
-	// init container must not be treated as an exclusion for this profile.
+	// containers must not make anything measurable for this profile.
 	profile := &ballastv1.WorkloadProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: "web"},
 		Status: ballastv1.WorkloadProfileStatus{
@@ -529,11 +541,14 @@ func TestReconcile_ExclusionScopedBySelector(t *testing.T) {
 	}
 	matchingPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "web-1", Namespace: "default", Labels: map[string]string{"app": "web"}},
-		Spec:       corev1.PodSpec{InitContainers: []corev1.Container{{Name: "web-init"}}},
+		Spec: corev1.PodSpec{
+			Containers:     []corev1.Container{{Name: "web"}},
+			InitContainers: []corev1.Container{{Name: "web-init"}},
+		},
 	}
 	otherPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "batch-1", Namespace: "default", Labels: map[string]string{"app": "web", "role": "batch"}},
-		Spec:       corev1.PodSpec{InitContainers: []corev1.Container{{Name: "batch-init"}}},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "batch"}}},
 	}
 	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile, matchingPod, otherPod)
 	if err := fc.Status().Update(ctx, profile); err != nil {
@@ -545,8 +560,9 @@ func TestReconcile_ExclusionScopedBySelector(t *testing.T) {
 	p := &mockPlugin{
 		typeName: "kubernetesMetrics",
 		samples: []plugin.ContainerStats{
+			cpuSample("web", 100, now),
 			cpuSample("web-init", 100, now),
-			cpuSample("batch-init", 100, now),
+			cpuSample("batch", 100, now),
 		},
 	}
 	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
@@ -555,15 +571,162 @@ func TestReconcile_ExclusionScopedBySelector(t *testing.T) {
 	}
 
 	measurementHash := profileHash(profile.Status.TupleLabels)
-	if count, err := store.SampleCount(ctx, sc, store.MetricKey(measurementHash, "web-init", "cpu")); err != nil {
-		t.Fatalf("SampleCount(web-init): %v", err)
-	} else if count != 0 {
-		t.Errorf("web-init: got %d samples, want 0 (init container of a matching pod is excluded)", count)
+	for name, want := range map[string]int64{
+		"web":      1, // regular container of a matching pod
+		"web-init": 0, // run-to-completion init container of a matching pod
+		"batch":    0, // regular container, but only on a pod the selector rejects
+	} {
+		if count, err := store.SampleCount(ctx, sc, store.MetricKey(measurementHash, name, "cpu")); err != nil {
+			t.Fatalf("SampleCount(%s): %v", name, err)
+		} else if count != want {
+			t.Errorf("%s: got %d samples, want %d", name, count, want)
+		}
 	}
-	if count, err := store.SampleCount(ctx, sc, store.MetricKey(measurementHash, "batch-init", "cpu")); err != nil {
-		t.Fatalf("SampleCount(batch-init): %v", err)
-	} else if count != 1 {
-		t.Errorf("batch-init: got %d samples, want 1 (pod not matched by selector, so not an exclusion)", count)
+}
+
+// TestReconcile_UnknownContainerNotMeasured covers the pod-cache race from #59:
+// the metrics source can report a freshly injected container before the pod
+// cache shows it. Inclusion is an allowlist of names the matching pod specs
+// show, so such a container is dropped rather than admitted by default.
+func TestReconcile_UnknownContainerNotMeasured(t *testing.T) {
+	ctx := context.Background()
+	tupleLabels := map[string]string{"app": "web"}
+	profile := defaultProfile(tupleLabels)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile, appPod())
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	_, sc := newMiniredisClient(t)
+	now := time.Now()
+	p := &mockPlugin{typeName: "kubernetesMetrics", samples: []plugin.ContainerStats{
+		cpuSample("app", 100, now),
+		cpuSample("injected", 100, now),
+	}}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+	if _, err := reconcileProfile(t, r, "web"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	measurementHash := profileHash(tupleLabels)
+	if count, _ := store.SampleCount(ctx, sc, store.MetricKey(measurementHash, "injected", "cpu")); count != 0 {
+		t.Errorf("injected: got %d samples, want 0 (not in any matching pod spec)", count)
+	}
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
+		t.Fatalf("Get profile: %v", err)
+	}
+	if len(got.Status.Containers) != 1 || got.Status.Containers[0].Name != "app" {
+		t.Errorf("status containers = %+v, want only app", got.Status.Containers)
+	}
+}
+
+// TestReconcile_PodListError_SkipsCycle pins the fail-closed behavior from #59:
+// when the pod List fails the collector cannot tell measurable containers from
+// excluded ones, so it writes no samples, leaves status alone, and requeues on
+// the normal poll interval instead of measuring everything the source reports.
+func TestReconcile_PodListError_SkipsCycle(t *testing.T) {
+	ctx := context.Background()
+	tupleLabels := map[string]string{"app": "web"}
+	profile := defaultProfile(tupleLabels)
+	inner := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile, appPod())
+	if err := inner.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+	fc := interceptor.NewClient(inner.(client.WithWatch), interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*corev1.PodList); ok {
+				return errors.New("pod list boom")
+			}
+			return c.List(ctx, list, opts...)
+		},
+	})
+
+	_, sc := newMiniredisClient(t)
+	p := &mockPlugin{typeName: "kubernetesMetrics", samples: []plugin.ContainerStats{
+		cpuSample("app", 100, time.Now()),
+		cpuSample("init-db", 100, time.Now()),
+	}}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+
+	result, err := reconcileProfile(t, r, "web")
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if result.RequeueAfter != 60*time.Second {
+		t.Errorf("RequeueAfter = %v, want the 60s poll interval", result.RequeueAfter)
+	}
+
+	measurementHash := profileHash(tupleLabels)
+	for _, name := range []string{"app", "init-db"} {
+		if count, _ := store.SampleCount(ctx, sc, store.MetricKey(measurementHash, name, "cpu")); count != 0 {
+			t.Errorf("%s: got %d samples, want 0 when the pod list fails", name, count)
+		}
+	}
+	var got ballastv1.WorkloadProfile
+	if err := inner.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
+		t.Fatalf("Get profile: %v", err)
+	}
+	if len(got.Status.Containers) != 0 || len(got.Status.Conditions) != 0 {
+		t.Errorf("status was written on a skipped cycle: containers=%+v conditions=%+v",
+			got.Status.Containers, got.Status.Conditions)
+	}
+}
+
+// TestReconcile_ExcludedStatusContainerEvicted reproduces the pinned profile from
+// #59: a run-to-completion init container that an earlier fail-open cycle let
+// into status with a single sample kept failing readiness forever, holding the
+// profile in Accruing. The collector must evict it from status, purge its
+// stored series, and let the profile reach Sufficient on the real container.
+func TestReconcile_ExcludedStatusContainerEvicted(t *testing.T) {
+	ctx := context.Background()
+	tupleLabels := map[string]string{"app": "web"}
+	profile := defaultProfile(tupleLabels)
+	pod := appPod()
+	pod.Spec.InitContainers = []corev1.Container{{Name: "init-db"}}
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile, pod)
+
+	_, sc := newMiniredisClient(t)
+	now := time.Now()
+	measurementHash := profileHash(tupleLabels)
+	strayKey := store.MetricKey(measurementHash, "init-db", "cpu")
+	if err := store.AddSample(ctx, sc, strayKey, now.Add(-time.Hour).UnixMilli(), "500", 0); err != nil {
+		t.Fatalf("seeding stray sample: %v", err)
+	}
+	profile.Status.State = ballastv1.WorkloadProfileStateAccruing
+	profile.Status.Containers = []ballastv1.ContainerProfile{
+		{Name: "app", UsageStats: []ballastv1.ContainerUsageStats{{Resource: "cpu", Source: "k8s-metrics", Samples: 0}}},
+		{Name: "init-db", UsageStats: []ballastv1.ContainerUsageStats{{Resource: "cpu", Source: "k8s-metrics", Samples: 1}}},
+	}
+	if err := fc.Status().Update(ctx, profile); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	p := &mockPlugin{typeName: "kubernetesMetrics", samples: []plugin.ContainerStats{
+		cpuSample("app", 200, now.Add(-10*time.Millisecond)),
+		cpuSample("app", 400, now),
+	}}
+	r := newReconcilerWithPlugin(t, fc, sc, inactiveKS(t), false, p)
+	if _, err := reconcileProfile(t, r, "web"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	var got ballastv1.WorkloadProfile
+	if err := fc.Get(ctx, types.NamespacedName{Name: "web"}, &got); err != nil {
+		t.Fatalf("Get profile: %v", err)
+	}
+	if len(got.Status.Containers) != 1 || got.Status.Containers[0].Name != "app" {
+		t.Fatalf("status containers = %+v, want only app after eviction", got.Status.Containers)
+	}
+	if got.Status.State != ballastv1.WorkloadProfileStateSufficient || !got.Status.MeetsThreshold {
+		t.Errorf("state = %q meetsThreshold = %v, want Sufficient/true once the stray container is evicted",
+			got.Status.State, got.Status.MeetsThreshold)
+	}
+	if count, _ := store.SampleCount(ctx, sc, strayKey); count != 0 {
+		t.Errorf("stray series still holds %d samples, want it purged", count)
+	}
+	if ms, _ := store.FirstSeenMs(ctx, sc, strayKey); ms != 0 {
+		t.Errorf("stray first_seen still %d, want it purged", ms)
 	}
 }
 
@@ -585,7 +748,7 @@ func TestReconcile_ReadinessNotMet(t *testing.T) {
 	}
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(policy, defaultMetricsSource(), profile)
+	fc := newFakeClient(policy, defaultMetricsSource(), profile, appPod())
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -662,7 +825,7 @@ func TestReconcile_ReadinessMet_RecommendationsPopulated(t *testing.T) {
 	ctx := context.Background()
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile, appPod())
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -715,7 +878,9 @@ func TestReconcile_ReadinessMet_RecommendationsPopulated(t *testing.T) {
 
 func TestReconcile_ExistingContainersPreserved(t *testing.T) {
 	// If FetchStats returns no samples, existing container stats from a prior cycle
-	// should still be present in the status (merged from existing profile).
+	// should still be present in the status (merged from existing profile). No pod
+	// matches here either (a workload scaled to zero), and that alone must not
+	// evict the container: an empty pod list says nothing about what it runs.
 	ctx := context.Background()
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
@@ -818,7 +983,7 @@ func TestReconcile_BadAggregation(t *testing.T) {
 	}
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(badPolicy, defaultMetricsSource(), profile)
+	fc := newFakeClient(badPolicy, defaultMetricsSource(), profile, appPod())
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -854,7 +1019,7 @@ func TestReconcile_InvalidRetentionWindow(t *testing.T) {
 		Spec:       ballastv1.BallastConfigSpec{RetentionWindow: "not-a-duration"},
 	}
 	profile := defaultProfile(map[string]string{"app": "web"})
-	fc := newFakeClient(cfg, defaultPolicy(), defaultMetricsSource(), profile)
+	fc := newFakeClient(cfg, defaultPolicy(), defaultMetricsSource(), profile, appPod())
 	if err := fc.Status().Update(context.Background(), profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -883,7 +1048,7 @@ func TestReconcile_ShortPollInterval(t *testing.T) {
 		},
 	}
 	profile := defaultProfile(map[string]string{"app": "web"})
-	fc := newFakeClient(defaultPolicy(), src, profile)
+	fc := newFakeClient(defaultPolicy(), src, profile, appPod())
 	if err := fc.Status().Update(context.Background(), profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -916,7 +1081,7 @@ func TestReconcile_MemoryMetric(t *testing.T) {
 	}
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(memPolicy, defaultMetricsSource(), profile)
+	fc := newFakeClient(memPolicy, defaultMetricsSource(), profile, appPod())
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -972,7 +1137,7 @@ func TestReconcile_MemoryMetric_GiScale(t *testing.T) {
 	}
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(memPolicy, defaultMetricsSource(), profile)
+	fc := newFakeClient(memPolicy, defaultMetricsSource(), profile, appPod())
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -1014,7 +1179,7 @@ func TestReconcile_MemoryMetric_KiScale(t *testing.T) {
 	}
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(memPolicy, defaultMetricsSource(), profile)
+	fc := newFakeClient(memPolicy, defaultMetricsSource(), profile, appPod())
 	if err := fc.Status().Update(ctx, profile); err != nil {
 		t.Fatalf("status update: %v", err)
 	}
@@ -1050,7 +1215,7 @@ func TestReconcile_DuplicateContainerMerge(t *testing.T) {
 	ctx := context.Background()
 	tupleLabels := map[string]string{"app": "web"}
 	profile := defaultProfile(tupleLabels)
-	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile)
+	fc := newFakeClient(defaultPolicy(), defaultMetricsSource(), profile, appPod())
 	profile.Status.Containers = []ballastv1.ContainerProfile{{
 		Name:       "app",
 		UsageStats: []ballastv1.ContainerUsageStats{{Resource: "cpu", Source: "k8s-metrics", Samples: 5}},

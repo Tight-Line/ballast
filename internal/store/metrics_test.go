@@ -162,3 +162,21 @@ func TestDeleteKey(t *testing.T) {
 		t.Errorf("key still has %d entries after delete", n)
 	}
 }
+
+func TestDeleteSeries(t *testing.T) {
+	ctx := context.Background()
+	c := newTestClient(t)
+	key := "ballast:metrics:test:app:cpu"
+
+	_ = store.AddSample(ctx, c, key, 1000, "v", 0)
+	if err := store.DeleteSeries(ctx, c, key); err != nil {
+		t.Fatalf("DeleteSeries: %v", err)
+	}
+
+	if n, _ := store.SampleCount(ctx, c, key); n != 0 {
+		t.Errorf("key still has %d entries after delete", n)
+	}
+	if ms, _ := store.FirstSeenMs(ctx, c, key); ms != 0 {
+		t.Errorf("first_seen still %d after delete, want 0", ms)
+	}
+}
