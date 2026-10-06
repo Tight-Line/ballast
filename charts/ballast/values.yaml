@@ -118,7 +118,9 @@ ballastConfig:
 # #   you scale up. The relationship is:                                     #
 # #                                                                          #
 # #       maxmemory  <  memory limit  <=  memory request                     #
-# #       PVC size   ~=  2 x memory limit                                    #
+# #       PVC size   ~=  2 x memory limit, but never below the minimum       #
+# #                        volume size of the StorageClass (the provisioner  #
+# #                        floor wins over the 2x rule)                      #
 # #                                                                          #
 # #   WHY each one:                                                          #
 # #     * maxmemory (valkeyConfig) is where valkey stops accepting writes.   #
@@ -133,13 +135,25 @@ ballastConfig:
 # #       defaults.                                                          #
 # #     * PVC size ~= 2x the limit: a background save writes a fresh temp    #
 # #       RDB next to the live dump.rdb before renaming, so two snapshots    #
-# #       must fit at once. RDB compresses, so 2x is generous.               #
+# #       must fit at once. RDB compresses, so 2x is generous. The default   #
+# #       is 1Gi, well above 2x, because cloud provisioners (EBS, GCE PD,    #
+# #       Azure Disk) round anything smaller up to 1Gi anyway, and a request #
+# #       below the provisioned capacity makes every later helm upgrade      #
+# #       fail on the PVC. Size it to max(2 x limit, the class minimum).     #
 # #                                                                          #
 # #   The independent variable is the dataset size, roughly                  #
 # #   reservoirSize x (containers x metrics per container). If you raise     #
 # #   maxmemory to fit a bigger fleet, raise the limit, the request, AND     #
 # #   the PVC in lockstep. Bump ONE in isolation and you get either an       #
 # #   OOM-killed store or a full PVC that cannot snapshot.                   #
+# #                                                                          #
+# #   Raising the PVC on a live install only works in place when its         #
+# #   StorageClass sets allowVolumeExpansion: true, and that varies by       #
+# #   class. Without it, requestedSize is install-time-only: a bigger store  #
+# #   needs the PVC deleted and recreated, which wipes accrued history.      #
+# #   And never set requestedSize BELOW the PVC's current capacity:          #
+# #   Kubernetes refuses to shrink a PVC, so the upgrade fails (the chart    #
+# #   checks this up front and names the value to set).                      #
 # #                                                                          #
 # ############################################################################
 valkey:
@@ -185,12 +199,42 @@ valkey:
   dataStorage:
     enabled: true
     # requestedSize MUST be non-empty or the subchart silently falls back to
-    # emptyDir (the exact failure above). Sized at ~2x the memory limit; scale
-    # it with the memory knobs (see banner).
-    requestedSize: 192Mi
-    # className empty ("") uses the cluster's default StorageClass. Set it to
-    # pin a specific class (e.g. a faster or retained one).
+    # emptyDir (the exact failure above). 1Gi is the common cloud provisioner
+    # minimum, which wins over the ~2x-memory-limit rule (see banner); scale it
+    # with the memory knobs past that point. The chart compares this against
+    # the live PVC before an upgrade and fails, naming the exact
+    # --set valkey.dataStorage.requestedSize=<capacity> to use, when the PVC is
+    # bigger than this (a class that rounded the request up, or a pre-existing
+    # volume the claim bound to) or smaller on a class that cannot expand.
+    requestedSize: 1Gi
+    # StorageClass for the store. This is a decision you have to make, not a
+    # detail: a PVC that names no class only gets a freshly provisioned volume
+    # when the cluster HAS a default StorageClass. On a cluster without one,
+    # Kubernetes instead binds the claim to whatever unbound PV happens to be
+    # big enough, typically a volume provisioned for some other application,
+    # with that volume's reclaim policy. The store works, nothing warns, and
+    # Ballast's history now lives on storage nobody allocated for it.
+    #
+    # So exactly one of these must hold:
+    #   className: <name>              -> storageClassName: <name> (recommended
+    #                                     when you know the class; overrides
+    #                                     useClusterDefaultClass)
+    #   useClusterDefaultClass: true   -> no storageClassName; the cluster's
+    #                                     default StorageClass provisions it
+    # With className empty and useClusterDefaultClass false, the chart refuses
+    # to render. With useClusterDefaultClass, install and upgrade (anything
+    # that talks to a live cluster) also fail if no StorageClass is annotated
+    # storageclass.kubernetes.io/is-default-class: "true"; `helm template` and
+    # client-side --dry-run cannot see the cluster and skip that check.
+    #
+    # Expansion: allowVolumeExpansion varies by class. Check it before relying
+    # on raising requestedSize later (see banner).
     className: ""
+    # useClusterDefaultClass is read only by the Ballast chart (the valkey
+    # subchart ignores it). It exists because className itself is passed
+    # verbatim to the subchart, which can only express "cluster default" by
+    # omitting storageClassName, i.e. an empty className.
+    useClusterDefaultClass: true
 
 store:
   # endpoint is used when valkey.enabled is false.

@@ -1,0 +1,67 @@
+{{- /*
+Validation-only template: renders no objects. It fails the render, with an
+actionable message, for valkey storage settings that would otherwise install
+onto the wrong volume (#90) or wedge every later upgrade (#89).
+
+The checks that need the cluster use `lookup`, which returns empty under
+`helm template` and client-side --dry-run. Those checks are written so that an
+empty lookup renders nothing: they can only fail against a live cluster.
+*/ -}}
+{{- if include "ballast.valkeyRendersPVC" . }}
+{{- $ds := .Values.valkey.dataStorage }}
+{{- $pvcName := include "ballast.valkeyPVCName" . }}
+
+{{- /* #90: a classless PVC needs an explicit "use the cluster default". */ -}}
+{{- if and (empty $ds.className) (not $ds.useClusterDefaultClass) }}
+{{- fail "valkey.dataStorage needs a StorageClass decision: className is empty and useClusterDefaultClass is false. Set valkey.dataStorage.className to a StorageClass name, or set valkey.dataStorage.useClusterDefaultClass=true to use the cluster's default StorageClass. A PVC with no class on a cluster with no default class binds to any unbound PV that fits, typically one provisioned for another application. See https://github.com/Tight-Line/ballast/issues/90" }}
+{{- end }}
+
+{{- /*
+#90: "use the cluster default" is only safe if there is one. kube-system
+always exists on a real cluster, so an empty lookup of it means "no cluster"
+(helm template / client-side dry-run), not "no default class".
+*/ -}}
+{{- if and (empty $ds.className) (lookup "v1" "Namespace" "" "kube-system") }}
+{{- $hasDefault := false }}
+{{- range (lookup "storage.k8s.io/v1" "StorageClass" "" "").items }}
+{{- $ann := .metadata.annotations | default dict }}
+{{- if or (eq (toString (index $ann "storageclass.kubernetes.io/is-default-class")) "true") (eq (toString (index $ann "storageclass.beta.kubernetes.io/is-default-class")) "true") }}
+{{- $hasDefault = true }}
+{{- end }}
+{{- end }}
+{{- if not $hasDefault }}
+{{- fail "valkey.dataStorage.useClusterDefaultClass is true but this cluster has no default StorageClass (none is annotated storageclass.kubernetes.io/is-default-class: \"true\"). The valkey PVC would bind to any unbound PV that fits, typically one provisioned for another application, with that volume's reclaim policy. Set valkey.dataStorage.className to the StorageClass the store should use, or mark a default StorageClass on the cluster. See https://github.com/Tight-Line/ballast/issues/90" }}
+{{- end }}
+{{- end }}
+
+{{- /*
+#89: Kubernetes rejects a PVC update whose requested storage is below its
+status.capacity, and Helm re-sends the request on every upgrade. Catch it here
+so the error names the value to set instead of failing on the PVC apply.
+*/ -}}
+{{- $pvc := lookup "v1" "PersistentVolumeClaim" .Release.Namespace $pvcName }}
+{{- $capacity := dig "status" "capacity" "storage" "" ($pvc | default dict) }}
+{{- if $capacity }}
+{{- $capBytes := include "ballast.quantityBytes" $capacity }}
+{{- $reqBytes := include "ballast.quantityBytes" $ds.requestedSize }}
+{{- if and $capBytes $reqBytes (gt (float64 $capBytes) (float64 $reqBytes)) }}
+{{- fail (printf "valkey.dataStorage.requestedSize (%s) is smaller than the capacity (%s) of the existing PersistentVolumeClaim %s/%s. Kubernetes refuses to shrink a PVC, so this upgrade would fail on it. The StorageClass most likely rounded the original request up to its minimum volume size, or the claim bound to a larger pre-existing volume. Set the request to the live capacity: --set valkey.dataStorage.requestedSize=%s (or the same value in your values file). See https://github.com/Tight-Line/ballast/issues/89" (toString $ds.requestedSize) $capacity .Release.Namespace $pvcName $capacity) }}
+{{- end }}
+{{- /*
+The reverse: growing the claim is only accepted when its StorageClass sets
+allowVolumeExpansion. This is what an existing install on a class with no
+minimum size (192Mi provisioned under the old default) hits when the default
+moves to 1Gi.
+*/ -}}
+{{- if and $capBytes $reqBytes (lt (float64 $capBytes) (float64 $reqBytes)) }}
+{{- $scName := dig "spec" "storageClassName" "" $pvc }}
+{{- $sc := dict }}
+{{- if $scName }}
+{{- $sc = lookup "storage.k8s.io/v1" "StorageClass" "" $scName | default dict }}
+{{- end }}
+{{- if not (dig "allowVolumeExpansion" false $sc) }}
+{{- fail (printf "valkey.dataStorage.requestedSize (%s) is larger than the capacity (%s) of the existing PersistentVolumeClaim %s/%s, and its StorageClass (%s) does not allow volume expansion, so Kubernetes would reject the upgrade. To keep the existing volume and its accrued history, use --set valkey.dataStorage.requestedSize=%s (or the same value in your values file). To move to the larger size, delete the PVC (and the valkey pod holding it) first; it is reprovisioned on upgrade and the store starts empty. See https://github.com/Tight-Line/ballast/issues/89" (toString $ds.requestedSize) $capacity .Release.Namespace $pvcName (default "none" $scName) $capacity) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
