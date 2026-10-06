@@ -54,6 +54,7 @@ type Recorder struct {
 	applyApplied            metric.Int64Counter
 	applySkipped            metric.Int64Counter
 	webhookMutations        metric.Int64Counter
+	recommendationClamped   metric.Int64Counter
 	killSwitchTransitions   metric.Int64Counter
 
 	ksActive atomic.Bool
@@ -103,6 +104,8 @@ func NewRecorder(provider metric.MeterProvider) (*Recorder, error) {
 		"Admission-time apply evaluations that changed nothing, by reason")
 	r.webhookMutations = counter("ballast.webhook.mutations",
 		"Pod admission webhook invocations and their outcomes")
+	r.recommendationClamped = counter("ballast.recommendation.clamped",
+		"Recommended requests held at the container's limit because they exceeded it")
 	r.killSwitchTransitions = counter("ballast.kill_switch.transitions",
 		"Kill switch state transitions (activated or deactivated)")
 	if err != nil { // coverage:ignore - OTel SDK never errors for valid instrument registration
@@ -336,8 +339,10 @@ func (r *Recorder) ApplyApplied(ctx context.Context, id ProfileID, policy, names
 
 // ApplySkipped records an admission evaluation for a pod that requested apply but
 // where nothing was changed. reason is one of: no_profile, not_ready, no_change,
-// dry_run. policy is empty when the skip happens before policy resolution
-// (no_profile, not_ready).
+// dry_run, qos_pinned. policy is empty when the skip happens before policy
+// resolution (no_profile, not_ready). qos_pinned means every recommendation that
+// would have been applied was dropped because it changed the pod's QoS class in
+// a way admission does not allow (anything but BestEffort to Burstable).
 func (r *Recorder) ApplySkipped(ctx context.Context, reason string, id ProfileID, policy, namespace string) {
 	if r == nil {
 		return
@@ -361,6 +366,24 @@ func (r *Recorder) WebhookMutation(ctx context.Context, result, namespace string
 		attribute.String("namespace", namespace),
 	)
 	r.webhookMutations.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecommendationClamped records a container request held at the container's limit
+// because the request Ballast would otherwise have written exceeded it (#119). A
+// steady stream for one workload means its limit sits below observed usage plus
+// headroom. phase is "admission" (webhook) or "resize" (resource adjuster).
+func (r *Recorder) RecommendationClamped(ctx context.Context, id ProfileID, container, resource, policy, namespace, phase string) {
+	if r == nil {
+		return
+	}
+	attrs := append(profileAttrs(id),
+		attribute.String("container", container),
+		attribute.String("resource", resource),
+		attribute.String("policy", policy),
+		attribute.String("namespace", namespace),
+		attribute.String("phase", phase),
+	)
+	r.recommendationClamped.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // KillSwitchTransition records a kill switch state change.
