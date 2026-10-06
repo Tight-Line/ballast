@@ -1,0 +1,19 @@
+.github/workflows/snyk.yml
+  s_a77ab9995ffa91::t_b56c53e10fb1d7 54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "3f5d4182b108e57e335a54164c0606348e9968cb",
+  "prompts": {},
+  "sessions": {
+    "s_a77ab9995ffa91": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bfab22c4-622b-4591-9995-3fd8a2bc5710",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Nick Marden <nmarden@avvo.com>"
+    }
+  }
+}
