@@ -1,0 +1,21 @@
+go.mod
+  s_a77ab9995ffa91::t_63cc83403b89af 14-26,34,68,80,82,91,98-106,109-110
+go.sum
+  s_a77ab9995ffa91::t_bcdd6b03b69584 91-92,151-152,155-156,189-192,195-204,209-228,246-261,264-265,276-279,313-314
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "0f12bec238e7e83e4d8ada4e26d844800aa0ccb8",
+  "prompts": {},
+  "sessions": {
+    "s_a77ab9995ffa91": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bfab22c4-622b-4591-9995-3fd8a2bc5710",
+        "model": "unknown"
+      },
+      "human_author": "Nick Marden <nmarden@avvo.com>"
+    }
+  }
+}
