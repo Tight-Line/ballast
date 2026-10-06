@@ -141,6 +141,7 @@ func TestRecorder_NilSafe(t *testing.T) {
 	rec.ApplyApplied(ctx, id, "policy", "default")
 	rec.ApplySkipped(ctx, "not_ready", id, "", "default")
 	rec.WebhookMutation(ctx, "mutated", "default", id)
+	rec.RecommendationClamped(ctx, id, "app", "memory", "policy", "default", "resize")
 	rec.KillSwitchTransition(ctx, "activated")
 	rec.SetKillSwitchActive(true, "test")
 	if err := rec.RegisterProfileGauge(nil); err != nil {
@@ -302,6 +303,28 @@ func TestRecorder_ApplySkipped(t *testing.T) {
 	ls := firstLabels(t, reg, "ballast_apply_skipped_total")
 	if ls["reason"] != "not_ready" || ls["policy"] != "" || ls["namespace"] != "staging" {
 		t.Errorf("reason/policy/namespace attrs = %q/%q/%q", ls["reason"], ls["policy"], ls["namespace"])
+	}
+	if ls["profile"] != "frontend--web" {
+		t.Errorf("profile attr = %q, want frontend--web", ls["profile"])
+	}
+}
+
+func TestRecorder_RecommendationClamped(t *testing.T) {
+	rec, reg := newTestRecorder(t)
+	ctx := context.Background()
+
+	rec.RecommendationClamped(ctx, metrics.ProfileID{Name: "frontend--web", Labels: bizLabels()},
+		"app", "memory", "default", "staging", "admission")
+
+	got := gatherCounter(t, reg, "ballast_recommendation_clamped_total")
+	if got != 1 {
+		t.Errorf("ballast_recommendation_clamped_total = %v, want 1", got)
+	}
+	ls := firstLabels(t, reg, "ballast_recommendation_clamped_total")
+	if ls["container"] != "app" || ls["resource"] != "memory" || ls["policy"] != "default" ||
+		ls["namespace"] != "staging" || ls["phase"] != "admission" {
+		t.Errorf("container/resource/policy/namespace/phase attrs = %q/%q/%q/%q/%q",
+			ls["container"], ls["resource"], ls["policy"], ls["namespace"], ls["phase"])
 	}
 	if ls["profile"] != "frontend--web" {
 		t.Errorf("profile attr = %q, want frontend--web", ls["profile"])

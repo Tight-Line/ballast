@@ -18,6 +18,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -735,6 +736,127 @@ func TestPodMutator_OwnerReference(t *testing.T) {
 	}
 	if !hasResourcePatch(resp) {
 		t.Errorf("expected patches for pod with owner reference, got none")
+	}
+}
+
+// policyProfileWithRecs returns a ready profile for app=web under the
+// default-policy ClusterResourcePolicy, recommending recs for container "app".
+func policyProfileWithRecs(recs map[string]ballastv1.ResourceRecommendation) (*ballastv1.WorkloadProfile, *ballastv1.ClusterResourcePolicy) {
+	profile := &ballastv1.WorkloadProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: webProfileName(clusterPolicyRef("default-policy"))},
+		Status: ballastv1.WorkloadProfileStatus{
+			MeetsThreshold: true,
+			Containers:     []ballastv1.ContainerProfile{{Name: "app", Recommendations: recs}},
+		},
+	}
+	policy := &ballastv1.ClusterResourcePolicy{ObjectMeta: metav1.ObjectMeta{Name: "default-policy"}}
+	return profile, policy
+}
+
+// annotationPatchValue extracts an annotation value from an admission response,
+// handling both the per-key and whole-map patch shapes (see policyRefValue).
+func annotationPatchValue(resp admission.Response, key string) string {
+	for _, p := range resp.Patches {
+		if p.Path == "/metadata/annotations" {
+			if m, ok := p.Value.(map[string]any); ok {
+				if s, ok := m[key].(string); ok {
+					return s
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// TestPodMutator_RequestClamped_MetricAndAnnotation asserts a requests-only
+// recommendation above the container's limit is clamped at admission, recorded
+// as ballast.recommendation.clamped{phase=admission}, and stamped as a
+// clamped-<resource>-request annotation carrying the recommendation (#119).
+func TestPodMutator_RequestClamped_MetricAndAnnotation(t *testing.T) {
+	profile, policy := policyProfileWithRecs(map[string]ballastv1.ResourceRecommendation{
+		"memory": {Request: "152508Ki"},
+	})
+	fc := newFakeClient(defaultBallastConfig(), profile, policy)
+	rec, reg := newMetricsRecorder(t)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, rec)
+
+	pod := testPod("p", validation.ModeApply)
+	pod.Spec.Containers[0].Resources.Limits = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("128Mi")}
+	resp := m.Handle(context.Background(), makeRequest(pod))
+	if !resp.Allowed {
+		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
+	}
+
+	got, labels := counterSeries(t, reg, "ballast_recommendation_clamped_total")
+	if got != 1 {
+		t.Fatalf("ballast_recommendation_clamped_total = %v, want 1", got)
+	}
+	if labels["phase"] != "admission" || labels["container"] != "app" || labels["resource"] != "memory" ||
+		labels["policy"] != "default-policy" || labels["namespace"] != "default" ||
+		labels["profile"] != webProfileName(clusterPolicyRef("default-policy")) {
+		t.Errorf("clamp attrs = %v", labels)
+	}
+	if v := annotationPatchValue(resp, "ballast.tightlinesoftware.com/clamped-memory-request"); v != "152508Ki" {
+		t.Errorf("clamped-memory-request annotation = %q, want 152508Ki", v)
+	}
+	if v := annotationPatchValue(resp, "ballast.tightlinesoftware.com/applied-memory-request"); v != "128Mi" {
+		t.Errorf("applied-memory-request annotation = %q, want 128Mi", v)
+	}
+}
+
+// TestPodMutator_RequestClamped_DryRun_NotRecorded asserts a suppressed apply
+// records no clamp: nothing was written.
+func TestPodMutator_RequestClamped_DryRun_NotRecorded(t *testing.T) {
+	profile, policy := policyProfileWithRecs(map[string]ballastv1.ResourceRecommendation{
+		"memory": {Request: "152508Ki"},
+	})
+	fc := newFakeClient(defaultBallastConfig(), profile, policy)
+	rec, reg := newMetricsRecorder(t)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), true /* dryRunApply */, rec)
+
+	pod := testPod("p", validation.ModeApply)
+	pod.Spec.Containers[0].Resources.Limits = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("128Mi")}
+	if resp := m.Handle(context.Background(), makeRequest(pod)); !resp.Allowed {
+		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
+	}
+	if got, _ := counterSeries(t, reg, "ballast_recommendation_clamped_total"); got != 0 {
+		t.Errorf("ballast_recommendation_clamped_total = %v, want 0 in dry-run", got)
+	}
+}
+
+// TestPodMutator_GuaranteedPod_LowerRequestsOnly_QOSPinned asserts a Guaranteed
+// pod is admitted unchanged when its only recommendation would break
+// requests == limits, recording ballast.apply.skipped{reason=qos_pinned}.
+func TestPodMutator_GuaranteedPod_LowerRequestsOnly_QOSPinned(t *testing.T) {
+	profile, policy := policyProfileWithRecs(map[string]ballastv1.ResourceRecommendation{
+		"cpu": {Request: "50m"},
+	})
+	fc := newFakeClient(defaultBallastConfig(), profile, policy)
+	rec, reg := newMetricsRecorder(t)
+	m := webhook.NewPodMutator(fc, inactiveKS(t), false, rec)
+
+	pod := testPod("p", validation.ModeApply)
+	sized := corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("100m"),
+		corev1.ResourceMemory: resource.MustParse("128Mi"),
+	}
+	pod.Spec.Containers[0].Resources = corev1.ResourceRequirements{Requests: sized, Limits: sized.DeepCopy()}
+	resp := m.Handle(context.Background(), makeRequest(pod))
+	if !resp.Allowed {
+		t.Fatalf("expected Allowed, got: %s", resp.Result.Message)
+	}
+
+	for _, p := range resp.Patches {
+		if strings.Contains(p.Path, "resources") {
+			t.Errorf("unexpected resource patch on a QoS-pinned pod: %+v", p)
+		}
+	}
+	got, labels := counterSeries(t, reg, "ballast_apply_skipped_total")
+	if got != 1 || labels["reason"] != "qos_pinned" {
+		t.Errorf("ballast_apply_skipped_total = %v (reason=%q), want 1 with reason=qos_pinned", got, labels["reason"])
+	}
+	if applied, _ := counterSeries(t, reg, "ballast_apply_applied_total"); applied != 0 {
+		t.Errorf("ballast_apply_applied_total = %v, want 0", applied)
 	}
 }
 

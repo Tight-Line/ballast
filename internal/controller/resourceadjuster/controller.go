@@ -243,7 +243,7 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 	}
 
 	recsByName := containerRecsByName(profile)
-	adjustments, notResizable := computeAdjustments(pod, recsByName, behaviors)
+	adjustments, notResizable, clamps := computeAdjustments(pod, recsByName, behaviors)
 	if len(notResizable) > 0 {
 		log.V(1).Info("excluding drifted resources the resize subresource cannot mutate",
 			"pod", pod.Name, "namespace", pod.Namespace, "resources", notResizable)
@@ -266,7 +266,7 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 	// evaluation forever, since the class can only change on pod recreation.
 	all := append(slices.Clone(pod.Spec.InitContainers), pod.Spec.Containers...)
 	adjusted := append(adjustedContainers(pod.Spec.InitContainers, adjustments), adjustedContainers(pod.Spec.Containers, adjustments)...)
-	if cur, next := PodQOS(all), PodQOS(adjusted); cur != next {
+	if cur, next := kube.PodQOS(all), kube.PodQOS(adjusted); cur != next {
 		log.Info("resize would change pod QoS class, which Kubernetes forbids; skipping",
 			append(logFields, "qos_current", string(cur), "qos_after", string(next))...)
 		r.rec.ResizeSkipped(ctx, "qos_pinned", pid, policyName, pod.Namespace)
@@ -277,6 +277,16 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 		log.Info("dry-run: would resize pod", append(logFields, "dry_run", true)...)
 		r.rec.ResizeSkipped(ctx, "dry_run", pid, policyName, pod.Namespace)
 		return nil
+	}
+
+	for _, cl := range clamps {
+		log.Info("recommended request exceeds the container limit; clamping request to the limit",
+			append(logFields, "container", cl.Container, "resource", cl.Resource,
+				"recommended", cl.Recommended, "limit", cl.Limit, "phase", "resize")...)
+		r.rec.RecommendationClamped(ctx, pid, cl.Container, cl.Resource, policyName, pod.Namespace, "resize")
+		r.emitEvent(ctx, pod, corev1.EventTypeWarning, "RequestClampedToLimit",
+			fmt.Sprintf("container %s: recommended %s request %s exceeds its limit %s; request clamped to the limit",
+				cl.Container, cl.Resource, cl.Recommended, cl.Limit))
 	}
 
 	if err := r.ResizePod(ctx, pod, adjustments); err != nil {
@@ -318,12 +328,12 @@ type ContainerAdjustment struct {
 // computeAdjustments returns one adjustment per container that has drifted
 // beyond threshold for at least one resizable field, plus the sorted, deduplicated
 // names of drifted resources that were excluded because the resize subresource
-// cannot mutate them.
+// cannot mutate them, and the requests held at their container's limit (#119).
 func computeAdjustments(
 	pod *corev1.Pod,
 	recsByName map[string]map[string]ballastv1.ResourceRecommendation,
 	behaviors ballastv1.BehaviorConfig,
-) (result []ContainerAdjustment, notResizable []string) {
+) (result []ContainerAdjustment, notResizable []string, clamps []kube.RequestClamp) {
 	maxChange := ResolveMaxChangePercent(behaviors)
 
 	for _, c := range pod.Spec.Containers {
@@ -331,9 +341,10 @@ func computeAdjustments(
 		if !ok || len(recs) == 0 {
 			continue
 		}
-		adj, drifted, skipped := computeContainerAdjustment(c, recs, behaviors, maxChange)
+		adj, drifted, skipped, clamped := computeContainerAdjustment(c, recs, behaviors, maxChange)
 		if drifted {
 			result = append(result, adj)
+			clamps = append(clamps, clamped...)
 		}
 		notResizable = append(notResizable, skipped...)
 	}
@@ -350,28 +361,62 @@ func computeAdjustments(
 		if !ok || len(recs) == 0 {
 			continue
 		}
-		adj, drifted, skipped := computeContainerAdjustment(c, recs, behaviors, maxChange)
+		adj, drifted, skipped, clamped := computeContainerAdjustment(c, recs, behaviors, maxChange)
 		if drifted {
 			result = append(result, adj)
+			clamps = append(clamps, clamped...)
 		}
 		notResizable = append(notResizable, skipped...)
 	}
 
+	if len(clamps) > 0 {
+		preserveClassAfterClamp(pod, result, clamps)
+	}
+
 	slices.Sort(notResizable)
-	return result, slices.Compact(notResizable)
+	return result, slices.Compact(notResizable), clamps
+}
+
+// preserveClassAfterClamp undoes the one QoS change clamping can cause. Holding
+// a request at exactly its limit can make the pod's last unequal cpu/memory
+// pair equal and promote a Burstable pod to Guaranteed, which in-place resize
+// forbids. In that case each clamped request is stepped one unit below its
+// limit instead. (A Guaranteed result means every cpu/memory request equals its
+// limit, so every clamped request sits exactly at its limit.) A pod that is
+// already Guaranteed stays at the limit, which keeps it Guaranteed.
+func preserveClassAfterClamp(pod *corev1.Pod, adjustments []ContainerAdjustment, clamps []kube.RequestClamp) {
+	all := append(slices.Clone(pod.Spec.InitContainers), pod.Spec.Containers...)
+	adjusted := append(adjustedContainers(pod.Spec.InitContainers, adjustments), adjustedContainers(pod.Spec.Containers, adjustments)...)
+	if kube.PodQOS(adjusted) != corev1.PodQOSGuaranteed || kube.PodQOS(all) == corev1.PodQOSGuaranteed {
+		return
+	}
+	byName := make(map[string]*ContainerAdjustment, len(adjustments))
+	for i := range adjustments {
+		byName[adjustments[i].Name] = &adjustments[i]
+	}
+	for _, cl := range clamps {
+		adj, res := byName[cl.Container], corev1.ResourceName(cl.Resource)
+		adj.Requests[res] = kube.StepDown(adj.Limits[res], res)
+	}
 }
 
 // computeContainerAdjustment evaluates every recommended field for one container
 // and returns the capped adjustment, whether any resizable field drifted beyond
-// threshold, and the drifted resources that were excluded as not resizable.
-// Recommendations for resources the resize subresource cannot mutate (anything
-// other than cpu and memory) are applied only at admission time by the webhook.
+// threshold, the drifted resources that were excluded as not resizable, and the
+// requests held at the container's limit. Recommendations for resources the
+// resize subresource cannot mutate (anything other than cpu and memory) are
+// applied only at admission time by the webhook.
+//
+// A request never exceeds the limit the patch leaves in place: the new limit
+// when one is recommended and drifts, otherwise the container's current limit.
+// Drift is measured from the current request to the clamped target, so a pod
+// already held at its limit reports no drift instead of resizing every interval.
 func computeContainerAdjustment(
 	c corev1.Container,
 	recs map[string]ballastv1.ResourceRecommendation,
 	behaviors ballastv1.BehaviorConfig,
 	maxChange float64,
-) (adj ContainerAdjustment, drifted bool, notResizable []string) {
+) (adj ContainerAdjustment, drifted bool, notResizable []string, clamps []kube.RequestClamp) {
 	adj = ContainerAdjustment{
 		Name:     c.Name,
 		Requests: c.Resources.Requests.DeepCopy(),
@@ -384,7 +429,9 @@ func computeContainerAdjustment(
 		adj.Limits = make(corev1.ResourceList)
 	}
 
-	for res, rec := range recs {
+	// Sorted so clamps are reported in a stable order.
+	for _, res := range slices.Sorted(maps.Keys(recs)) {
+		rec := recs[res]
 		resName := corev1.ResourceName(res)
 		if !resizableResource(resName) {
 			if fieldDrifts(rec.Request, ResolveFieldThreshold(behaviors, res, "request"),
@@ -395,18 +442,63 @@ func computeContainerAdjustment(
 			}
 			continue
 		}
-		if evaluateField(adj.Requests, resName, rec.Request,
-			ResolveFieldThreshold(behaviors, res, "request"), maxChange,
-			currentValue(c.Resources.Requests, resName)) {
-			drifted = true
-		}
+		// The limit goes first: it bounds the request.
 		if evaluateField(adj.Limits, resName, rec.Limit,
 			ResolveFieldThreshold(behaviors, res, "limit"), maxChange,
 			currentValue(c.Resources.Limits, resName)) {
 			drifted = true
 		}
+		if evaluateRequest(&adj, resName, rec.Request,
+			ResolveFieldThreshold(behaviors, res, "request"), maxChange,
+			currentValue(c.Resources.Requests, resName), &clamps) {
+			drifted = true
+		}
 	}
-	return adj, drifted, notResizable
+	return adj, drifted, notResizable, clamps
+}
+
+// evaluateRequest is evaluateField for a request, bounded by the limit in
+// adj.Limits (the limit the patch leaves in place). A recommendation above that
+// limit is clamped to it before the drift check, and a request that would still
+// exceed it (a capped step down toward a newly lowered limit) is held at the
+// limit. Each clamp that changes the request is appended to clamps. Returns
+// whether the request changed.
+func evaluateRequest(
+	adj *ContainerAdjustment,
+	resName corev1.ResourceName,
+	recValue string,
+	threshold, maxChange float64,
+	current resource.Quantity,
+	clamps *[]kube.RequestClamp,
+) (changed bool) {
+	limit, hasLimit := adj.Limits[resName]
+	var clampedFrom *resource.Quantity
+	if recommended, err := resource.ParseQuantity(recValue); err == nil {
+		target := recommended
+		if hasLimit && recommended.Cmp(limit) > 0 {
+			clampedFrom, target = &recommended, limit
+		}
+		if ExceedsDrift(current, target, threshold) {
+			adj.Requests[resName] = CapChange(current, target, maxChange, threshold)
+			changed = true
+		}
+	}
+	if req, ok := adj.Requests[resName]; ok && hasLimit && req.Cmp(limit) > 0 {
+		if clampedFrom == nil {
+			clampedFrom = &req
+		}
+		adj.Requests[resName] = limit
+		changed = true
+	}
+	if changed && clampedFrom != nil {
+		*clamps = append(*clamps, kube.RequestClamp{
+			Container:   adj.Name,
+			Resource:    string(resName),
+			Recommended: clampedFrom.String(),
+			Limit:       limit.String(),
+		})
+	}
+	return changed
 }
 
 // resizableResource reports whether the pod resize subresource can mutate the
@@ -559,61 +651,6 @@ func adjustedContainers(containers []corev1.Container, adjustments []ContainerAd
 		}
 	}
 	return out
-}
-
-// PodQOS computes the QoS class Kubernetes assigns to a pod built from the
-// given containers (pass regular and init containers together), following the
-// upstream GetPodQOS algorithm over cpu and memory, the only QoS-relevant
-// resources: BestEffort when no container sets any cpu/memory request or
-// limit, Guaranteed when every container sets both cpu and memory limits and
-// aggregate requests equal aggregate limits, Burstable otherwise.
-func PodQOS(containers []corev1.Container) corev1.PodQOSClass {
-	requests := corev1.ResourceList{}
-	limits := corev1.ResourceList{}
-	isGuaranteed := true
-	for _, c := range containers {
-		for name, q := range c.Resources.Requests {
-			if !resizableResource(name) || q.IsZero() {
-				continue
-			}
-			addQuantity(requests, name, q)
-		}
-		qosLimits := 0
-		for name, q := range c.Resources.Limits {
-			if !resizableResource(name) || q.IsZero() {
-				continue
-			}
-			qosLimits++
-			addQuantity(limits, name, q)
-		}
-		if qosLimits != 2 { // both cpu and memory
-			isGuaranteed = false
-		}
-	}
-	if len(requests) == 0 && len(limits) == 0 {
-		return corev1.PodQOSBestEffort
-	}
-	if isGuaranteed {
-		for name, req := range requests {
-			if lim, ok := limits[name]; !ok || lim.Cmp(req) != 0 {
-				isGuaranteed = false
-				break
-			}
-		}
-	}
-	if isGuaranteed && len(requests) == len(limits) {
-		return corev1.PodQOSGuaranteed
-	}
-	return corev1.PodQOSBurstable
-}
-
-// addQuantity adds q to the running total for name in list.
-func addQuantity(list corev1.ResourceList, name corev1.ResourceName, q resource.Quantity) {
-	total := q.DeepCopy()
-	if cur, ok := list[name]; ok {
-		total.Add(cur)
-	}
-	list[name] = total
 }
 
 // applyResize patches the pod via the resize subresource.
