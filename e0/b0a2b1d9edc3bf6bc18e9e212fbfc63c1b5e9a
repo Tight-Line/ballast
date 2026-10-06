@@ -1,0 +1,23 @@
+internal/controller/metricscollector/controller.go
+  s_a77ab9995ffa91::t_4f1fa3180524b4 819-823,843
+internal/controller/metricscollector/controller_test.go
+  s_a77ab9995ffa91::t_4f1fa3180524b4 824-864
+CHANGELOG.md
+  s_a77ab9995ffa91::t_9f9b2a179395ff 23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "e0b0a2b1d9edc3bf6bc18e9e212fbfc63c1b5e9a",
+  "prompts": {},
+  "sessions": {
+    "s_a77ab9995ffa91": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bfab22c4-622b-4591-9995-3fd8a2bc5710",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Nick Marden <nmarden@avvo.com>"
+    }
+  }
+}
