@@ -25,9 +25,10 @@ func TestPodQOS(t *testing.T) {
 		return rl
 	}
 	cases := []struct {
-		name       string
-		containers []corev1.Container
-		want       corev1.PodQOSClass
+		name         string
+		podResources *corev1.ResourceRequirements
+		containers   []corev1.Container
+		want         corev1.PodQOSClass
 	}{
 		{
 			name:       "no resources anywhere",
@@ -100,10 +101,32 @@ func TestPodQOS(t *testing.T) {
 			},
 			want: corev1.PodQOSGuaranteed,
 		},
+		{
+			name: "pod-level resources decide the class over containers",
+			podResources: &corev1.ResourceRequirements{
+				Requests: req("200m", "256Mi"),
+				Limits:   req("200m", "256Mi"),
+			},
+			containers: []corev1.Container{{Name: "a", Resources: corev1.ResourceRequirements{
+				Requests: req("100m", ""),
+			}}},
+			want: corev1.PodQOSGuaranteed,
+		},
+		{
+			name: "pod-level requests without limits are burstable",
+			podResources: &corev1.ResourceRequirements{
+				Requests: req("200m", "256Mi"),
+			},
+			containers: []corev1.Container{{Name: "a", Resources: corev1.ResourceRequirements{
+				Requests: req("100m", "128Mi"),
+				Limits:   req("100m", "128Mi"),
+			}}},
+			want: corev1.PodQOSBurstable,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := PodQOS(tc.containers); got != tc.want {
+			if got := PodQOS(tc.podResources, tc.containers); got != tc.want {
 				t.Errorf("PodQOS = %s, want %s", got, tc.want)
 			}
 		})

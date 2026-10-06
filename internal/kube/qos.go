@@ -13,13 +13,16 @@ import (
 
 // RequestClamp records one request Ballast held at a container's limit because
 // the request it would otherwise have written exceeded that limit (#119).
-// Recommended is the pre-clamp request and Limit the limit it was clamped to,
-// both in Kubernetes quantity notation.
+// Recommended is the request that would otherwise have been written, Limit the
+// limit it exceeded, and Applied the request actually written: the limit, one
+// unit under it when that preserves the pod's QoS class, or a capped step toward
+// it. All are in Kubernetes quantity notation.
 type RequestClamp struct {
 	Container   string
 	Resource    string
 	Recommended string
 	Limit       string
+	Applied     string
 }
 
 // IsQOSResource reports whether res participates in pod QoS classification.
@@ -28,33 +31,25 @@ func IsQOSResource(res corev1.ResourceName) bool {
 	return res == corev1.ResourceCPU || res == corev1.ResourceMemory
 }
 
-// PodQOS computes the QoS class Kubernetes assigns to a pod built from the
-// given containers (pass regular and init containers together), following the
-// upstream GetPodQOS algorithm over cpu and memory, the only QoS-relevant
-// resources: BestEffort when no container sets any cpu/memory request or
-// limit, Guaranteed when every container sets both cpu and memory limits and
-// aggregate requests equal aggregate limits, Burstable otherwise.
-func PodQOS(containers []corev1.Container) corev1.PodQOSClass {
+// PodQOS computes the QoS class Kubernetes assigns to a pod with the given
+// pod-level resources (pod.Spec.Resources, nil when unset) and containers (pass
+// regular and init containers together), following the upstream ComputePodQOS
+// algorithm over cpu and memory, the only QoS-relevant resources. When
+// pod-level resources are set they alone decide the class, and the containers
+// are ignored. BestEffort when nothing sets any cpu/memory request or limit,
+// Guaranteed when every container (or the pod level) sets both cpu and memory
+// limits and aggregate requests equal aggregate limits, Burstable otherwise.
+func PodQOS(podResources *corev1.ResourceRequirements, containers []corev1.Container) corev1.PodQOSClass {
 	requests := corev1.ResourceList{}
 	limits := corev1.ResourceList{}
 	isGuaranteed := true
-	for _, c := range containers {
-		for name, q := range c.Resources.Requests {
-			if !IsQOSResource(name) || q.IsZero() {
-				continue
+	if podResources != nil {
+		isGuaranteed = addQOSResources(requests, limits, *podResources)
+	} else {
+		for _, c := range containers {
+			if !addQOSResources(requests, limits, c.Resources) {
+				isGuaranteed = false
 			}
-			addQuantity(requests, name, q)
-		}
-		qosLimits := 0
-		for name, q := range c.Resources.Limits {
-			if !IsQOSResource(name) || q.IsZero() {
-				continue
-			}
-			qosLimits++
-			addQuantity(limits, name, q)
-		}
-		if qosLimits != 2 { // both cpu and memory
-			isGuaranteed = false
 		}
 	}
 	if len(requests) == 0 && len(limits) == 0 {
@@ -84,6 +79,26 @@ func StepDown(q resource.Quantity, res corev1.ResourceName) resource.Quantity {
 		return *resource.NewMilliQuantity(q.MilliValue()-1, resource.DecimalSI)
 	}
 	return *resource.NewQuantity(q.Value()-1, q.Format)
+}
+
+// addQOSResources adds rr's nonzero cpu/memory requests and limits to the
+// running totals and reports whether rr sets both a cpu and a memory limit.
+func addQOSResources(requests, limits corev1.ResourceList, rr corev1.ResourceRequirements) (bothLimits bool) {
+	for name, q := range rr.Requests {
+		if !IsQOSResource(name) || q.IsZero() {
+			continue
+		}
+		addQuantity(requests, name, q)
+	}
+	qosLimits := 0
+	for name, q := range rr.Limits {
+		if !IsQOSResource(name) || q.IsZero() {
+			continue
+		}
+		qosLimits++
+		addQuantity(limits, name, q)
+	}
+	return qosLimits == 2
 }
 
 // addQuantity adds q to the running total for name in list.

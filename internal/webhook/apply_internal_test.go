@@ -75,7 +75,7 @@ func TestApply_RequestsOnlyMemoryOverLimit_Clamped(t *testing.T) {
 	c := pod.Spec.Containers[0].Resources
 	assertQty(t, "memory request", c.Requests[corev1.ResourceMemory], "128Mi")
 	assertQty(t, "memory limit", c.Limits[corev1.ResourceMemory], "128Mi")
-	assertClamps(t, res.clamps, kube.RequestClamp{Container: "app", Resource: "memory", Recommended: "152508Ki", Limit: "128Mi"})
+	assertClamps(t, res.clamps, kube.RequestClamp{Container: "app", Resource: "memory", Recommended: "152508Ki", Limit: "128Mi", Applied: "128Mi"})
 	if got := pod.Annotations[annotationClamped+"memory-request"]; got != "152508Ki" {
 		t.Errorf("clamped annotation = %q, want 152508Ki", got)
 	}
@@ -93,7 +93,7 @@ func TestApply_RequestsOnlyCPUOverLimit_Clamped(t *testing.T) {
 		"cpu": {Request: "500m"},
 	}))
 	assertQty(t, "cpu request", pod.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU], "200m")
-	assertClamps(t, res.clamps, kube.RequestClamp{Container: "app", Resource: "cpu", Recommended: "500m", Limit: "200m"})
+	assertClamps(t, res.clamps, kube.RequestClamp{Container: "app", Resource: "cpu", Recommended: "500m", Limit: "200m", Applied: "200m"})
 }
 
 func TestApply_BothFieldsManaged_ComparedToNewLimit(t *testing.T) {
@@ -104,7 +104,7 @@ func TestApply_BothFieldsManaged_ComparedToNewLimit(t *testing.T) {
 	c := pod.Spec.Containers[0].Resources
 	assertQty(t, "cpu limit", c.Limits[corev1.ResourceCPU], "300m")
 	assertQty(t, "cpu request", c.Requests[corev1.ResourceCPU], "300m")
-	assertClamps(t, res.clamps, kube.RequestClamp{Container: "app", Resource: "cpu", Recommended: "500m", Limit: "300m"})
+	assertClamps(t, res.clamps, kube.RequestClamp{Container: "app", Resource: "cpu", Recommended: "500m", Limit: "300m", Applied: "300m"})
 }
 
 func TestApply_NoLimit_NotClamped(t *testing.T) {
@@ -134,7 +134,7 @@ func TestApply_ClampWouldPromoteToGuaranteed_StepsDownOneUnit(t *testing.T) {
 	c := pod.Spec.Containers[0].Resources
 	assertQty(t, "memory request", c.Requests[corev1.ResourceMemory], "134217727")
 	assertQty(t, "ephemeral-storage request", c.Requests[corev1.ResourceEphemeralStorage], "1Gi")
-	if got := kube.PodQOS(pod.Spec.Containers); got != corev1.PodQOSBurstable {
+	if got := kube.PodQOS(nil, pod.Spec.Containers); got != corev1.PodQOSBurstable {
 		t.Errorf("QoS = %s, want Burstable", got)
 	}
 	if got := pod.Annotations[annotationApplied+"memory-request"]; got != "134217727" {
@@ -151,10 +151,10 @@ func TestApply_GuaranteedPod_RecommendationAboveLimit_StaysGuaranteed(t *testing
 		"memory": {Request: "149Mi"},
 	}))
 	assertQty(t, "memory request", pod.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory], "128Mi")
-	if got := kube.PodQOS(pod.Spec.Containers); got != corev1.PodQOSGuaranteed {
+	if got := kube.PodQOS(nil, pod.Spec.Containers); got != corev1.PodQOSGuaranteed {
 		t.Errorf("QoS = %s, want Guaranteed", got)
 	}
-	assertClamps(t, res.clamps, kube.RequestClamp{Container: "app", Resource: "memory", Recommended: "149Mi", Limit: "128Mi"})
+	assertClamps(t, res.clamps, kube.RequestClamp{Container: "app", Resource: "memory", Recommended: "149Mi", Limit: "128Mi", Applied: "128Mi"})
 }
 
 func TestApply_GuaranteedPod_LowerRequestsOnly_LeftAlone(t *testing.T) {
@@ -182,7 +182,7 @@ func TestApply_BestEffortPod_PromotedToBurstable(t *testing.T) {
 		"cpu":    {Request: "200m"},
 		"memory": {Request: "128Mi", Limit: "256Mi"},
 	}))
-	if got := kube.PodQOS(pod.Spec.Containers); got != corev1.PodQOSBurstable {
+	if got := kube.PodQOS(nil, pod.Spec.Containers); got != corev1.PodQOSBurstable {
 		t.Errorf("QoS = %s, want Burstable", got)
 	}
 	if !slices.Equal(res.applied, []string{"app"}) || len(res.pinned) != 0 {
@@ -190,20 +190,86 @@ func TestApply_BestEffortPod_PromotedToBurstable(t *testing.T) {
 	}
 }
 
-func TestApply_BestEffortPod_ClampToGuaranteed_StepsDownToBurstable(t *testing.T) {
-	// A policy whose own request formula exceeds its limit formula would clamp
-	// an unsized pod straight to Guaranteed. Only BestEffort -> Burstable is
-	// allowed at admission, so the clamped requests step down one unit.
+func TestApply_BestEffortPod_ClampToGuaranteed_Allowed(t *testing.T) {
+	// A policy whose own request formula exceeds its limit formula clamps an
+	// unsized pod straight to Guaranteed. A BestEffort pod carries no class
+	// intent, so that is allowed: no step-down.
 	pod := sizedPod(nil, nil)
 	applyRecommendations(pod, appRecs(map[string]ballastv1.ResourceRecommendation{
 		"cpu":    {Request: "300m", Limit: "200m"},
 		"memory": {Request: "300Mi", Limit: "256Mi"},
 	}))
 	c := pod.Spec.Containers[0].Resources
-	assertQty(t, "cpu request", c.Requests[corev1.ResourceCPU], "199m")
-	if got := kube.PodQOS(pod.Spec.Containers); got != corev1.PodQOSBurstable {
-		t.Errorf("QoS = %s, want Burstable", got)
+	assertQty(t, "cpu request", c.Requests[corev1.ResourceCPU], "200m")
+	if got := kube.PodQOS(nil, pod.Spec.Containers); got != corev1.PodQOSGuaranteed {
+		t.Errorf("QoS = %s, want Guaranteed", got)
 	}
+}
+
+func TestApply_BestEffortPod_EqualRecommendations_Guaranteed(t *testing.T) {
+	// Request and limit recommendations that come out equal size an unsized pod
+	// as Guaranteed rather than leaving it unsized.
+	pod := sizedPod(nil, nil)
+	res := applyRecommendations(pod, appRecs(map[string]ballastv1.ResourceRecommendation{
+		"cpu":    {Request: "200m", Limit: "200m"},
+		"memory": {Request: "256Mi", Limit: "256Mi"},
+	}))
+	if !slices.Equal(res.applied, []string{"app"}) || len(res.pinned) != 0 {
+		t.Errorf("applied/pinned = %v/%v, want [app]/none", res.applied, res.pinned)
+	}
+	if got := kube.PodQOS(nil, pod.Spec.Containers); got != corev1.PodQOSGuaranteed {
+		t.Errorf("QoS = %s, want Guaranteed", got)
+	}
+}
+
+func TestApply_RecommendationLandsOnLimit_StepsDownToStayBurstable(t *testing.T) {
+	// memory already sits at its limit (an earlier clamp); the cpu
+	// recommendation lands exactly on the cpu limit. That is not a clamp, but it
+	// would still promote the Burstable pod to Guaranteed, so the cpu request
+	// Ballast writes goes one millicore under. The author's memory request is
+	// left alone.
+	pod := sizedPod(rl("cpu", "100m", "memory", "128Mi"), rl("cpu", "200m", "memory", "128Mi"))
+	res := applyRecommendations(pod, appRecs(map[string]ballastv1.ResourceRecommendation{
+		"cpu": {Request: "200m"},
+	}))
+	c := pod.Spec.Containers[0].Resources
+	assertQty(t, "cpu request", c.Requests[corev1.ResourceCPU], "199m")
+	assertQty(t, "memory request", c.Requests[corev1.ResourceMemory], "128Mi")
+	if len(res.pinned) != 0 {
+		t.Errorf("pinned = %v, want none", res.pinned)
+	}
+	if got := pod.Annotations[annotationApplied+"cpu-request"]; got != "199m" {
+		t.Errorf("applied cpu annotation = %q, want 199m", got)
+	}
+}
+
+func TestApply_PodLevelResources_DecideClass(t *testing.T) {
+	// With pod-level resources the class comes from pod.Spec.Resources, so a
+	// requests-only recommendation on a container cannot change it and is
+	// applied as is.
+	pod := sizedPod(rl("cpu", "100m", "memory", "128Mi"), rl("cpu", "100m", "memory", "128Mi"))
+	pod.Spec.Resources = &corev1.ResourceRequirements{
+		Requests: rl("cpu", "200m", "memory", "256Mi"),
+		Limits:   rl("cpu", "200m", "memory", "256Mi"),
+	}
+	res := applyRecommendations(pod, appRecs(map[string]ballastv1.ResourceRecommendation{
+		"cpu": {Request: "50m"},
+	}))
+	if !slices.Equal(res.applied, []string{"app"}) || len(res.pinned) != 0 {
+		t.Errorf("applied/pinned = %v/%v, want [app]/none", res.applied, res.pinned)
+	}
+	assertQty(t, "cpu request", pod.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU], "50m")
+}
+
+func TestApply_LimitOnlyBelowAuthorRequest_ReportsAuthorRequest(t *testing.T) {
+	// A limit-only recommendation below the author's request: the request is
+	// held at the new limit, and the clamp reports the author's request as the
+	// value that would otherwise have been written.
+	pod := sizedPod(rl("memory", "200Mi"), rl("memory", "256Mi"))
+	res := applyRecommendations(pod, appRecs(map[string]ballastv1.ResourceRecommendation{
+		"memory": {Limit: "150Mi"},
+	}))
+	assertClamps(t, res.clamps, kube.RequestClamp{Container: "app", Resource: "memory", Recommended: "200Mi", Limit: "150Mi", Applied: "150Mi"})
 }
 
 func TestApply_OnlyOffendingContainerDropped(t *testing.T) {
@@ -227,7 +293,7 @@ func TestApply_OnlyOffendingContainerDropped(t *testing.T) {
 	}
 	assertQty(t, "app cpu request", pod.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU], "100m")
 	assertQty(t, "otc cpu request", pod.Spec.Containers[1].Resources.Requests[corev1.ResourceCPU], "80m")
-	if got := kube.PodQOS(pod.Spec.Containers); got != corev1.PodQOSGuaranteed {
+	if got := kube.PodQOS(nil, pod.Spec.Containers); got != corev1.PodQOSGuaranteed {
 		t.Errorf("QoS = %s, want Guaranteed", got)
 	}
 }
@@ -253,7 +319,7 @@ func TestApply_InitContainers_OnlyRestartableClamped(t *testing.T) {
 	}
 	assertQty(t, "migrate cpu request", pod.Spec.InitContainers[0].Resources.Requests[corev1.ResourceCPU], "10m")
 	assertQty(t, "otc memory request", pod.Spec.InitContainers[1].Resources.Requests[corev1.ResourceMemory], "64Mi")
-	assertClamps(t, res.clamps, kube.RequestClamp{Container: "otc", Resource: "memory", Recommended: "100Mi", Limit: "64Mi"})
+	assertClamps(t, res.clamps, kube.RequestClamp{Container: "otc", Resource: "memory", Recommended: "100Mi", Limit: "64Mi", Applied: "64Mi"})
 }
 
 func TestApply_PerContainerDropInsufficient_PodLeftUnpatched(t *testing.T) {
