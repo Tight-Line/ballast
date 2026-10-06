@@ -773,7 +773,7 @@ func TestCapChange(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cur := resource.MustParse(tc.current)
 			rec := resource.MustParse(tc.recommended)
-			result := resourceadjuster.CapChange(cur, rec, tc.maxPct, tc.threshold)
+			result := resourceadjuster.CapChange(cur, rec, corev1.ResourceCPU, tc.maxPct, tc.threshold)
 			atMost := resource.MustParse(tc.wantAtMost)
 			atLeast := resource.MustParse(tc.wantAtLeast)
 			if result.Cmp(atMost) > 0 {
@@ -1229,7 +1229,7 @@ func TestCapChange_Memory(t *testing.T) {
 	// Memory uses BinarySI (bytes), not milli-units. Large move triggers the cap.
 	current := resource.MustParse("100Mi")
 	recommended := resource.MustParse("300Mi")
-	result := resourceadjuster.CapChange(current, recommended, 50, 20)
+	result := resourceadjuster.CapChange(current, recommended, corev1.ResourceMemory, 50, 20)
 	// gap = 200Mi, step = 200Mi * 50% = 100Mi; capped result = 200Mi,
 	// still >20% from 300Mi so no snap
 	expectedCap := resource.MustParse("200Mi")
@@ -1245,7 +1245,7 @@ func TestCapChange_CurrentZero(t *testing.T) {
 	// When current is zero, CapChange returns the recommended value directly.
 	current := resource.MustParse("0")
 	recommended := resource.MustParse("200m")
-	result := resourceadjuster.CapChange(current, recommended, 50, 20)
+	result := resourceadjuster.CapChange(current, recommended, corev1.ResourceMemory, 50, 20)
 	if result.Cmp(recommended) != 0 {
 		t.Errorf("CapChange with current=0: expected %s, got %s", recommended.String(), result.String())
 	}
@@ -1260,7 +1260,7 @@ func TestCapChange_ConvergesExactly(t *testing.T) {
 	rec := resource.MustParse("145m")
 	steps := 0
 	for resourceadjuster.ExceedsDrift(cur, rec, 20) {
-		cur = resourceadjuster.CapChange(cur, rec, 50, 20)
+		cur = resourceadjuster.CapChange(cur, rec, corev1.ResourceCPU, 50, 20)
 		steps++
 		if steps > 10 {
 			t.Fatalf("did not converge after %d steps; stuck at %s", steps, cur.String())

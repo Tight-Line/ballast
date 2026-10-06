@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -275,7 +276,7 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 	// evaluation forever, since the class can only change on pod recreation.
 	all := append(slices.Clone(pod.Spec.InitContainers), pod.Spec.Containers...)
 	adjusted := append(adjustedContainers(pod.Spec.InitContainers, adjustments), adjustedContainers(pod.Spec.Containers, adjustments)...)
-	if cur, next := kube.PodQOS(all), kube.PodQOS(adjusted); cur != next {
+	if cur, next := kube.PodQOS(pod.Spec.Resources, all), kube.PodQOS(pod.Spec.Resources, adjusted); cur != next {
 		log.Info("resize would change pod QoS class, which Kubernetes forbids; skipping",
 			append(logFields, "qos_current", string(cur), "qos_after", string(next))...)
 		r.rec.ResizeSkipped(ctx, "qos_pinned", pid, policyName, pod.Namespace)
@@ -289,13 +290,11 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 	}
 
 	for _, cl := range clamps {
-		log.Info("recommended request exceeds the container limit; clamping request to the limit",
+		log.Info("recommended request exceeds the container limit; holding the request at or below the limit",
 			append(logFields, "container", cl.Container, "resource", cl.Resource,
-				"recommended", cl.Recommended, "limit", cl.Limit, "phase", "resize")...)
+				"recommended", cl.Recommended, "limit", cl.Limit, "applied", cl.Applied, "phase", "resize")...)
 		r.rec.RecommendationClamped(ctx, pid, cl.Container, cl.Resource, policyName, pod.Namespace, "resize")
-		r.emitEvent(ctx, pod, corev1.EventTypeWarning, "RequestClampedToLimit",
-			fmt.Sprintf("container %s: recommended %s request %s exceeds its limit %s; request clamped to the limit",
-				cl.Container, cl.Resource, cl.Recommended, cl.Limit))
+		r.emitEvent(ctx, pod, corev1.EventTypeWarning, "RequestClampedToLimit", clampMessage(cl))
 	}
 
 	if err := r.ResizePod(ctx, pod, adjustments); err != nil {
@@ -382,35 +381,57 @@ func computeAdjustments(
 		atLimit = append(atLimit, held...)
 	}
 
-	if len(clamps) > 0 {
-		preserveClassAfterClamp(pod, result, clamps)
+	stepDownToKeepClass(pod, result)
+
+	// Record what each clamped request was finally set to (after any step-down).
+	byName := make(map[string]ContainerAdjustment, len(result))
+	for _, adj := range result {
+		byName[adj.Name] = adj
+	}
+	for i := range clamps {
+		applied := byName[clamps[i].Container].Requests[corev1.ResourceName(clamps[i].Resource)]
+		clamps[i].Applied = applied.String()
 	}
 
 	slices.Sort(notResizable)
 	return result, slices.Compact(notResizable), clamps, atLimit
 }
 
-// preserveClassAfterClamp undoes the one QoS change clamping can cause. Holding
-// a request at exactly its limit can make the pod's last unequal cpu/memory
-// pair equal and promote a Burstable pod to Guaranteed, which in-place resize
-// forbids. In that case each clamped request is stepped one unit below its
-// limit instead. (A Guaranteed result means every cpu/memory request equals its
-// limit, so every clamped request sits exactly at its limit.) A pod that is
-// already Guaranteed stays at the limit, which keeps it Guaranteed.
-func preserveClassAfterClamp(pod *corev1.Pod, adjustments []ContainerAdjustment, clamps []kube.RequestClamp) {
+// stepDownToKeepClass undoes a promotion to Guaranteed, which in-place resize
+// forbids. A request this adjustment moves to exactly its limit (by a clamp, or
+// a recommendation that lands on the limit) can make the pod's last unequal
+// cpu/memory pair equal; each such request is stepped one unit below its limit
+// instead. Requests the adjustment leaves alone are not touched; if the
+// promotion comes from somewhere else (a limit moving down onto its request),
+// the resize is still caught as qos_pinned. A pod that is already Guaranteed
+// stays at the limit, which keeps it Guaranteed.
+func stepDownToKeepClass(pod *corev1.Pod, adjustments []ContainerAdjustment) {
 	all := append(slices.Clone(pod.Spec.InitContainers), pod.Spec.Containers...)
 	adjusted := append(adjustedContainers(pod.Spec.InitContainers, adjustments), adjustedContainers(pod.Spec.Containers, adjustments)...)
-	if kube.PodQOS(adjusted) != corev1.PodQOSGuaranteed || kube.PodQOS(all) == corev1.PodQOSGuaranteed {
+	if kube.PodQOS(pod.Spec.Resources, adjusted) != corev1.PodQOSGuaranteed ||
+		kube.PodQOS(pod.Spec.Resources, all) == corev1.PodQOSGuaranteed {
 		return
 	}
-	byName := make(map[string]*ContainerAdjustment, len(adjustments))
+	current := make(map[string]corev1.ResourceList, len(all))
+	for _, c := range all {
+		current[c.Name] = c.Resources.Requests
+	}
 	for i := range adjustments {
-		byName[adjustments[i].Name] = &adjustments[i]
+		adj := &adjustments[i]
+		for _, res := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+			req, lim := adj.Requests[res], adj.Limits[res]
+			cur := current[adj.Name][res]
+			if req.Cmp(lim) == 0 && req.Cmp(cur) != 0 {
+				adj.Requests[res] = kube.StepDown(lim, res)
+			}
+		}
 	}
-	for _, cl := range clamps {
-		adj, res := byName[cl.Container], corev1.ResourceName(cl.Resource)
-		adj.Requests[res] = kube.StepDown(adj.Limits[res], res)
-	}
+}
+
+// clampMessage is the RequestClampedToLimit event text for one clamp.
+func clampMessage(cl kube.RequestClamp) string {
+	return fmt.Sprintf("container %s: recommended %s request %s exceeds its limit %s; request set to %s, held at or below the limit",
+		cl.Container, cl.Resource, cl.Recommended, cl.Limit, cl.Applied)
 }
 
 // computeContainerAdjustment evaluates every recommended field for one container
@@ -501,8 +522,11 @@ func evaluateRequest(
 			clampedFrom, target = &recommended, limit
 		}
 		if ExceedsDrift(current, target, threshold) {
-			adj.Requests[resName] = CapChange(current, target, maxChange, threshold)
-			changed = true
+			// A capped step that rounds back to the current value is not a change.
+			if capped := CapChange(current, target, resName, maxChange, threshold); capped.Cmp(current) != 0 {
+				adj.Requests[resName] = capped
+				changed = true
+			}
 		}
 		heldAtLimit = clampedFrom != nil
 	}
@@ -541,7 +565,8 @@ func fieldDrifts(recValue string, threshold float64, current resource.Quantity) 
 }
 
 // evaluateField records the capped target for one field in dst when the recommended
-// value parses and drifts beyond threshold; it returns whether the field drifted.
+// value parses and drifts beyond threshold; it returns whether the field changed.
+// A capped step that rounds back to the current value is not a change.
 // An empty recValue parses to an error and is treated as "no recommendation".
 func evaluateField(
 	dst corev1.ResourceList,
@@ -554,7 +579,11 @@ func evaluateField(
 	if err != nil || !ExceedsDrift(current, recommended, threshold) {
 		return false
 	}
-	dst[resName] = CapChange(current, recommended, maxChange, threshold)
+	capped := CapChange(current, recommended, resName, maxChange, threshold)
+	if capped.Cmp(current) == 0 {
+		return false
+	}
+	dst[resName] = capped
 	return true
 }
 
@@ -613,8 +642,11 @@ func exceedsDriftFloat(cur, rec, thresholdPct float64) bool {
 // maxChangePct% of the gap between current and recommended. When the capped
 // step would land within thresholdPct of the recommendation (so the next
 // cycle's drift check would not fire), the recommendation is applied exactly
-// instead of parking the value just inside the drift band forever.
-func CapChange(current, recommended resource.Quantity, maxChangePct, thresholdPct float64) resource.Quantity {
+// instead of parking the value just inside the drift band forever. A capped cpu
+// value is rounded to the nearest millicore and anything else to the nearest
+// whole unit (byte), chosen by res rather than by how recommended happens to be
+// written: a whole-core value such as "2" is still cpu.
+func CapChange(current, recommended resource.Quantity, res corev1.ResourceName, maxChangePct, thresholdPct float64) resource.Quantity {
 	cur := current.AsApproximateFloat64()
 	rec := recommended.AsApproximateFloat64()
 
@@ -638,10 +670,10 @@ func CapChange(current, recommended resource.Quantity, maxChangePct, thresholdPc
 		return recommended
 	}
 
-	if strings.HasSuffix(recommended.String(), "m") {
-		return *resource.NewMilliQuantity(int64(capped*1000), resource.DecimalSI)
+	if res == corev1.ResourceCPU {
+		return *resource.NewMilliQuantity(int64(math.Round(capped*1000)), resource.DecimalSI)
 	}
-	return *resource.NewQuantity(int64(capped), resource.BinarySI)
+	return *resource.NewQuantity(int64(math.Round(capped)), resource.BinarySI)
 }
 
 // currentValue returns the current value for a resource from a ResourceList,

@@ -156,7 +156,7 @@ Dry-run (`--dry-run-measure`) skips steps 5 and 10. Kill switch skips both.
 Triggered by `WorkloadProfile` status changes and a periodic requeue timer (`behaviors.resize.interval`, default 15 minutes). For each pod at `mode: resize` and a ready profile:
 1. Calls `ExceedsDrift(current, recommended, thresholdPct)` per container/resource/field
 2. If drift exceeded, calls `CapChange(current, recommended, maxChangePct, thresholdPct)` to bound the adjustment to `maxChangePct`% of the current→recommended gap; a capped step landing within the drift threshold applies the recommendation exactly (no Zeno tail)
-3. Clamps each request to the limit the patch leaves in place before the drift check (one unit lower if the clamp would make the pod Guaranteed); skips as `qos_pinned` if the adjustment would still change the pod's QoS class; each clamp gets a `RequestClampedToLimit` Warning event, an info log, and `ballast.recommendation.clamped{phase="resize"}` (#119)
+3. Clamps each request to the limit the patch leaves in place before the drift check (a request it writes at exactly its limit goes one unit lower if that would make the pod Guaranteed); skips as `qos_pinned` if the adjustment would still change the pod's QoS class; each clamp gets a `RequestClampedToLimit` Warning event, an info log, and `ballast.recommendation.clamped{phase="resize"}` (#119)
 4. Issues the resize patch via the pod resize subresource
 5. On failure (node pressure, infeasible): emits a Kubernetes Event and stamps `resize-blocked` annotation; retries on next cycle
 
@@ -170,7 +170,7 @@ Flow:
 1. Kill switch active → allow without mutation; log `warn`
 2. `ValidateMode` fails (mode label present with an unrecognized value) → deny with descriptive message
 3. Profile not ready (`meetsThreshold` false) → allow without mutation
-4. `mode: apply` or `mode: resize` + profile ready → patch container `resources.requests` and `resources.limits` per profile recommendations; stamp `policy-ref` annotation. A request above the resulting limit is clamped to it (one unit lower if that would promote the pod to Guaranteed), stamped as `clamped-<resource>-request`, logged, and counted in `ballast.recommendation.clamped{phase="admission"}`. The pod's QoS class (`kube.PodQOS`) may change only from BestEffort to Burstable; otherwise the offending containers' recommendations are dropped (the whole pod's, if that is not enough) and `ballast.apply.skipped{reason="qos_pinned"}` is recorded when nothing is left to apply (#119)
+4. `mode: apply` or `mode: resize` + profile ready → patch container `resources.requests` and `resources.limits` per profile recommendations; stamp `policy-ref` annotation. A request above the resulting limit is clamped to it, stamped as `clamped-<resource>-request`, logged, and counted in `ballast.recommendation.clamped{phase="admission"}`; a request Ballast writes at exactly its limit goes one unit lower if it would promote a Burstable pod to Guaranteed. A Burstable or Guaranteed pod keeps its QoS class (`kube.PodQOS`, which honors pod-level resources); a BestEffort pod may take any class. Otherwise the offending containers' recommendations are dropped (the whole pod's, if that is not enough) and `ballast.apply.skipped{reason="qos_pinned"}` is recorded when nothing is left to apply (#119)
 5. Dry-run (`--dry-run-apply`) → log the patch, admit without mutation
 
 TLS: the Helm chart creates a cert-manager `Issuer` + `Certificate` (self-signed). cert-manager injects the `caBundle` into `MutatingWebhookConfiguration` automatically.

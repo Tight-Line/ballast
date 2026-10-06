@@ -171,10 +171,10 @@ func (m *PodMutator) mutate(ctx context.Context, pod *corev1.Pod, profile *balla
 	// The pod does not exist yet, so there is nothing to attach an Event to; the
 	// clamped-<resource>-request annotation carries the finding on the pod.
 	for _, cl := range result.clamps {
-		log.Info("recommended request exceeds the container limit; clamping request to the limit",
+		log.Info("request exceeds the container limit; holding the request at or below the limit",
 			"pod", pod.Name, "namespace", pod.Namespace, "profile", profile.Name,
 			"container", cl.Container, "resource", cl.Resource,
-			"recommended", cl.Recommended, "limit", cl.Limit, "phase", "admission")
+			"recommended", cl.Recommended, "limit", cl.Limit, "applied", cl.Applied, "phase", "admission")
 		m.rec.RecommendationClamped(ctx, pid, cl.Container, cl.Resource, policyRef, pod.Namespace, "admission")
 	}
 
@@ -246,9 +246,11 @@ type containerPatch struct {
 // applyRecommendations patches container resources and records applied-* (and
 // clamped-*) annotations.
 //
-// The pod's QoS class may change only from BestEffort to Burstable, which is how
-// an unsized pod gets sized. A request clamped to its limit that would promote
-// the pod to Guaranteed is stepped one unit below the limit instead. Any other
+// A Burstable or Guaranteed pod keeps the QoS class its author gave it. A
+// BestEffort pod carries no class intent, so sizing it may give it any class.
+// When requests Ballast writes at exactly their limit (by a clamp, or a
+// recommendation that lands on the limit) would promote a Burstable pod to
+// Guaranteed, they are stepped one unit below the limit instead. Any other
 // class change drops the recommendations of the containers whose own class they
 // change, keeping the author's values; if that still leaves the pod in a
 // different class, no container is patched.
@@ -271,22 +273,22 @@ func applyRecommendations(pod *corev1.Pod, profile *ballastv1.WorkloadProfile) a
 		}
 	}
 
-	original := kube.PodQOS(withPatches(pod, nil))
-	if original != corev1.PodQOSGuaranteed && kube.PodQOS(withPatches(pod, patches)) == corev1.PodQOSGuaranteed {
-		stepDownClamps(patches)
+	original := podQOS(pod, nil)
+	if original == corev1.PodQOSBurstable && podQOS(pod, patches) == corev1.PodQOSGuaranteed {
+		stepDownWrittenRequests(patches)
 	}
 
 	var result applyResult
-	if !admissionQOSAllowed(original, kube.PodQOS(withPatches(pod, patches))) {
+	if !admissionQOSAllowed(original, podQOS(pod, patches)) {
 		var kept []*containerPatch
 		for _, p := range patches {
-			if admissionQOSAllowed(kube.PodQOS([]corev1.Container{*p.target}), kube.PodQOS([]corev1.Container{p.patched})) {
+			if admissionQOSAllowed(kube.PodQOS(nil, []corev1.Container{*p.target}), kube.PodQOS(nil, []corev1.Container{p.patched})) {
 				kept = append(kept, p)
 			} else {
 				result.pinned = append(result.pinned, p.target.Name)
 			}
 		}
-		if !admissionQOSAllowed(original, kube.PodQOS(withPatches(pod, kept))) {
+		if !admissionQOSAllowed(original, podQOS(pod, kept)) {
 			kept, result.pinned = nil, nil
 			for _, p := range patches {
 				result.pinned = append(result.pinned, p.target.Name)
@@ -299,15 +301,25 @@ func applyRecommendations(pod *corev1.Pod, profile *ballastv1.WorkloadProfile) a
 		*p.target = p.patched
 		maps.Copy(pod.Annotations, p.annotations)
 		result.applied = append(result.applied, p.target.Name)
-		result.clamps = append(result.clamps, p.clamps...)
+		for _, cl := range p.clamps {
+			applied := p.patched.Resources.Requests[corev1.ResourceName(cl.Resource)]
+			cl.Applied = applied.String()
+			result.clamps = append(result.clamps, cl)
+		}
 	}
 	return result
 }
 
 // admissionQOSAllowed reports whether admission may move a pod from QoS class
-// from to class to: unchanged, or BestEffort to Burstable.
+// from to class to: unchanged, or anything from BestEffort.
 func admissionQOSAllowed(from, to corev1.PodQOSClass) bool {
-	return from == to || (from == corev1.PodQOSBestEffort && to == corev1.PodQOSBurstable)
+	return from == to || from == corev1.PodQOSBestEffort
+}
+
+// podQOS is the pod's QoS class with each patched container substituted for
+// its target.
+func podQOS(pod *corev1.Pod, patches []*containerPatch) corev1.PodQOSClass {
+	return kube.PodQOS(pod.Spec.Resources, withPatches(pod, patches))
 }
 
 // withPatches returns the pod's init and regular containers, with each patched
@@ -330,18 +342,21 @@ func withPatches(pod *corev1.Pod, patches []*containerPatch) []corev1.Container 
 	return out
 }
 
-// stepDownClamps moves every cpu/memory request clamped to its limit one unit
-// below the limit, so the clamp does not promote the pod to Guaranteed.
-func stepDownClamps(patches []*containerPatch) {
+// stepDownWrittenRequests moves every cpu/memory request Ballast wrote (it
+// carries an applied-<resource>-request annotation) that sits exactly at its
+// limit one unit below the limit, so the write does not promote the pod to
+// Guaranteed. Requests the author set are left alone.
+func stepDownWrittenRequests(patches []*containerPatch) {
 	for _, p := range patches {
-		for _, cl := range p.clamps {
-			res := corev1.ResourceName(cl.Resource)
-			if !kube.IsQOSResource(res) {
+		for _, res := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+			key := annotationApplied + string(res) + "-request"
+			req, lim := p.patched.Resources.Requests[res], p.patched.Resources.Limits[res]
+			if _, written := p.annotations[key]; !written || req.Cmp(lim) != 0 {
 				continue
 			}
-			stepped := kube.StepDown(p.patched.Resources.Limits[res], res)
+			stepped := kube.StepDown(lim, res)
 			p.patched.Resources.Requests[res] = stepped
-			p.annotations[annotationApplied+cl.Resource+"-request"] = stepped.String()
+			p.annotations[key] = stepped.String()
 		}
 	}
 }
@@ -357,7 +372,9 @@ func containerProfilesByName(profile *ballastv1.WorkloadProfile) map[string]ball
 // buildContainerPatch applies c's recommendations to a copy of c, or returns nil
 // when the profile has none for it. A request above the resulting limit (the
 // recommended limit, else the container's own) is clamped to that limit and
-// recorded in a clamped-<resource>-request annotation holding the pre-clamp value.
+// recorded in a clamped-<resource>-request annotation holding the request that
+// would otherwise have been written (the recommendation, or the author's own
+// request when only the limit was recommended).
 func buildContainerPatch(c *corev1.Container, byName map[string]ballastv1.ContainerProfile) *containerPatch {
 	cp, ok := byName[c.Name]
 	if !ok || len(cp.Recommendations) == 0 {

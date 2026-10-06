@@ -90,8 +90,23 @@ type clampOutcome struct {
 // reconcileClamp reconciles one pod against recs and captures the outcome.
 func reconcileClamp(t *testing.T, pod *corev1.Pod, recs map[string]ballastv1.ResourceRecommendation) clampOutcome {
 	t.Helper()
+	return reconcileClampUnder(t, noResizePolicy(), pod, recs)
+}
+
+// tightPolicy is noResizePolicy with a 10% resize threshold, so capped 50%
+// steps land outside the drift band instead of snapping to the target.
+func tightPolicy() *ballastv1.ClusterResourcePolicy {
+	p := noResizePolicy()
+	p.Spec.Behaviors.Thresholds.Default = "10%"
+	p.Spec.Behaviors.Thresholds.Resize.Default = "10%"
+	return p
+}
+
+// reconcileClampUnder is reconcileClamp under the given policy.
+func reconcileClampUnder(t *testing.T, policy *ballastv1.ClusterResourcePolicy, pod *corev1.Pod, recs map[string]ballastv1.ResourceRecommendation) clampOutcome {
+	t.Helper()
 	profile := readyProfileWithRecs(recs)
-	fc := newFakeClient(profile, noResizePolicy(), pod)
+	fc := newFakeClient(profile, policy, pod)
 	rec, reg := newMetricsRecorder(t)
 	r := resourceadjuster.New(fc, inactiveKS(t), false, rec)
 	out := clampOutcome{reg: reg}
@@ -344,16 +359,85 @@ func TestReconcile_RecommendationAboveLoweredLimit_RequestHeldAtLimit(t *testing
 }
 
 func TestReconcile_ClampReport_CarriesRecommendation(t *testing.T) {
-	// The event message names the recommended request and the limit.
+	// The event message names the recommended request, the limit, and the
+	// request actually written: here a capped step toward the clamped target,
+	// not the limit itself.
 	pod := resourcesPod(rl("cpu", "100m"), rl("cpu", "200m"))
 	o := reconcileClamp(t, pod, map[string]ballastv1.ResourceRecommendation{
 		"cpu": {Request: "500m"},
 	})
-	want := "container app: recommended cpu request 500m exceeds its limit 200m; request clamped to the limit"
+	want := "container app: recommended cpu request 500m exceeds its limit 200m; request set to 150m, held at or below the limit"
 	for _, e := range o.events {
 		if e.Reason == "RequestClampedToLimit" && e.Message == want {
 			return
 		}
 	}
 	t.Errorf("no RequestClampedToLimit event with message %q in %+v", want, o.events)
+}
+
+func TestReconcile_WholeCoreLimits_CappedStepsInMillicores(t *testing.T) {
+	// Limits (and recommendations) written in whole cores print without an
+	// "m" suffix. Capped steps must still be computed in millicores, not
+	// truncated to whole cores.
+	cases := []struct {
+		name                string
+		request, limit, rec string
+		wantRequest         string
+	}{
+		// 600m toward the 1-core limit: 50% of the gap is 800m (was truncated to 0).
+		{"600m toward a 1-core limit", "600m", "1", "1500m", "800m"},
+		// 1500m toward the 2-core limit: 1750m (was truncated down to 1).
+		{"1500m toward a 2-core limit", "1500m", "2", "3", "1750m"},
+		// 1 core toward the 2-core limit: 1500m (was truncated back to 1, a
+		// no-op resize every interval).
+		{"1 core toward a 2-core limit", "1", "2", "3", "1500m"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := resourcesPod(rl("cpu", tc.request), rl("cpu", tc.limit))
+			o := reconcileClampUnder(t, tightPolicy(), pod, map[string]ballastv1.ResourceRecommendation{
+				"cpu": {Request: tc.rec},
+			})
+			assertQuantity(t, "cpu request", o.request(t, corev1.ResourceCPU), tc.wantRequest)
+			assertQuantity(t, "cpu limit", o.limit(t, corev1.ResourceCPU), tc.limit)
+			assertClamped(t, o, "cpu")
+		})
+	}
+}
+
+func TestReconcile_WholeCoreRecommendation_NoLimit_CappedInMillicores(t *testing.T) {
+	// "2000m" parses and prints as "2"; the capped step is still 1300m.
+	pod := resourcesPod(rl("cpu", "600m"), nil)
+	o := reconcileClampUnder(t, tightPolicy(), pod, map[string]ballastv1.ResourceRecommendation{
+		"cpu": {Request: "2000m"},
+	})
+	assertQuantity(t, "cpu request", o.request(t, corev1.ResourceCPU), "1300m")
+	assertNotClamped(t, o)
+}
+
+func TestReconcile_CappedStepRoundsToCurrent_NoResize(t *testing.T) {
+	// At 3m with a 2m recommendation, half the gap is 2.5m, which rounds back
+	// to 3m for both the request and the limit. That is not a change, so no
+	// no-op resize is issued.
+	pod := resourcesPod(rl("cpu", "3m"), rl("cpu", "3m"))
+	o := reconcileClampUnder(t, tightPolicy(), pod, map[string]ballastv1.ResourceRecommendation{
+		"cpu": {Request: "2m", Limit: "2m"},
+	})
+	assertSkipped(t, o, "no_drift")
+}
+
+func TestReconcile_RecommendationLandsOnLimit_StepsDownToStayBurstable(t *testing.T) {
+	// memory already sits at its limit (an earlier clamp); the cpu
+	// recommendation lands exactly on the cpu limit. That is not a clamp, but it
+	// would promote the Burstable pod to Guaranteed, which in-place resize
+	// forbids, so the cpu request goes one millicore under instead of the pod
+	// being qos_pinned every interval. Memory, which this resize does not
+	// move, is left alone.
+	pod := resourcesPod(rl("cpu", "150m", "memory", "128Mi"), rl("cpu", "200m", "memory", "128Mi"))
+	o := reconcileClamp(t, pod, map[string]ballastv1.ResourceRecommendation{
+		"cpu": {Request: "200m"},
+	})
+	assertQuantity(t, "cpu request", o.request(t, corev1.ResourceCPU), "199m")
+	assertQuantity(t, "memory request", o.request(t, corev1.ResourceMemory), "128Mi")
+	assertNotClamped(t, o)
 }

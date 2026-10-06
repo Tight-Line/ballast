@@ -345,7 +345,8 @@ func (r *Recorder) ApplyApplied(ctx context.Context, id ProfileID, policy, names
 // dry_run, qos_pinned. policy is empty when the skip happens before policy
 // resolution (no_profile, not_ready). qos_pinned means every recommendation that
 // would have been applied was dropped because it changed the pod's QoS class in
-// a way admission does not allow (anything but BestEffort to Burstable).
+// a way admission does not allow (a Burstable or Guaranteed pod keeps its class;
+// a BestEffort pod may take any).
 func (r *Recorder) ApplySkipped(ctx context.Context, reason string, id ProfileID, policy, namespace string) {
 	if r == nil {
 		return
@@ -372,7 +373,7 @@ func (r *Recorder) WebhookMutation(ctx context.Context, result, namespace string
 }
 
 // RecommendationClamped records a container request held at the container's limit
-// because the request Ballast would otherwise have written exceeded it (#119). A
+// because the request that would otherwise have been written exceeded it (#119). A
 // steady stream for one workload means its limit sits below observed usage plus
 // headroom. phase is "admission" (webhook) or "resize" (resource adjuster).
 func (r *Recorder) RecommendationClamped(ctx context.Context, id ProfileID, container, resource, policy, namespace, phase string) {
