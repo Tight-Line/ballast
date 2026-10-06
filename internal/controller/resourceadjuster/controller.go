@@ -243,17 +243,26 @@ func (r *Reconciler) reconcilePod(ctx context.Context, pod *corev1.Pod, profile 
 	}
 
 	recsByName := containerRecsByName(profile)
-	adjustments, notResizable, clamps := computeAdjustments(pod, recsByName, behaviors)
+	adjustments, notResizable, clamps, atLimit := computeAdjustments(pod, recsByName, behaviors)
 	if len(notResizable) > 0 {
 		log.V(1).Info("excluding drifted resources the resize subresource cannot mutate",
 			"pod", pod.Name, "namespace", pod.Namespace, "resources", notResizable)
 	}
 	if len(adjustments) == 0 {
 		// The skip reason describes the whole pod: not_resizable when the only
-		// actionable drift was on resources in-place resize cannot touch.
+		// actionable drift was on resources in-place resize cannot touch;
+		// clamped_at_limit when the only thing between the pod and its
+		// recommendation is a limit its requests already sit at (#119). Pending
+		// drift outranks the steady state, so not_resizable wins over
+		// clamped_at_limit.
 		reason := "no_drift"
-		if len(notResizable) > 0 {
+		switch {
+		case len(notResizable) > 0:
 			reason = "not_resizable"
+		case len(atLimit) > 0:
+			log.V(1).Info("requests held at their limit; recommendations exceed it",
+				"pod", pod.Name, "namespace", pod.Namespace, "resources", atLimit)
+			reason = "clamped_at_limit"
 		}
 		r.rec.ResizeSkipped(ctx, reason, pid, policyName, pod.Namespace)
 		return nil
@@ -328,12 +337,14 @@ type ContainerAdjustment struct {
 // computeAdjustments returns one adjustment per container that has drifted
 // beyond threshold for at least one resizable field, plus the sorted, deduplicated
 // names of drifted resources that were excluded because the resize subresource
-// cannot mutate them, and the requests held at their container's limit (#119).
+// cannot mutate them, the requests this adjustment clamps to their container's
+// limit, and the "container/resource" names of requests already held at their
+// limit by an earlier clamp (#119).
 func computeAdjustments(
 	pod *corev1.Pod,
 	recsByName map[string]map[string]ballastv1.ResourceRecommendation,
 	behaviors ballastv1.BehaviorConfig,
-) (result []ContainerAdjustment, notResizable []string, clamps []kube.RequestClamp) {
+) (result []ContainerAdjustment, notResizable []string, clamps []kube.RequestClamp, atLimit []string) {
 	maxChange := ResolveMaxChangePercent(behaviors)
 
 	for _, c := range pod.Spec.Containers {
@@ -341,12 +352,13 @@ func computeAdjustments(
 		if !ok || len(recs) == 0 {
 			continue
 		}
-		adj, drifted, skipped, clamped := computeContainerAdjustment(c, recs, behaviors, maxChange)
+		adj, drifted, skipped, clamped, held := computeContainerAdjustment(c, recs, behaviors, maxChange)
 		if drifted {
 			result = append(result, adj)
 			clamps = append(clamps, clamped...)
 		}
 		notResizable = append(notResizable, skipped...)
+		atLimit = append(atLimit, held...)
 	}
 
 	// Restartable-init "native sidecars" are resized in place too (#30); the
@@ -361,12 +373,13 @@ func computeAdjustments(
 		if !ok || len(recs) == 0 {
 			continue
 		}
-		adj, drifted, skipped, clamped := computeContainerAdjustment(c, recs, behaviors, maxChange)
+		adj, drifted, skipped, clamped, held := computeContainerAdjustment(c, recs, behaviors, maxChange)
 		if drifted {
 			result = append(result, adj)
 			clamps = append(clamps, clamped...)
 		}
 		notResizable = append(notResizable, skipped...)
+		atLimit = append(atLimit, held...)
 	}
 
 	if len(clamps) > 0 {
@@ -374,7 +387,7 @@ func computeAdjustments(
 	}
 
 	slices.Sort(notResizable)
-	return result, slices.Compact(notResizable), clamps
+	return result, slices.Compact(notResizable), clamps, atLimit
 }
 
 // preserveClassAfterClamp undoes the one QoS change clamping can cause. Holding
@@ -403,20 +416,22 @@ func preserveClassAfterClamp(pod *corev1.Pod, adjustments []ContainerAdjustment,
 // computeContainerAdjustment evaluates every recommended field for one container
 // and returns the capped adjustment, whether any resizable field drifted beyond
 // threshold, the drifted resources that were excluded as not resizable, and the
-// requests held at the container's limit. Recommendations for resources the
-// resize subresource cannot mutate (anything other than cpu and memory) are
-// applied only at admission time by the webhook.
+// requests clamped to the container's limit by this adjustment, and the
+// "container/resource" names of requests already held at the limit.
+// Recommendations for resources the resize subresource cannot mutate (anything
+// other than cpu and memory) are applied only at admission time by the webhook.
 //
 // A request never exceeds the limit the patch leaves in place: the new limit
 // when one is recommended and drifts, otherwise the container's current limit.
 // Drift is measured from the current request to the clamped target, so a pod
-// already held at its limit reports no drift instead of resizing every interval.
+// already held at its limit does not resize every interval; it is reported in
+// atLimit instead.
 func computeContainerAdjustment(
 	c corev1.Container,
 	recs map[string]ballastv1.ResourceRecommendation,
 	behaviors ballastv1.BehaviorConfig,
 	maxChange float64,
-) (adj ContainerAdjustment, drifted bool, notResizable []string, clamps []kube.RequestClamp) {
+) (adj ContainerAdjustment, drifted bool, notResizable []string, clamps []kube.RequestClamp, atLimit []string) {
 	adj = ContainerAdjustment{
 		Name:     c.Name,
 		Requests: c.Resources.Requests.DeepCopy(),
@@ -448,13 +463,17 @@ func computeContainerAdjustment(
 			currentValue(c.Resources.Limits, resName)) {
 			drifted = true
 		}
-		if evaluateRequest(&adj, resName, rec.Request,
+		changed, held := evaluateRequest(&adj, resName, rec.Request,
 			ResolveFieldThreshold(behaviors, res, "request"), maxChange,
-			currentValue(c.Resources.Requests, resName), &clamps) {
+			currentValue(c.Resources.Requests, resName), &clamps)
+		if changed {
 			drifted = true
 		}
+		if held {
+			atLimit = append(atLimit, c.Name+"/"+res)
+		}
 	}
-	return adj, drifted, notResizable, clamps
+	return adj, drifted, notResizable, clamps, atLimit
 }
 
 // evaluateRequest is evaluateField for a request, bounded by the limit in
@@ -462,7 +481,10 @@ func computeContainerAdjustment(
 // limit is clamped to it before the drift check, and a request that would still
 // exceed it (a capped step down toward a newly lowered limit) is held at the
 // limit. Each clamp that changes the request is appended to clamps. Returns
-// whether the request changed.
+// whether the request changed, and whether it is held at the limit: the
+// recommendation exceeds the limit, but the request is already within threshold
+// of the clamped target, so only the limit stands between it and the
+// recommendation.
 func evaluateRequest(
 	adj *ContainerAdjustment,
 	resName corev1.ResourceName,
@@ -470,7 +492,7 @@ func evaluateRequest(
 	threshold, maxChange float64,
 	current resource.Quantity,
 	clamps *[]kube.RequestClamp,
-) (changed bool) {
+) (changed, heldAtLimit bool) {
 	limit, hasLimit := adj.Limits[resName]
 	var clampedFrom *resource.Quantity
 	if recommended, err := resource.ParseQuantity(recValue); err == nil {
@@ -482,6 +504,7 @@ func evaluateRequest(
 			adj.Requests[resName] = CapChange(current, target, maxChange, threshold)
 			changed = true
 		}
+		heldAtLimit = clampedFrom != nil
 	}
 	if req, ok := adj.Requests[resName]; ok && hasLimit && req.Cmp(limit) > 0 {
 		if clampedFrom == nil {
@@ -498,7 +521,7 @@ func evaluateRequest(
 			Limit:       limit.String(),
 		})
 	}
-	return changed
+	return changed, heldAtLimit && !changed
 }
 
 // resizableResource reports whether the pod resize subresource can mutate the

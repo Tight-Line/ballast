@@ -302,12 +302,15 @@ func (r *Recorder) ResizeFailed(ctx context.Context, id ProfileID, policy, names
 
 // ResizeSkipped records a resize evaluation that was skipped without issuing a patch.
 // reason is one of: cooldown, blocked, no_drift, kill_switch, not_ready, no_policy,
-// dry_run, not_resizable, qos_pinned. policy and namespace are empty for profile-level
+// dry_run, not_resizable, qos_pinned, clamped_at_limit. policy and namespace are empty for profile-level
 // skips (kill_switch, not_ready, no_policy), which are not scoped to a single pod.
 // Reasons describe the whole pod evaluation: not_resizable means the only drift found
 // was on resources the resize subresource cannot mutate (only cpu and memory are
 // in-place resizable); qos_pinned means the adjustment would change the pod's QoS
 // class, which in-place resize forbids (the pod can only be sized at admission);
+// clamped_at_limit means nothing drifted only because one or more requests
+// already sit at their container's limit while the recommendation exceeds it
+// (the steady state after a clamp, #119; not_resizable wins when both apply);
 // blocked means the pod's most recent resize failed and the retry backoff (one resize
 // interval) has not yet elapsed.
 func (r *Recorder) ResizeSkipped(ctx context.Context, reason string, id ProfileID, policy, namespace string) {
