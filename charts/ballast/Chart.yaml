@@ -18,6 +18,6 @@ maintainers:
     email: hello@tightlinesoftware.com
 dependencies:
   - name: valkey
-    version: ">=0.1.0"
+    version: "0.12.1"
     repository: "https://valkey-io.github.io/valkey-helm/"
     condition: valkey.enabled
