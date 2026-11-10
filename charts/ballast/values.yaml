@@ -159,6 +159,15 @@ ballastConfig:
 valkey:
   enabled: true
 
+  # Alpine variant of the subchart's Valkey release. The subchart defaults to
+  # the Debian-based tag (its appVersion), which carries dozens of OS-package
+  # CVEs in libraries Valkey never loads; the Alpine image scans nearly clean.
+  # The subchart's init script is POSIX sh, so busybox runs it unchanged.
+  # Keep this tag in step with the subchart's appVersion when bumping the
+  # valkey dependency in Chart.yaml.
+  image:
+    tag: "9.1.3-alpine"
+
   # A ReadWriteOnce PVC (below) cannot be mounted by a new pod while the old
   # pod still holds it, so a RollingUpdate deadlocks. Recreate terminates the
   # old pod first. Single replica, so there is no availability cost.
