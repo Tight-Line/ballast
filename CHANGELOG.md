@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Go toolchain moved to 1.26.10**, clearing 12 standard library advisories reachable from Ballast's code: GO-2026-6809 (`crypto/x509` now distrusts a set of compromised intermediate certificates); GO-2026-6617, GO-2026-6612, GO-2026-6611, GO-2026-6610 and GO-2026-6603 (HTTP/2 in `net/http`: an HPACK encoder race that can crash the server, double flow-control refunds, CPU exhaustion from repeated window updates, malformed framing headers accepted by the transport, and memory exhaustion from trailers); GO-2026-6613 and GO-2026-6605 (HTTP/1 connection desynchronization around `CONNECT` in the `net/http` server and client); GO-2026-6608 (MIME header parsing in `net/textproto` can bypass its memory limit); GO-2026-6607 (`crypto/tls` accepted malformed ECH outer extension references); GO-2026-6600 and GO-2026-6599 (`html/template` context tracking). Ballast's webhook and metrics servers serve HTTP/1.1 only unless `--enable-http2` is set, so the HTTP/2 server advisories reach a default install only through outbound client connections; the HTTP/1, TLS and x509 fixes apply regardless. The builder image moves to `golang:1.27.3`.
+- **`golang.org/x/net` moved to 0.62.0**, clearing the same HTTP/2 advisories (GO-2026-6617, GO-2026-6612, GO-2026-6611, GO-2026-6610) in its standalone `http2` package, which the Kubernetes client libraries pull in, plus GO-2026-6866 and GO-2026-6860 in its `html` parser, which Ballast does not call. Dependabot does not update indirect dependencies, so this one needed a manual bump; it brings the other `golang.org/x` modules up with it.
+
+### Changed
+
+- Dependency updates: the grouped Go minor and patch bumps across 9 modules (Kubernetes libraries to 0.37.2, `prometheus/client_golang` to 1.25.0, `go-redis` to 9.23.0) and the GitHub Actions group across 10 actions (`harden-runner` 2.22.4, CodeQL 4.39.3, `scorecard-action` 2.5.0).
+
 ## [0.7.0] - 2026-10-06
 
 ### Security
