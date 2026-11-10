@@ -1,0 +1,26 @@
+CHANGELOG.md
+  s_f8b0e096eb9c89::t_7b6db3a12d6930 10-11,14-18
+  s_f8b0e096eb9c89::t_22b7a0cdfc0499 12
+  s_f8b0e096eb9c89::t_16ba2f4e9758da 13
+go.mod
+  s_f8b0e096eb9c89::t_56ad2555b9b0c8 3
+  s_f8b0e096eb9c89::t_74c9ca93fe13f5 99,101-106
+go.sum
+  s_f8b0e096eb9c89::t_c41a0a46690033 248-249,252-261,264-265
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "8b22c607cc56156e6b95801fd5a8dedf0c95bbae",
+  "prompts": {},
+  "sessions": {
+    "s_f8b0e096eb9c89": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "519b5395-a122-4be7-bee2-ce83e52490a4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Nick Marden <nmarden@avvo.com>"
+    }
+  }
+}
